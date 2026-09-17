@@ -101,6 +101,13 @@ export function autoAdvance(state) {
   let guard = 0;
   while (guard++ < 25) {
     if (state.winner) return;
+    // Never cascade past a phase that still has triggered effects waiting to
+    // resolve (e.g. turn-start effects queued the moment the turn began, or
+    // a mainPhaseStart trigger) — otherwise unsuspend/draw/breeding all fly
+    // by in one synchronous tick before the player ever sees what fired.
+    // Once autoRunMandatoryPending() clears state.pending on a later render,
+    // this resumes the cascade from wherever it left off.
+    if (state.pending.length > 0) return;
     if (state.phase === 'unsuspend' || state.phase === 'draw') { nextPhase(state); continue; }
     if (state.phase === 'breeding') {
       const pl = state.players[state.activePlayer];

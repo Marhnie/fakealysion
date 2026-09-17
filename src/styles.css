@@ -216,6 +216,26 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 .effect-box.effect-firing { border-color: var(--holo-accent); animation: effectFiringGlow 0.8s ease-in-out infinite; }
 .effect-firing-title { color: var(--holo-accent); font-weight: 700; margin-bottom: 4px; }
 
+/* a stack just got sent to the trash (rule-check DP<=0, battle loss, or a
+   【소멸】 effect) — brief centered callout so it reads as a deliberate game
+   event instead of a card just silently vanishing on the next render.
+   pointer-events:none so it can never sit on top of a drag target the way
+   the old fixed selected-card-info panel once did. */
+@keyframes vanishToastPop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+  15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
+  25% { transform: translate(-50%, -50%) scale(1); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+.vanish-toast {
+  position: fixed; top: 45%; left: 50%; z-index: 70; pointer-events: none;
+  background: rgba(30, 6, 6, 0.92); border: 1px solid #8a2b2b; border-radius: 8px;
+  padding: 12px 22px; color: #ffbcbc; font-size: 15px; font-weight: 700;
+  text-align: center; white-space: pre-wrap; max-width: min(480px, 90vw);
+  animation: vanishToastPop 1.5s ease-out forwards;
+}
+
 /* actions panel collapsed to a single thin tab — the field is the focus by default */
 .actions-collapsed { padding: 0; max-height: none; }
 .panel-tab { padding: 6px 16px; font-size: 11px; color: var(--muted); cursor: pointer; }

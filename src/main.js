@@ -210,12 +210,18 @@ function deckLineItem(id, n) {
 }
 
 let mulliganDecided = { p1: false, p2: false };
+// Tracks whose hand was JUST dealt (initial deal, or that player's own
+// mulligan) so the deal-in animation only plays for that hand's cards, not
+// replayed across both hands on every re-render of this screen (e.g. when
+// the other player clicks "이 핸드 유지" after you already mulliganed).
+let mulliganDealFlash = { p1: false, p2: false };
 
 function startNewGame() {
   state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
   E.drawOpeningHand(state, 'p1');
   E.drawOpeningHand(state, 'p2');
   mulliganDecided = { p1: false, p2: false };
+  mulliganDealFlash = { p1: true, p2: true };
   renderMulliganStage();
 }
 
@@ -224,15 +230,17 @@ function renderMulliganStage() {
   app.appendChild(h('div', { className: 'topbar' }, [h('b', {}, '오프닝 핸드 확인 / 멀리건')]));
   const panels = ['p1', 'p2'].map(p => {
     const pl = state.players[p];
+    const justDealt = mulliganDealFlash[p];
+    mulliganDealFlash[p] = false;
     return h('div', { className: 'player-panel' }, [
       h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
-      h('div', { className: 'hand-list mulligan-hand' }, pl.hand.map(id => cardChip(id, {}))),
+      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => cardChip(id, {}))),
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
           : h('button', {
               className: 'primary',
-              onClick: () => { E.mulligan(state, p); mulliganDecided[p] = true; afterMulliganCheck(); },
+              onClick: () => { E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); },
             }, '멀리건 (새로 5장)'),
         !mulliganDecided[p] && h('button', {
           onClick: () => { mulliganDecided[p] = true; afterMulliganCheck(); },
@@ -278,6 +286,19 @@ function render() {
   app.appendChild(renderLog());
   const modal = renderModal();
   if (modal) app.appendChild(modal);
+  const vanishToast = renderVanishToast();
+  if (vanishToast) app.appendChild(vanishToast);
+}
+
+// deleteStack() (rule-check DP<=0, battle losses, 【소멸】 effects — every
+// route a stack can be destroyed through) pushes the destroyed card's name
+// here. Consumed once so it only shows for the render right after it
+// happened, similar to pl.pendingDrawFlash.
+function renderVanishToast() {
+  const names = state.pendingVanishFlash || [];
+  state.pendingVanishFlash = [];
+  if (!names.length) return null;
+  return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}`);
 }
 
 function renderTopbar() {

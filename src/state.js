@@ -123,6 +123,7 @@ export function newGame(deckKeyP1, deckKeyP2) {
     players: { p1: emptyPlayer(deckKeyP1), p2: emptyPlayer(deckKeyP2) },
     log: [],
     pending: [], // pending effect triggers awaiting manual/auto resolution
+    pendingVanishFlash: [], // names of stacks deleteStack() just sent to trash, for a one-shot UI toast
   };
 }
 
@@ -964,6 +965,7 @@ export function deleteStack(state, p, uid, toZone = 'trash') {
   const all = [...stack.sources, stack.cardId, ...linkIds];
   if (toZone === 'trash') pl.trash.push(...all);
   log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 포함, 총 ${all.length}장 트래시)`);
+  (state.pendingVanishFlash ||= []).push(card(stack.cardId).nameKo);
   // Overflow (4-19-1) only covers cards leaving the area or leaving being
   // stacked underneath a card — Link Cards are neither (4-9-1/4-9-4), so
   // they're excluded here even though they're trashed alongside the stack.
@@ -1079,10 +1081,20 @@ export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
   const results = [];
   for (let i = 0; i < checks; i++) {
     if (pl.security.length === 0) {
-      state.winner = attackerP;
-      log(state, `${defenderP} 시큐리티 0에서 피격 — ${attackerP} 승리!`);
-      results.push({ empty: true });
-      return { checks: results, gameOver: true };
+      // 1-2-3-1: the win condition is "security was already 0 the moment
+      // this attack was established" — i.e. before the FIRST check of this
+      // attack. Running out of cards partway through this SAME attack's
+      // extra checks (from a 《시큐리티 어택 +N》 bonus) isn't that: per
+      // 1-3-2, being asked to do more checks than cards exist just means
+      // doing as many as possible, not an instant loss (13-1-2/1-3-2).
+      if (i === 0) {
+        state.winner = attackerP;
+        log(state, `${defenderP} 시큐리티 0에서 피격 — ${attackerP} 승리!`);
+        results.push({ empty: true });
+        return { checks: results, gameOver: true };
+      }
+      log(state, `${defenderP} 시큐리티가 ${i}장에서 바닥나 이 어택의 남은 체크(${checks - i}회분)는 진행 못함`);
+      break;
     }
     const id = pl.security.shift();
     pl.trash.push(id);
