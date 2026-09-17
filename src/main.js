@@ -226,7 +226,7 @@ function renderMulliganStage() {
     const pl = state.players[p];
     return h('div', { className: 'player-panel' }, [
       h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
-      h('div', { className: 'hand-list' }, pl.hand.map(id => cardChip(id, {}))),
+      h('div', { className: 'hand-list mulligan-hand' }, pl.hand.map(id => cardChip(id, {}))),
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
@@ -676,10 +676,10 @@ function renderActions() {
   if (state.winner) return h('div', { className: 'actions' });
 
   const choiceUi = renderUiChoice();
-  if (choiceUi) { return h('div', { className: 'actions' }, [choiceUi]); }
+  if (choiceUi) { return h('div', { className: 'actions actions-attention' }, [choiceUi]); }
 
   const pendingUi = renderPendingAttack();
-  if (pendingUi) { return h('div', { className: 'actions' }, [pendingUi]); }
+  if (pendingUi) { return h('div', { className: 'actions actions-attention' }, [pendingUi]); }
 
   const pendingEffectsUi = renderPendingEffects();
 
@@ -752,7 +752,7 @@ function renderActions() {
   const effText = describeSelectedEffects();
   if (effText) rows.push(h('div', { className: 'effect-box' }, effText));
 
-  return h('div', { className: 'actions' }, rows);
+  return h('div', { className: `actions${pendingEffectsUi ? ' actions-attention' : ''}` }, rows);
 }
 
 function findStack(selRef) {
@@ -845,10 +845,15 @@ const RESULT_LABEL_KO = { attackerWins: '공격측 승리', defenderWins: '방�
 function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
   const leftWins = result === 'attackerWins' || result === 'jammedSurvive';
   const rightWins = result === 'defenderWins';
+  // jammedSurvive is deliberately excluded from rightLoses — Jamming means
+  // the defender survives the hit, so it shouldn't play a "destroyed" beat.
+  const leftLoses = result === 'defenderWins' || result === 'tie';
+  const rightLoses = result === 'attackerWins' || result === 'tie';
+  const sideClass = (wins, loses) => `vs-side${wins ? ' vs-winner' : ''}${loses ? ' vs-loser' : ''}`;
   return h('div', { className: 'vs-battle' }, [
-    h('div', { className: `vs-side${leftWins ? ' vs-winner' : ''}` }, [cardChip(leftCardId, {}), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
+    h('div', { className: sideClass(leftWins, leftLoses) }, [cardChip(leftCardId, {}), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
     h('div', { className: 'vs-mid' }, [h('div', { className: 'vs-vs' }, 'VS'), h('div', { className: 'vs-result' }, RESULT_LABEL_KO[result] || result)]),
-    h('div', { className: `vs-side${rightWins ? ' vs-winner' : ''}` }, [cardChip(rightCardId, {}), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
+    h('div', { className: sideClass(rightWins, rightLoses) }, [cardChip(rightCardId, {}), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
   ]);
 }
 

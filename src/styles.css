@@ -11,14 +11,40 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 
 .topbar { display: flex; align-items: center; gap: 16px; padding: 5px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
 
+/* Simple entrance/impact animations for the attack & security-check result
+   screen — the one place in this full-rebuild UI where a "moment" plays
+   exactly once (unlike normal renders, which happen too often to safely
+   animate without a diffing layer telling us what's actually new). */
+@keyframes vsSlideInLeft { from { opacity: 0; transform: translateX(-40px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes vsSlideInRight { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes vsPop { from { opacity: 0; transform: scale(0.4); } 60% { opacity: 1; transform: scale(1.15); } to { transform: scale(1); } }
+@keyframes vsWinGlow { 0%, 100% { box-shadow: 0 0 0 2px var(--ok) inset; } 50% { box-shadow: 0 0 14px 2px var(--ok), 0 0 0 2px var(--ok) inset; } }
+@keyframes vsShake { 10%, 90% { transform: translateX(-2px); } 20%, 80% { transform: translateX(3px); } 30%, 50%, 70% { transform: translateX(-5px); } 40%, 60% { transform: translateX(5px); } }
+
 .vs-battle { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 12px 0; }
-.vs-side { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 10px; border: 2px solid transparent; }
-.vs-side.vs-winner { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset; }
+/* left side (comes before .vs-mid) slides in from the left; the sibling
+   combinator picks out the right side (comes after .vs-mid) for the mirror */
+.vs-side { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 10px; border: 2px solid transparent; animation: vsSlideInLeft 0.35s ease-out; }
+.vs-mid ~ .vs-side { animation-name: vsSlideInRight; }
+.vs-side.vs-winner { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset; animation: vsSlideInLeft 0.35s ease-out, vsWinGlow 1.2s ease-in-out 0.35s 2; }
+.vs-mid ~ .vs-side.vs-winner { animation-name: vsSlideInRight, vsWinGlow; }
+.vs-side.vs-loser { opacity: 0.85; animation: vsSlideInLeft 0.35s ease-out, vsShake 0.5s ease-in-out 0.35s; }
+.vs-mid ~ .vs-side.vs-loser { animation-name: vsSlideInRight, vsShake; }
 .vs-dp { font-size: 12px; font-weight: 600; color: var(--muted); }
 .vs-side.vs-winner .vs-dp { color: var(--ok); }
 .vs-mid { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 70px; }
-.vs-vs { font-size: 18px; font-weight: 600; color: var(--danger); }
-.vs-result { font-size: 12px; color: var(--text); text-align: center; }
+.vs-vs { font-size: 18px; font-weight: 600; color: var(--danger); animation: vsPop 0.4s ease-out 0.15s both; }
+.vs-result { font-size: 12px; color: var(--text); text-align: center; animation: vsPop 0.3s ease-out 0.5s both; }
+
+/* mulligan hand — cards deal in one at a time, like actually being dealt */
+@keyframes cardDealIn { from { opacity: 0; transform: translateY(-24px) scale(0.85); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.mulligan-hand .card-chip { animation: cardDealIn 0.28s ease-out both; }
+.mulligan-hand .card-chip:nth-child(1) { animation-delay: 0.02s; }
+.mulligan-hand .card-chip:nth-child(2) { animation-delay: 0.08s; }
+.mulligan-hand .card-chip:nth-child(3) { animation-delay: 0.14s; }
+.mulligan-hand .card-chip:nth-child(4) { animation-delay: 0.20s; }
+.mulligan-hand .card-chip:nth-child(5) { animation-delay: 0.26s; }
+.mulligan-hand .card-chip:nth-child(n+6) { animation-delay: 0.32s; }
 .gauge-track { position: relative; flex: 1; max-width: 360px; height: 10px; background: #333; border-radius: 6px; }
 .gauge-fill { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 6px; }
 .gauge-mid { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background: #666; }
@@ -126,6 +152,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .player-header.drop-hover { outline: 2px dashed var(--danger); }
 
 .actions { background: var(--panel); border-top: 1px solid var(--border); padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; max-height: 42vh; overflow-y: auto; }
+/* something needs the player's attention — a small slide-up cue */
+@keyframes actionsAttentionIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+.actions-attention { animation: actionsAttentionIn 0.25s ease-out; border-top-color: var(--holo-accent); }
 .actions-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 button { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
 button:hover { border-color: var(--accent); }
