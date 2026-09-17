@@ -9,6 +9,7 @@ const app = document.getElementById('app');
 let state = null;
 let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
+let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
 
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
@@ -32,15 +33,11 @@ async function init() {
   renderSetup();
 }
 
-let setupPick = { p1: 'deck1', p2: 'deck2' };
+let setupPick = { p1: null, p2: null };
 
 function deckOptionsList() {
   const saved = DB.loadSavedDecks();
-  return [
-    { key: 'deck1', label: `[기본] ${S.DECKS.deck1.name}` },
-    { key: 'deck2', label: `[기본] ${S.DECKS.deck2.name}` },
-    ...Object.keys(saved).map(name => ({ key: 'saved:' + name, label: `[커스텀] ${name}` })),
-  ];
+  return Object.keys(saved).map(name => ({ key: 'saved:' + name, label: name }));
 }
 
 function resolveDeckPick(key) {
@@ -57,6 +54,21 @@ function renderSetup() {
     h('b', {}, '디지몬 카드게임 시뮬레이터'),
   ]));
   const options = deckOptionsList();
+  if (!setupPick.p1 && options[0]) setupPick.p1 = options[0].key;
+  if (!setupPick.p2 && options[1]) setupPick.p2 = options[1].key;
+  if (!setupPick.p2 && options[0]) setupPick.p2 = options[0].key;
+
+  if (!options.length) {
+    app.appendChild(h('div', { className: 'board' }, [
+      h('div', { className: 'player-panel' }, [
+        h('div', { className: 'section-title' }, '새 게임'),
+        h('div', { className: 'actions-row' }, [h('span', {}, '저장된 덱이 없습니다 — 덱 빌더에서 먼저 덱을 만들어주세요.')]),
+        h('div', { className: 'actions-row' }, [h('button', { className: 'primary', onClick: openDeckBuilder }, '덱 빌더 열기')]),
+      ]),
+    ]));
+    return;
+  }
+
   const selectFor = (p) => {
     const sel = h('select', {}, options.map(o => h('option', { value: o.key }, o.label)));
     sel.value = setupPick[p];
@@ -248,6 +260,7 @@ function render() {
   if (!state) return renderSetup();
   E.autoAdvance(state);
   app.innerHTML = '';
+  app.classList.toggle('log-open', panelsOpen.log);
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
@@ -305,27 +318,37 @@ function cardChip(cardId, opts = {}) {
   ]);
 }
 
-function renderStack(p, stack, zoneKind) {
+function renderStack(p, stack, zoneKind, opts = {}) {
   const isSelected = sel.stack && sel.stack.uid === stack.uid;
+  const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
   const isOwnActiveBattle = p === state.activePlayer && zoneKind === 'battle' && !stack.suspended && state.phase === 'main';
-  return cardChip(stack.cardId, {
-    selected: isSelected,
+  const chip = cardChip(stack.cardId, {
+    selected: isSelected || isSecondSelected,
     suspended: stack.suspended,
     sourcesCount: stack.sources.length,
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     onDrop: (drag) => {
       if (!drag) return;
-      if (drag.kind === 'hand' && drag.player === p && p === state.activePlayer && state.phase === 'main' && S.card(drag.cardId).category === 'digimon') {
-        const check = E.canNormalEvolve(stack.cardId, drag.cardId, stack.extraColors || []);
-        const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
-        const cost = Math.max(0, (check.ok ? check.cost : 0) + evoModDelta);
-        S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
+      if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
+      // Dropping the hand card on the SECOND of two selected battle stacks
+      // is how DNA/Jogress fusion is triggered — no separate button needed,
+      // the two-click stack1+stack2 selection already signals that intent.
+      if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
+        S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, val('costInput'), 'hand');
+        sel.stack = null; sel.stack2 = null;
         E.checkAutoEndTurn(state);
         dragData = null; render();
+        return;
       }
+      const check = E.canNormalEvolve(stack.cardId, drag.cardId, stack.extraColors || []);
+      const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
+      const cost = Math.max(0, (check.ok ? check.cost : 0) + evoModDelta);
+      S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
+      E.checkAutoEndTurn(state);
+      dragData = null; render();
     },
-    onClick: () => {
+    onClick: opts.onClickOverride || (() => {
       if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; }
       else if (sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
         sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
@@ -334,8 +357,29 @@ function renderStack(p, stack, zoneKind) {
         sel.stack2 = null;
       }
       render();
-    },
+    }),
   });
+
+  const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
+  if (!linkSlots.length) return chip;
+  // Small overlay badge, separately droppable, so dragging a hand card onto
+  // it links instead of digivolving — distinct from dropping on the card art.
+  const badge = h('div', {
+    className: 'link-badge',
+    title: linkSlots.map(s => `${S.card(s.grantedBy).nameKo} 링크: ${s.conditionText} (코스트 ${s.cost})`).join('\n'),
+    ondragover: (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('drop-hover'); },
+    ondragleave: (e) => { e.currentTarget.classList.remove('drop-hover'); },
+    ondrop: (e) => {
+      e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover');
+      const drag = dragData;
+      if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
+      const slot = linkSlots[0];
+      S.linkCardTo(state, p, stack.uid, drag.cardId, slot.grantedBy, slot.cost, 'hand');
+      E.checkAutoEndTurn(state);
+      dragData = null; render();
+    },
+  }, '🔗' + (stack.linkCards?.length ? stack.linkCards.length : ''));
+  return h('div', { className: 'stack-wrap' }, [chip, badge]);
 }
 
 function playFreshFromDrag(drag, p) {
@@ -355,8 +399,8 @@ function playFreshFromDrag(drag, p) {
 // A small square tile showing a face-down pile's count + label — deck/
 // security/digitama/trash, styled like the reference layout's side piles
 // instead of plain text.
-function pileChip(label, count, extraClass = '') {
-  return h('div', { className: `pile-chip ${extraClass}` }, [
+function pileChip(label, count, extraClass = '', onClick) {
+  return h('div', { className: `pile-chip ${extraClass}${onClick ? ' clickable' : ''}`, onClick }, [
     h('div', { className: 'pile-count' }, String(count)),
     h('div', { className: 'pile-label' }, label),
   ]);
@@ -385,17 +429,21 @@ function renderPlayerPanel(p) {
     canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 여기에 놓아서 이 플레이어 공격') : null,
   ]);
 
+  const canHatch = state.phase === 'breeding' && p === state.activePlayer && !pl.raising && pl.digitamaDeck.length > 0;
   const pileRail = h('div', { className: 'pile-rail' }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
-    pileChip('디지타마', pl.digitamaDeck.length, 'pile-digitama'),
+    pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { S.hatchDigitama(state, p); render(); } : undefined),
     pileChip('트래시', pl.trash.length, 'pile-trash'),
   ]);
 
+  const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
   const raisingZone = h('div', { className: 'zone hex-field' }, [
-    zonePill('육성 에어리어'),
+    zonePill(canMoveRaising ? '육성 에어리어 (카드 클릭=배틀 이동)' : '육성 에어리어'),
     h('div', { className: 'hex-slot-row' }, [
-      pl.raising ? renderStack(p, pl.raising, 'raising') : h('div', { className: 'empty-slot' }, '비어있음'),
+      pl.raising
+        ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { S.moveRaisingToBattle(state, p); render(); } } : {})
+        : h('div', { className: 'empty-slot' }, '비어있음'),
     ]),
   ]);
 
@@ -615,7 +663,6 @@ function renderUiChoice() {
 
 function renderActions() {
   if (state.winner) return h('div', { className: 'actions' });
-  const rows = [];
 
   const choiceUi = renderUiChoice();
   if (choiceUi) { return h('div', { className: 'actions' }, [choiceUi]); }
@@ -624,109 +671,72 @@ function renderActions() {
   if (pendingUi) { return h('div', { className: 'actions' }, [pendingUi]); }
 
   const pendingEffectsUi = renderPendingEffects();
+
+  // Everything here is optional/reference info once a turn is underway — the
+  // field is the focus, so this whole panel starts collapsed. A mandatory
+  // pending effect (something the player MUST resolve) always forces it open.
+  if (!panelsOpen.actions && !pendingEffectsUi) {
+    return h('div', { className: 'actions actions-collapsed' }, [
+      h('div', {
+        className: 'panel-tab', onClick: () => { panelsOpen.actions = true; render(); },
+      }, `▲ 조작 패널 — ${PHASE_LABEL[state.phase] || state.phase} (${state.activePlayer})`),
+    ]);
+  }
+
+  const rows = [];
+  rows.push(h('div', {
+    className: 'section-title clickable',
+    onClick: () => { panelsOpen.actions = false; render(); },
+  }, `▼ ${PHASE_LABEL[state.phase] || state.phase} — ${state.activePlayer} (클릭=접기)`));
+
   if (pendingEffectsUi) rows.push(pendingEffectsUi);
 
-  rows.push(h('div', { className: 'section-title' }, `페이즈별 행동 — 현재: ${PHASE_LABEL[state.phase] || state.phase} (${state.activePlayer})`));
-
   if (state.phase === 'breeding') {
-    const ap = state.activePlayer;
     rows.push(h('div', { className: 'actions-row' }, [
-      h('button', { onClick: () => { S.hatchDigitama(state, ap); render(); }, disabled: !!state.players[ap].raising }, '디지타마 부화'),
-      h('button', { onClick: () => { S.moveRaisingToBattle(state, ap); render(); }, disabled: !state.players[ap].raising }, '육성→배틀 이동'),
-      h('span', { className: 'meta' }, '(둘 다 선택사항, 이동을 선택하면 이번 턴 부화는 불가 — 룰 확인됨)'),
+      h('span', { className: 'meta' }, '디지타마 파일 클릭 = 부화, 육성 에어리어의 카드 클릭 = 배틀 이동 (둘 다 선택, 이동을 고르면 이번 턴 부화는 불가)'),
     ]));
   }
 
   if (state.phase === 'main') {
-    rows.push(h('div', { className: 'section-title' }, '메인 페이즈: 핸드/스택 선택 후 사용'));
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, '선택된 핸드카드:'), h('b', {}, sel.hand ? S.card(sel.hand.cardId).nameKo : '없음'),
-      h('span', {}, '선택된 스택1:'), h('b', {}, describeSelectedStackName(sel.stack)),
-      h('span', {}, '선택된 스택2:'), h('b', {}, describeSelectedStackName(sel.stack2)),
+      h('span', {}, '핸드:'), h('b', {}, sel.hand ? S.card(sel.hand.cardId).nameKo : '-'),
+      h('span', {}, '스택1:'), h('b', {}, describeSelectedStackName(sel.stack)),
+      h('span', {}, '스택2:'), h('b', {}, describeSelectedStackName(sel.stack2)),
+      h('span', {}, 'DNA/링크 코스트'), numInput('costInput', 0),
     ]));
-
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', { className: 'meta' }, '핸드카드는 배틀 에어리어나 자신의 디지몬 위로 드래그해서 등장/진화시키세요.'),
-    ]));
-
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, '코스트'), numInput('costInput', 0),
-      h('button', {
-        disabled: !sel.stack || !sel.stack2 || !sel.hand || sel.stack.player !== state.activePlayer,
-        onClick: () => {
-          const cost = val('costInput');
-          S.fuseStacks(state, sel.stack.player, sel.stack.uid, sel.stack2.uid, sel.hand.cardId, cost, 'hand');
-          sel.hand = null; sel.stack = null; sel.stack2 = null;
-          E.checkAutoEndTurn(state);
-          render();
-        },
-      }, 'DNA/조그레스: 스택1+스택2 → 핸드카드'),
-      h('span', { className: 'meta' }, '(배틀 에어리어 카드 2개를 순서대로 클릭해서 선택)'),
-    ]));
-
-    if (sel.stack && sel.stack.player === state.activePlayer) {
-      const hostStack = findStack(sel.stack);
-      const linkSlots = hostStack ? S.availableLinkSlots(hostStack) : [];
-      if (linkSlots.length) {
-        const slotSelect = h('select', { id: 'linkSlotSelect' }, linkSlots.map((s, i) =>
-          h('option', { value: String(i) }, `${S.card(s.grantedBy).nameKo} 링크: ${s.conditionText} (코스트 ${s.cost})`)
-        ));
-        rows.push(h('div', { className: 'actions-row' }, [
-          h('span', {}, '링크 슬롯'), slotSelect,
-          h('span', {}, '핸드에서 링크할 카드:'), h('b', {}, sel.hand ? S.card(sel.hand.cardId).nameKo : '없음'),
-          h('button', {
-            disabled: !sel.hand || sel.hand.player !== state.activePlayer,
-            onClick: () => {
-              const idx = Number(document.getElementById('linkSlotSelect').value || 0);
-              const slot = linkSlots[idx];
-              if (slot) {
-                S.linkCardTo(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, slot.grantedBy, slot.cost, 'hand');
-                sel.hand = null;
-              }
-              E.checkAutoEndTurn(state);
-              render();
-            },
-          }, '선택 핸드카드를 링크'),
-        ]));
-      }
-      if (hostStack && hostStack.linkCards && hostStack.linkCards.length) {
-        rows.push(h('div', { className: 'actions-row' }, [
-          h('span', {}, '현재 링크된 카드:'),
-          ...hostStack.linkCards.map(l => h('span', { className: 'meta' }, S.card(l.cardId).nameKo)),
-        ]));
-      }
-    }
-
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('button', {
-        className: 'danger', disabled: !sel.stack || sel.stack.player !== state.activePlayer || sel.stack.zone !== 'battle',
-        onClick: () => { attackFlow(sel.stack.player, sel.stack.uid); },
-      }, '선택 스택으로 공격'),
+      h('span', { className: 'meta' }, '핸드→필드/내 디지몬 드래그 = 등장·진화 · 스택1+스택2 선택 후 핸드→스택2 드래그 = DNA/조그레스 · 디지몬의 🔗 배지에 핸드카드 드롭 = 링크 · 내 디지몬→상대 진영 드래그 = 공격'),
     ]));
   }
 
-  rows.push(h('div', { className: 'section-title' }, '범용 도구 (카드 효과 수동 처리용)'));
-  rows.push(h('div', { className: 'actions-row' }, [
-    h('span', {}, '대상'),
-    ...['p1', 'p2'].map(p => h('button', { className: sel.player === p ? 'primary' : '', onClick: () => { sel.player = p; render(); } }, p)),
-    h('span', {}, '장수'), numInput('genN', 1),
-    h('button', { onClick: () => { S.drawCards(state, sel.player, val('genN')); render(); } }, '드로우'),
-    h('button', { onClick: () => { S.trashTopOfDeck(state, sel.player, val('genN')); render(); } }, '덱 위 파기'),
-  ]));
-  rows.push(h('div', { className: 'actions-row' }, [
-    h('button', { onClick: () => { S.trashTopSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 위 효과로 파기'),
-    h('button', { onClick: () => { S.trashBottomSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 밑 효과로 파기'),
-    h('span', {}, '카드ID'), h('input', { id: 'secCardId', placeholder: 'e.g. BT25-034' }),
-    h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'top'); render(); } }, '핸드지정없이 시큐리티 맨위 추가(id입력)'),
-    h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'bottom'); render(); } }, '맨밑 추가(id입력)'),
-  ]));
-  rows.push(h('div', { className: 'actions-row' }, [
-    h('span', {}, '메모리'), numInput('memN', 1),
-    h('button', { onClick: () => { S.grantMemory(state, sel.player, val('memN')); render(); } }, '메모리 획득 적용'),
-    h('span', {}, '퇴화 단수'), numInput('retN', 1),
-    h('button', { disabled: !sel.stack, onClick: () => { S.retreat(state, sel.stack.player, sel.stack.uid, val('retN')); render(); } }, '선택 스택 퇴화'),
-    h('button', { className: 'danger', disabled: !sel.stack, onClick: () => { S.deleteStack(state, sel.stack.player, sel.stack.uid); sel.stack = null; render(); } }, '선택 스택 소멸(트래시)'),
-  ]));
+  rows.push(h('div', {
+    className: 'section-title clickable',
+    onClick: () => { panelsOpen.advancedTools = !panelsOpen.advancedTools; render(); },
+  }, `${panelsOpen.advancedTools ? '▼' : '▶'} 범용 도구 (카드 효과 수동 처리용 — 평소엔 접어두세요)`));
+
+  if (panelsOpen.advancedTools) {
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, '대상'),
+      ...['p1', 'p2'].map(p => h('button', { className: sel.player === p ? 'primary' : '', onClick: () => { sel.player = p; render(); } }, p)),
+      h('span', {}, '장수'), numInput('genN', 1),
+      h('button', { onClick: () => { S.drawCards(state, sel.player, val('genN')); render(); } }, '드로우'),
+      h('button', { onClick: () => { S.trashTopOfDeck(state, sel.player, val('genN')); render(); } }, '덱 위 파기'),
+    ]));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', { onClick: () => { S.trashTopSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 위 효과로 파기'),
+      h('button', { onClick: () => { S.trashBottomSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 밑 효과로 파기'),
+      h('span', {}, '카드ID'), h('input', { id: 'secCardId', placeholder: 'e.g. BT25-034' }),
+      h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'top'); render(); } }, '핸드지정없이 시큐리티 맨위 추가(id입력)'),
+      h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'bottom'); render(); } }, '맨밑 추가(id입력)'),
+    ]));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, '메모리'), numInput('memN', 1),
+      h('button', { onClick: () => { S.grantMemory(state, sel.player, val('memN')); render(); } }, '메모리 획득 적용'),
+      h('span', {}, '퇴화 단수'), numInput('retN', 1),
+      h('button', { disabled: !sel.stack, onClick: () => { S.retreat(state, sel.stack.player, sel.stack.uid, val('retN')); render(); } }, '선택 스택 퇴화'),
+      h('button', { className: 'danger', disabled: !sel.stack, onClick: () => { S.deleteStack(state, sel.stack.player, sel.stack.uid); sel.stack = null; render(); } }, '선택 스택 소멸(트래시)'),
+    ]));
+  }
 
   const effText = describeSelectedEffects();
   if (effText) rows.push(h('div', { className: 'effect-box' }, effText));
@@ -891,7 +901,13 @@ function renderPendingAttack() {
 }
 
 function renderLog() {
-  return h('div', { className: 'log-panel' }, state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)));
+  if (!panelsOpen.log) {
+    return h('div', { className: 'log-panel log-collapsed', onClick: () => { panelsOpen.log = true; render(); } }, '◀ 로그');
+  }
+  return h('div', { className: 'log-panel' }, [
+    h('div', { className: 'section-title clickable', onClick: () => { panelsOpen.log = false; render(); } }, '로그 (클릭=접기)'),
+    ...state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)),
+  ]);
 }
 
 window.__dbg = () => ({ dragData, sel, state, S, E, Effects });
