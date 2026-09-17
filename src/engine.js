@@ -47,6 +47,7 @@ export function beginGame(state, firstPlayer) {
   state.activePlayer = firstPlayer;
   state.turnNumber = 1;
   state.phase = 'unsuspend';
+  state.breedingActionTaken = false;
   S.log(state, `선공: ${firstPlayer}`);
   queueTurnStartTriggers(state);
 }
@@ -128,6 +129,7 @@ export function endTurn(state, viaMemoryCondition = false) {
   state.activePlayer = next;
   state.turnNumber += 1;
   state.phase = 'unsuspend';
+  state.breedingActionTaken = false;
   S.log(state, `--- ${finishing} 턴 종료, ${next} 턴 ${state.turnNumber} 시작 (메모리 ${state.memory}) ---`);
   queueTurnStartTriggers(state);
 }

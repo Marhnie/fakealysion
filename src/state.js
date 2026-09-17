@@ -97,6 +97,7 @@ export function newGame(deckKeyP1, deckKeyP2) {
     phase: 'setup', // setup | unsuspend | draw | breeding | main | ended
     memory: 0, // positive = p1's banked side, negative = p2's banked side
     winner: null,
+    breedingActionTaken: false, // 6-4: hatch OR move, not both, per breeding phase visit — reset each turn
     players: { p1: emptyPlayer(deckKeyP1), p2: emptyPlayer(deckKeyP2) },
     log: [],
     pending: [], // pending effect triggers awaiting manual/auto resolution
@@ -757,22 +758,26 @@ export function artsDigivolve(state, p, dualCardId, targetStackUid) {
 
 export function hatchDigitama(state, p) {
   const pl = state.players[p];
+  if (state.breedingActionTaken) { log(state, `${p} 이번 육성 페이즈에는 이미 부화/이동 중 하나를 했어서 더 못함`); return null; }
   if (pl.raising) { log(state, `${p} 육성 에어리어에 이미 카드가 있어 부화 불가`); return null; }
   const id = pl.digitamaDeck.shift();
   if (!id) return null;
   pl.raising = makeStack(id, state.turnNumber);
+  state.breedingActionTaken = true;
   log(state, `${p} 디지타마 부화: ${card(id).nameKo}`);
   return pl.raising;
 }
 
 export function moveRaisingToBattle(state, p) {
   const pl = state.players[p];
+  if (state.breedingActionTaken) { log(state, `${p} 이번 육성 페이즈에는 이미 부화/이동 중 하나를 했어서 더 못함`); return null; }
   if (!pl.raising) return null;
   const c = card(pl.raising.cardId);
   if ((c.level || 0) < 3) { log(state, `${p} ${c.nameKo}는 Lv.3 미만이라 이동 불가`); return null; }
   const stack = pl.raising;
   pl.battle.push(stack);
   pl.raising = null;
+  state.breedingActionTaken = true;
   log(state, `${p} ${c.nameKo} 육성→배틀 에어리어 이동`);
   queueTriggersForStack(state, p, stack, 'move');
   return true;

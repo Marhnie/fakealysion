@@ -437,14 +437,15 @@ function renderPlayerPanel(p) {
     canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 여기에 놓아서 이 플레이어 공격') : null,
   ]);
 
-  const canHatch = state.phase === 'breeding' && p === state.activePlayer && !pl.raising && pl.digitamaDeck.length > 0;
+  // 6-4: hatch OR move, not both, per breeding phase visit
+  const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
   const pileRail = h('div', { className: 'pile-rail' }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
     pileChip('트래시', pl.trash.length, 'pile-trash'),
   ]);
 
-  const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
+  const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
   const raisingZone = h('div', { className: 'zone hex-field' }, [
     zonePill(canMoveRaising ? '육성 에어리어 (카드 클릭=배틀 이동)' : '육성 에어리어'),
     h('div', { className: 'hex-slot-row' }, [
@@ -703,7 +704,7 @@ function renderActions() {
 
   if (state.phase === 'breeding') {
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', { className: 'meta' }, '디지타마 파일 클릭 = 부화, 육성 에어리어의 카드 클릭 = 배틀 이동 (둘 다 선택, 이동을 고르면 이번 턴 부화는 불가)'),
+      h('span', { className: 'meta' }, '디지타마 파일 클릭 = 부화, 육성 에어리어의 카드 클릭 = 배틀 이동 (둘 다 선택사항이지만 이번 턴엔 둘 중 하나만 가능)'),
     ]));
   }
 
@@ -803,6 +804,23 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // the drop location itself express the target — instead of always opening
 // a menu — is what makes attack (the single most common action) a single
 // drag instead of drag-then-pick-from-a-list.
+// ≪블로커≫ can only intercept if the defender actually controls an ACTIVE
+// Digimon with the keyword (using it rests that Digimon) — asking "does the
+// opponent block?" when they have none is both misleading and an
+// unnecessary extra click.
+function eligibleBlockers(p) {
+  return state.players[p].battle.filter(s => S.hasKeyword(s, '블로커') && !s.suspended);
+}
+
+function enterBlockerCheck(pa) {
+  if (eligibleBlockers(pa.opp).length === 0) {
+    const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
+    pa.stage = 'result'; pa.res = res;
+  } else {
+    pa.stage = 'blockerCheck';
+  }
+}
+
 function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
@@ -813,7 +831,7 @@ function attackFlow(p, uid, directTarget) {
   sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice', attackerCardId: dec.stack.cardId };
 
   if (directTarget === 'PLAYER') {
-    sel.pendingAttack.stage = 'blockerCheck';
+    enterBlockerCheck(sel.pendingAttack);
   } else if (directTarget && digimonTargets.includes(directTarget) && !blockedFromDigimonTarget(p, dec.stack)) {
     const res = S.resolveDigimonBattle(state, p, uid, directTarget);
     sel.pendingAttack.stage = 'digimonResult';
@@ -844,7 +862,7 @@ function renderPendingAttack() {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
     const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
     rows.push(h('div', { className: 'actions-row' }, [
-      h('button', { className: 'primary', onClick: () => { pa.stage = 'blockerCheck'; render(); } }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
+      h('button', { className: 'primary', onClick: () => { enterBlockerCheck(pa); render(); } }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
     ]));
     if (blockedByDynamic) {
       rows.push(h('div', { className: 'meta' }, '(조건부 제약으로 이번엔 디지몬 직접 공격 불가 — 위 옵션으로만 진행)'));
@@ -878,18 +896,26 @@ function renderPendingAttack() {
     if (res.result === 'attackerWins' && res.piercing) {
       rows.push(h('div', { className: 'actions-row' }, [
         h('span', {}, '≪관통≫ 보유 — 상대만 소멸시켰으니 어택 종료 전에 시큐리티도 체크할 수 있어요.'),
-        h('button', { className: 'primary', onClick: () => { pa.stage = 'blockerCheck'; render(); } }, '관통으로 시큐리티 체크 진행'),
+        h('button', { className: 'primary', onClick: () => { enterBlockerCheck(pa); render(); } }, '관통으로 시큐리티 체크 진행'),
         h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '체크 안 함 / 종료'),
       ]));
     } else {
       rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '확인 / 닫기'));
     }
   } else if (pa.stage === 'blockerCheck') {
+    const blockers = eligibleBlockers(pa.opp);
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, `${pa.opp}가 블로커로 막습니까?`),
-      h('button', {
-        onClick: () => { pa.stage = 'manualBlock'; render(); },
-      }, '블로커로 막음 (수동 처리)'),
+      h('span', {}, `${pa.opp}가 ≪블로커≫로 막습니까? — 막을 디지몬을 클릭하면 그 디지몬이 레스트되며 방어측이 됩니다:`),
+    ]));
+    rows.push(h('div', { className: 'stack-list' }, blockers.map(s => cardChip(s.cardId, {
+      onClick: () => {
+        S.restStack(state, pa.opp, s.uid);
+        const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, s.uid);
+        pa.stage = 'digimonResult'; pa.battleRes = res;
+        render();
+      },
+    }))));
+    rows.push(h('div', { className: 'actions-row' }, [
       h('button', {
         className: 'primary',
         onClick: () => {
@@ -898,9 +924,6 @@ function renderPendingAttack() {
         },
       }, '안 막음 → 시큐리티 체크 진행'),
     ]));
-  } else if (pa.stage === 'manualBlock') {
-    rows.push(h('div', { className: 'effect-box' }, '블로킹한 디지몬 스택을 선택하고, 범용 도구로 DP를 비교해서 진 쪽을 "선택 스택 소멸"로 직접 트래시 처리하세요.'));
-    rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '처리 완료 / 닫기'));
   } else if (pa.stage === 'result') {
     const res = pa.res;
     if (res.gameOver) {
