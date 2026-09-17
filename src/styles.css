@@ -9,7 +9,7 @@
 body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Malgun Gothic", sans-serif; font-size: 13px; }
 #app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
 
-.topbar { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topbar { display: flex; align-items: center; gap: 16px; padding: 5px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
 
 .vs-battle { display: flex; align-items: center; justify-content: center; gap: 16px; padding: 12px 0; }
 .vs-side { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 10px; border: 2px solid transparent; }
@@ -24,15 +24,15 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .gauge-mid { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background: #666; }
 
 .board {
-  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 16px 40px;
+  flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 12px 12px;
   background:
     radial-gradient(ellipse 70% 45% at 32% 4%, rgba(255,240,210,0.09) 0%, transparent 62%),
     radial-gradient(ellipse 120% 90% at 50% 100%, rgba(0,0,0,0.55) 0%, transparent 55%),
     linear-gradient(180deg, var(--holo-2) 0%, var(--holo-1) 55%, #0a0806 100%);
 }
 .table-surface {
-  display: flex; flex-direction: column; gap: 14px;
-  padding-top: 24px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding-top: 6px;
 }
 /* NOTE: no 3D transforms (rotateX/translateZ/preserve-3d) anywhere in this
    file, deliberately — Chromium breaks native HTML5 drag-and-drop for
@@ -41,12 +41,12 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
    tricks only (scale, shadows, gradients), never real 3D transforms. */
 .player-panel {
   background: linear-gradient(180deg, rgba(30,26,20,0.92) 0%, rgba(14,12,9,0.95) 100%);
-  border: 1px solid var(--holo-line); border-radius: 10px; padding: 10px 14px;
+  border: 1px solid var(--holo-line); border-radius: 10px; padding: 6px 10px;
   box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,240,210,0.08);
 }
 .table-surface .player-panel:first-child { transform: scale(0.97); filter: brightness(0.9); } /* opponent — reads as further back on the table */
 .player-panel.active { border-color: var(--holo-accent); box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), 0 0 0 1px var(--holo-accent) inset; }
-.player-header { display: flex; gap: 16px; align-items: center; font-weight: 600; margin-bottom: 8px; color: var(--muted); flex-wrap: wrap; }
+.player-header { display: flex; gap: 16px; align-items: center; font-weight: 600; margin-bottom: 3px; color: var(--muted); flex-wrap: wrap; }
 .player-header b { color: var(--text); flex-shrink: 0; }
 .player-header span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 
@@ -58,42 +58,42 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .mem-marker { position: absolute; top: 0; bottom: 0; width: 12px; height: 12px; margin-top: 6px; background: var(--holo-accent); border-radius: 50%; border: 2px solid #0a0806; transform: translateX(-50%); transition: left 0.2s ease; }
 
 /* field composition: play zones on the left, pile counters rail on the right */
-.field-row { display: flex; gap: 12px; align-items: stretch; }
-.field-zones { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.pile-rail { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+.field-row { display: flex; gap: 8px; align-items: stretch; }
+.field-zones { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pile-rail { display: flex; flex-direction: row; gap: 6px; align-items: flex-start; flex-wrap: wrap; }
 .pile-chip {
   background: rgba(0,0,0,0.4); border: 1px solid var(--holo-line); border-radius: 6px;
-  padding: 6px 8px; min-width: 56px; text-align: center;
+  padding: 3px 6px; min-width: 48px; text-align: center;
   /* layered offset shadows suggest a small stack of face-down cards behind the chip */
   box-shadow: 0 4px 10px rgba(0,0,0,0.4), 2px 2px 0 -1px rgba(0,0,0,0.3), 4px 4px 0 -2px rgba(0,0,0,0.2);
 }
-.pile-count { font-size: 16px; font-weight: 700; color: var(--text); }
-.pile-label { font-size: 9px; color: var(--muted); margin-top: 2px; }
+.pile-count { font-size: 14px; font-weight: 700; color: var(--text); }
+.pile-label { font-size: 8px; color: var(--muted); margin-top: 1px; }
 .pile-chip.pile-security { border-color: rgba(216,90,90,0.4); }
 .pile-chip.pile-security .pile-count { color: var(--danger); }
 
-.zone-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+.zone-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 .zone { min-width: 110px; }
-.zone-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.zone-label { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
 .zone-pill {
-  display: inline-block; font-size: 10px; color: var(--muted); background: transparent;
-  border: 1px solid var(--holo-line); border-radius: 999px; padding: 3px 10px; margin-bottom: 6px;
+  display: inline-block; font-size: 9px; color: var(--muted); background: transparent;
+  border: 1px solid var(--holo-line); border-radius: 999px; padding: 1px 8px; margin-bottom: 3px;
 }
-.stack-list, .hand-list { display: flex; gap: 6px; flex-wrap: wrap; }
+.stack-list, .hand-list { display: flex; gap: 4px; flex-wrap: wrap; }
 
 /* plain cloth-mat panel for the actual play surfaces — no sci-fi pattern,
    just a slightly recessed dark rectangle like a printed zone on a mat */
 .hex-field {
   background: rgba(0,0,0,0.28);
-  border: 1px solid var(--holo-line); border-radius: 8px; padding: 8px;
+  border: 1px solid var(--holo-line); border-radius: 8px; padding: 5px;
   box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
 }
-.hex-slot-row { display: flex; gap: 6px; flex-wrap: wrap; min-height: 68px; }
-.hand-zone { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 6px 8px; }
+.hex-slot-row { display: flex; gap: 4px; flex-wrap: wrap; min-height: 52px; }
+.hand-zone { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 4px 6px; }
 
 .card-chip {
   background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-  padding: 4px; cursor: pointer; width: 96px; user-select: none;
+  padding: 3px; cursor: pointer; width: 78px; user-select: none;
   /* directional shadow — a light source up-and-left, like the WebGL demo's key light */
   box-shadow: 3px 6px 10px -2px rgba(0,0,0,0.6), -1px -1px 0 rgba(255,240,210,0.05) inset;
   transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
@@ -107,10 +107,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .card-chip.suspended { opacity: 0.55; transform: rotate(-4deg); }
 .card-chip.suspended:hover { transform: rotate(-4deg) translateY(-10px) scale(1.06); }
 .card-chip.dragging { opacity: 0.3; }
-.card-chip img { width: 100%; border-radius: 4px; display: block; margin-bottom: 3px; pointer-events: none; }
-.card-chip .nm { font-weight: 600; font-size: 11px; line-height: 1.2; }
-.card-chip .meta { color: var(--muted); font-size: 10px; }
-.stack-src { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.card-chip img { width: 100%; border-radius: 4px; display: block; margin-bottom: 2px; pointer-events: none; }
+.card-chip .nm { font-weight: 600; font-size: 10px; line-height: 1.15; }
+.card-chip .meta { color: var(--muted); font-size: 9px; }
+.stack-src { font-size: 9px; color: var(--muted); margin-top: 1px; }
 
 /* fanned-hand look — alternating tilt/lift per card, like cards held in hand */
 .hand-list .card-chip { transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease; }
@@ -121,7 +121,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .hand-list .card-chip:nth-child(5n+5) { transform: rotate(3.5deg) translateY(2px); }
 .hand-list .card-chip:hover { transform: translateY(-10px) scale(1.06) !important; }
 
-.empty-slot { color: var(--muted); font-size: 12px; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; width: 96px; height: 60px; display:flex; align-items:center; justify-content:center; text-align: center; box-shadow: inset 0 2px 6px rgba(0,0,0,0.5); }
+.empty-slot { color: var(--muted); font-size: 11px; padding: 6px; border: 1px dashed var(--border); border-radius: 6px; width: 78px; height: 48px; display:flex; align-items:center; justify-content:center; text-align: center; box-shadow: inset 0 2px 6px rgba(0,0,0,0.5); }
 .empty-slot.drop-hover, .drop-zone.drop-hover { border-color: var(--ok) !important; background: rgba(87,176,106,0.08); }
 .player-header.drop-hover { outline: 2px dashed var(--danger); }
 
@@ -154,7 +154,7 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 #app.log-open .actions { margin-right: 300px; }
 
 /* small overlay badge on a stack's card art — dropping a hand card here links instead of digivolving */
-.stack-wrap { position: relative; width: 96px; }
+.stack-wrap { position: relative; width: 78px; }
 .link-badge {
   position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%;
   background: rgba(6,16,30,0.9); border: 1px solid var(--holo-accent); color: var(--holo-accent);
