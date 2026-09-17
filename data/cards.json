@@ -1,0 +1,461 @@
+{
+  "EX9-058": {
+    "id": "EX9-058", "nameKo": "가지몬", "nameJa": "ガジモン", "category": "digimon",
+    "level": 3, "colors": ["purple"], "cost": 3, "dp": 1000, "form": "성장기",
+    "types": ["바이러스종"], "traits": ["哺乳類型", "DM", "Ver.5"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["purple"], "level": 2 }, "cost": 0 },
+      { "kind": "special", "req": { "trait": "DM", "level": 2 }, "cost": 0, "text": "특징에 DM을 가진 Lv.2" }
+    ],
+    "effects": {
+      "onPlay": "덱 위 3장 오픈. DM 특징 카드 1장 핸드로, Ver.5 특징 카드 1장을 DM 특징 자신 디지몬의 진화원 밑에 배치. 나머지는 덱 밑으로.",
+      "inherited": "≪도련즈≫ (이 디지몬만 배틀에서 소멸 시, 상대 디지몬도 소멸)"
+    }
+  },
+  "BT3-077": {
+    "id": "BT3-077", "nameKo": "가지몬", "nameJa": "ガジモン", "category": "digimon",
+    "level": 3, "colors": ["purple"], "cost": 3, "dp": 2000, "form": "성장기",
+    "types": ["바이러스종"], "traits": ["哺乳類型"],
+    "evo": [ { "kind": "normal", "req": { "colors": ["purple"], "level": 2 }, "cost": 0 } ],
+    "effects": { "always": "[양쪽 턴] 상대는 테이머 효과 외에 메모리를 얻을 수 없다." }
+  },
+  "BT9-070": {
+    "id": "BT9-070", "nameKo": "가지몬X항체", "nameJa": "ガジモン:X抗体", "category": "digimon",
+    "level": 3, "colors": ["purple"], "cost": 3, "dp": 3000, "form": "성장기",
+    "types": ["바이러스종"], "traits": ["哺乳類型", "X抗体"],
+    "evo": [ { "kind": "special", "req": { "name": "가지몬", "level": 3 }, "cost": 0, "text": "「가지몬」에서" } ],
+    "effects": { "onDigivolve": "덱 위 3장 파기." }
+  },
+  "BT16-082": {
+    "id": "BT16-082", "nameKo": "우콘몬", "nameJa": "ウッコモン", "category": "digimon",
+    "level": 3, "colors": ["white"], "cost": 3, "dp": 2000, "form": "성장기",
+    "types": ["프리"], "traits": ["古代妖精型"],
+    "evo": [ { "kind": "normal", "req": { "colors": ["any"], "level": 2 }, "cost": 1 } ],
+    "effects": { "onYourTurnOncePerTurn": "자신의 디지몬이 사육→배틀 이동 시, 덱 위 3장 오픈해서 디지몬/테이머 1장 핸드로. 나머지 덱 밑. 그 후 사육 에어리어에 부화 가능." }
+  },
+  "BT18-013": {
+    "id": "BT18-013", "nameKo": "델타몬", "nameJa": "デルタモン", "category": "digimon",
+    "level": 4, "colors": ["red", "purple"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "types": ["바이러스종"], "traits": ["合成型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["red", "purple"], "level": 3 }, "cost": 3 },
+      { "kind": "special", "req": { "names": ["가지몬", "기자몬"] }, "cost": 2, "text": "「가지몬」/「기자몬」" }
+    ],
+    "effects": {
+      "onPlayOrDigivolve": "≪돌진≫ 핸드 1장 파기 → 트래시에서 合成型/邪神型 카드 1장 핸드로.",
+      "inherited": "≪도련즈≫"
+    }
+  },
+  "BT19-069": {
+    "id": "BT19-069", "nameKo": "델타몬", "nameJa": "デルタモン", "category": "digimon",
+    "level": 4, "colors": ["purple", "black"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "types": ["바이러스종"], "traits": ["合成型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["purple", "black"], "level": 3 }, "cost": 3 },
+      { "kind": "special", "req": { "names": ["가지몬", "기자몬"] }, "cost": 2, "text": "「가지몬」/「기자몬」" }
+    ],
+    "effects": {
+      "onPlayDigivolveOrDelete": "핸드 1장 파기 → Lv.4 이하 상대 디지몬 1체 소멸.",
+      "inherited": "≪블로커≫"
+    }
+  },
+  "BT18-015": {
+    "id": "BT18-015", "nameKo": "키메라몬", "nameJa": "キメラモン", "category": "digimon",
+    "level": 5, "colors": ["red", "purple"], "cost": 8, "dp": 8000, "form": "완전체",
+    "types": ["데이터종"], "traits": ["合成型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["red", "purple"], "level": 4 }, "cost": 4 },
+      { "kind": "special", "req": { "trait": "合成型", "level": 4 }, "cost": 3 }
+    ],
+    "effects": {
+      "onDigivolveOrAttack": "자신 디지몬 1체 소멸 → 상대 최저 DP 디지몬 1체 소멸.",
+      "onDelete": "무겐드라몬 1체(필드)+키메라몬 1장(트래시)으로 밀레니아몬으로 조그레스 진화 가능(핸드로).",
+      "inherited": "≪S어택+1≫"
+    }
+  },
+  "BT19-070": {
+    "id": "BT19-070", "nameKo": "키메라몬", "nameJa": "キメラモン", "category": "digimon",
+    "level": 5, "colors": ["purple", "red"], "cost": 8, "dp": 8000, "form": "완전체",
+    "types": ["데이터종"], "traits": ["合成型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["purple", "red"], "level": 4 }, "cost": 4 },
+      { "kind": "special", "req": { "trait": "合成型", "level": 4 }, "cost": 3 }
+    ],
+    "specialPlay": { "kind": "digixros", "text": "디지크로스-1: 카드번호 다른 合成型 Lv.4 카드 3장" },
+    "effects": {
+      "onPlayOrDigivolve": "자신 디지몬 1체 소멸 → 상대 Lv.3/4/5 디지몬 각 1체씩 소멸.",
+      "onDelete": "자신 紫/赤 Lv.4이하 디지몬 1체 소멸 → 트래시의 무겐드라몬 1장 코스트 없이 등장.",
+      "inherited": "≪S어택+1≫"
+    }
+  },
+  "BT18-073": {
+    "id": "BT18-073", "nameKo": "무겐드라몬", "nameJa": "ムゲンドラモン", "category": "digimon",
+    "level": 6, "colors": ["black", "purple"], "cost": 11, "dp": 11000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["マシーン型", "合成型(룰)"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["black", "purple"], "level": 5 }, "cost": 3 },
+      { "kind": "special", "req": { "trait": "合成型", "level": 5 }, "cost": 3 }
+    ],
+    "effects": {
+      "playCostReduction": "合成型 자신 디지몬 1체 소멸 → 등장코스트 -4.",
+      "onPlayOrDigivolve": "상대 디지몬 전부 ≪퇴화1≫.",
+      "onDelete": "자신 키메라몬 1체(필드)+무겐드라몬 1장(트래시)으로 밀레니아몬 조그레스 진화 가능.",
+      "inherited": "[상대 턴][턴1회] 상대 디지몬 공격 시 대상을 合成型/邪神型 자신 디지몬으로 변경 가능."
+    }
+  },
+  "BT19-065": {
+    "id": "BT19-065", "nameKo": "무겐드라몬", "nameJa": "ムゲンドラモン", "category": "digimon",
+    "level": 6, "colors": ["black", "purple"], "cost": 11, "dp": 11000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["マシーン型", "合成型(룰)"],
+    "evo": [ { "kind": "normal", "req": { "colors": ["black", "purple"], "level": 5 }, "cost": 3 } ],
+    "specialPlay": { "kind": "digixros", "text": "디지크로스-1: 카드번호 다른 サイボーグ型/合成型 Lv.5이하 카드 5장" },
+    "effects": {
+      "onPlayOrDigivolve": "Lv.5 이하 디지몬 1체 소멸.",
+      "onDelete": "트래시의 サイボーグ型/合成型 Lv.5이하 카드 1장 코스트 없이 등장.",
+      "inherited": "[상대 턴][턴1회] 상대 디지몬 공격 시 대상을 合成型/邪神型 자신 디지몬으로 변경 가능."
+    }
+  },
+  "BT19-101": {
+    "id": "BT19-101", "nameKo": "즈위드밀레니아몬", "nameJa": "ズィードミレニアモン", "category": "digimon",
+    "level": 7, "colors": ["red", "purple", "black"], "cost": 16, "dp": 16000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["邪神型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["red", "purple"], "level": 6 }, "cost": 6 },
+      { "kind": "special", "req": { "name": "문밀레니아몬" }, "cost": 2, "text": "「문밀레니아몬」에서" }
+    ],
+    "effects": {
+      "keywordEndOfTurn": "≪오버클록(合成型)≫ 자신 턴 종료 시 토큰/合成型 자신 디지몬 1체 소멸 → 레스트 없이 플레이어 공격.",
+      "onPlayDigivolveOrAttack": "상대 트래시 디지몬 카드 1장 덱 위로 → 상대 디지몬 1체 덱 밑으로.",
+      "always": "[양쪽 턴] 진화원 없는 이 디지몬은 레스트 불가, 상대 효과 안 받음."
+    }
+  },
+  "BT18-019": {
+    "id": "BT18-019", "nameKo": "밀레니아몬", "nameJa": "ミレニアモン", "category": "digimon",
+    "level": 7, "colors": ["red", "black"], "cost": 14, "dp": 14000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["合成型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["red", "black"], "level": 6 }, "cost": 4 },
+      { "kind": "jogress", "req": { "names": ["키메라몬", "무겐드라몬"] }, "cost": 0, "text": "조그레스: 키메라몬+무겐드라몬" }
+    ],
+    "specialPlay": { "kind": "digixros", "text": "디지크로스-2: 키메라몬×무겐드라몬" },
+    "effects": {
+      "onPlayOrDigivolve": "상대 디지몬 1체 소멸. 조그레스로 왔다면, 상대 트래시의 서로 다른 Lv 카드를 덱 위로 되돌린 수만큼 메모리+1.",
+      "onDelete": "트래시의 키메라몬+무겐드라몬 각 1장 덱 밑으로 → 트래시의 밀레니아몬 1장 코스트 없이 등장."
+    }
+  },
+  "P-220": {
+    "id": "P-220", "nameKo": "밀레니아몬", "nameJa": "ミレニアモン", "category": "digimon", "promo": true,
+    "level": 7, "colors": ["red", "black"], "cost": 14, "dp": 14000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["合成型", "DM", "Ver.3", "Ver.5"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["red", "black"], "level": 6 }, "cost": 4 },
+      { "kind": "special", "req": { "name": "키메라몬" }, "cost": 6, "text": "「키메라몬」에서" },
+      { "kind": "jogress", "req": { "names": ["키메라몬", "무겐드라몬"] }, "cost": 0, "text": "조그레스: 키메라몬+무겐드라몬" }
+    ],
+    "specialPlay": { "kind": "assembly", "reduction": 6, "req": { "traits": ["合成型", "Ver.3", "Ver.5"], "distinctLevels": 3 }, "text": "아세ンブ리-6: 合成型/Ver.3/Ver.5 특징, 서로 다른 레벨 3장" },
+    "effects": {
+      "keywords": ["재기동", "블로커"],
+      "onPlayOrDigivolve": "상대 디지몬 1체 ≪퇴화2≫. 그 후 디지몬 1체 소멸 가능.",
+      "onDelete": "트래시의 合成型/邪神型/DM 카드 3장 덱 밑으로 → 트래시의 合成型/Ver.3/Ver.5 Lv.6이하 카드 2장(레벨 겹치지 않게) 코스트 없이 등장."
+    }
+  },
+  "BT19-075": {
+    "id": "BT19-075", "nameKo": "문밀레니아몬", "nameJa": "ムーンミレニアモン", "category": "digimon",
+    "level": 7, "colors": ["purple"], "cost": 15, "dp": 15000, "form": "궁극체",
+    "types": ["바이러스종"], "traits": ["邪神型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["purple"], "level": 6 }, "cost": 5 },
+      { "kind": "special", "req": { "name": "밀레니아몬" }, "cost": 2, "text": "「밀레니아몬」에서" }
+    ],
+    "effects": {
+      "onPlayOrDigivolve": "상대는 핸드가 5장 되도록 파기. 2장당 상대 테이머 1체 소멸.",
+      "always1": "[양쪽 턴] 이 디지몬이 배틀 에어리어를 떠날 때, 合成型 자신 디지몬 1체 소멸 → 안 떠남.",
+      "always2": "[양쪽 턴][턴1회] 다른 디지몬/테이머 소멸 시, 상대 시큐리티 맨 위 1장 파기."
+    }
+  },
+  "EX11-055": {
+    "id": "EX11-055", "nameKo": "호라이지 치토세", "nameJa": "蓬来寺チトセ", "category": "tamer",
+    "colors": ["red", "purple"], "cost": 4, "traits": ["リベレイター"],
+    "effects": {
+      "onPlayAndMainStart": "핸드에서 合成型/邪神型 카드 1장 파기 → 1드로우, 메모리+1.",
+      "always": "[양쪽 턴] 合成型/邪神型 자신 디지몬 소멸 시, 이 테이머 레스트 → 핸드의 가지몬/기자몬 1장 코스트 없이 등장.",
+      "security": "이 카드를 코스트 없이 등장."
+    }
+  },
+  "EX1-066": {
+    "id": "EX1-066", "nameKo": "아나로그의 소년", "nameJa": "アナログの少年", "category": "tamer",
+    "colors": ["white"], "cost": 2,
+    "effects": {
+      "onPlay": "덱 위 3장 오픈, 디지몬 카드 1장 핸드로, 나머지 파기.",
+      "always": "[양쪽 턴] 진화원 있는 Lv.5+ 자신 디지몬 소멸 시, 이 테이머 레스트 가능 → 메모리+1, 사육 에어리어에 부화.",
+      "security": "이 카드를 코스트 없이 등장."
+    }
+  },
+  "BT8-097": {
+    "id": "BT8-097", "nameKo": "홍염", "nameJa": "紅焔", "category": "option",
+    "colors": ["red"], "cost": 6,
+    "effects": {
+      "costReduction": "상대 디지몬 1체당 핸드에서 사용 코스트 -1.",
+      "main": "DP6000이하 상대 디지몬 전부 소멸. 다음 상대 턴 종료까지 상대는 효과로 디지몬 등장 불가.",
+      "security": "이 카드의 [메인] 효과 발휘.",
+      "note": "2022-08-19 에라타로 처리 순서 변경 이력 있음"
+    }
+  },
+  "P-205": {
+    "id": "P-205", "nameKo": "광기의 합성마수", "nameJa": "狂気の合成魔獣", "category": "option", "promo": true,
+    "colors": ["purple"], "cost": 3, "traits": ["DM"],
+    "effects": {
+      "always": "DM 특징 자신 디지몬/테이머 있으면 색 조건 무시 가능.",
+      "main": "≪2드로우≫, 핸드 2장 파기. 그 후 이 카드를 배틀 에어리어에 배치.",
+      "mainDelay": "≪딜레이≫ 등장코스트7이하 자신 디지몬 1체 소멸 → 트래시의 키메라몬/밀레니아몬 명칭 카드 1장 코스트-3로 등장.",
+      "security": "≪2드로우≫, 핸드 2장 파기. 그 후 이 카드를 배틀 에어리어에 배치."
+    }
+  },
+  "P-193": {
+    "id": "P-193", "nameKo": "사・신・강・림!!", "nameJa": "邪・神・顕・現！！", "category": "option", "promo": true,
+    "colors": ["purple"], "cost": 3, "traits": ["邪神型"],
+    "effects": {
+      "main": "핸드에서 合成型/邪神型 카드 1장 파기 → 2드로우. 그 후 배틀 에어리어에 배치.",
+      "endOfTurnDelay": "≪딜레이≫ 자신 밀레니아몬 1체 소멸 → 핸드/트래시의 邪神型 카드 1장 코스트 없이 등장.",
+      "security": "이 카드의 [메인] 효과 발휘."
+    }
+  },
+  "BT19-099": {
+    "id": "BT19-099", "nameKo": "사・신・강・림!!", "nameJa": "邪・神・降・臨！！", "category": "option",
+    "colors": ["purple"], "cost": 4, "traits": ["邪神型"],
+    "effects": {
+      "main": "트래시의 合成型 카드 1장 등장코스트-4로 등장 가능. 그 후 배틀 에어리어에 배치.",
+      "always": "[양쪽 턴] 밀레니아몬 명칭 자신 디지몬이 배틀 에어리어를 떠날 때 ≪딜레이≫: 핸드/트래시의 그 디지몬보다 등장코스트 1높은 邪神型 카드 1장 코스트 없이 등장.",
+      "security": "이 카드를 배틀 에어리어에 배치."
+    }
+  },
+  "BT15-006": {
+    "id": "BT15-006", "nameKo": "푸치메라몬", "nameJa": "プチメラモン", "category": "digitama",
+    "level": 2, "colors": ["purple"], "types": ["火炎型"], "form": "유년기",
+    "effects": { "inherited": "[소멸시] 핸드에서 Lv.5+ 카드 1장 파기 → 2드로우." }
+  },
+  "BT16-006": {
+    "id": "BT16-006", "nameKo": "큐피몬", "nameJa": "キュピモン", "category": "digitama",
+    "level": 2, "colors": ["purple"], "types": ["小天使型"], "form": "유년기",
+    "effects": { "inherited": "[소멸시] 핸드 1장 파기 → 메모리+1." }
+  },
+
+  "BT14-033": {
+    "id": "BT14-033", "nameKo": "파피몬", "nameJa": "パタモン", "category": "digimon",
+    "level": 3, "colors": ["yellow"], "cost": 3, "dp": 1000, "form": "성장기",
+    "traits": [],
+    "evo": [ { "kind": "normal", "req": { "colors": ["yellow"], "level": 2 }, "cost": 0 } ],
+    "effects": {
+      "mainPhaseStart": "시큐리티 서치 → 옐로우+백신 특징 디지몬으로 코스트 없이 진화 가능. 그 후 시큐리티 셔플. 진화했다면 핸드의 옐로우+백신 카드 1장을 시큐리티 맨 밑에.",
+      "inherited": "[자신 턴][턴1회] 시큐리티에 카드 추가될 때 메모리+1."
+    }
+  },
+  "BT25-031": {
+    "id": "BT25-031", "nameKo": "파피몬", "nameJa": "パタモン", "category": "digimon",
+    "level": 3, "colors": ["yellow"], "cost": 3, "dp": 2000, "form": "성장기",
+    "traits": ["TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 2 }, "cost": 0 },
+      { "kind": "special", "req": { "trait": "TS", "level": 2 }, "cost": 0 }
+    ],
+    "effects": {
+      "onPlay": "덱 위 3장 오픈, 엔젤/대천사/삼대천사/사대용 특징 1장 + TS 특징 1장 핸드로, 나머지 덱 밑.",
+      "inherited": "≪배리어≫ (배틀에서 소멸 시, 시큐리티 맨 위 1장 파기로 소멸 안 함)"
+    }
+  },
+  "P-197": {
+    "id": "P-197", "nameKo": "파피몬(TS프로모)", "nameJa": "パタモン", "category": "digimon", "promo": true,
+    "level": 3, "colors": ["yellow"], "cost": 3, "dp": 1000, "form": "성장기",
+    "traits": ["TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 2 }, "cost": 0 },
+      { "kind": "special", "req": { "trait": "TS", "level": 2 }, "cost": 0 }
+    ],
+    "effects": {
+      "mainPhaseStartIfMemoryLE4": "메모리 4이하면 엔젤/TS 특징 카드로 코스트 없이 진화 가능.",
+      "inherited": "[공격시][턴1회] 상대 디지몬 1체 -2000DP (그 턴)"
+    }
+  },
+  "BT24-031": {
+    "id": "BT24-031", "nameKo": "엘레키몬", "nameJa": "エレキモン", "category": "digimon",
+    "level": 3, "colors": ["yellow"], "cost": 3, "dp": 1000, "form": "성장기",
+    "traits": ["TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 2 }, "cost": 0 },
+      { "kind": "special", "req": { "trait": "TS", "level": 2 }, "cost": 0 }
+    ],
+    "effects": {
+      "onPlay": "덱 위 3장 오픈, 이리아드 특징 1장 + TS 특징 1장 핸드로, 나머지 덱 밑.",
+      "inherited": "[공격시][턴1회] 시큐리티 맨 위 1장 핸드로. 시큐리티 0장이면 ≪회복+1≪덱≫≫."
+    }
+  },
+  "BT24-034": {
+    "id": "BT24-034", "nameKo": "아기오몬", "nameJa": "アイギオモン", "category": "digimon",
+    "level": 4, "colors": ["yellow"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "traits": ["신인형", "이리아스", "TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 3 }, "cost": 2 },
+      { "kind": "special", "req": { "name": "엘레키몬", "trait": "TS", "level": 3 }, "cost": 2 }
+    ],
+    "effects": {
+      "keywords": ["배리어"],
+      "onMoveOrPlayOrDigivolve": "시큐리티 맨 위 1장 핸드로 → TS 테이머 1장 코스트 없이 플레이 가능(동명 테이머 있으면 불가).",
+      "inherited": "≪배리어≫"
+    }
+  },
+  "BT25-034": {
+    "id": "BT25-034", "nameKo": "엔젤몬", "nameJa": "エンジェモン", "category": "digimon",
+    "level": 4, "colors": ["yellow"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "traits": [],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 3 }, "cost": 2 },
+      { "kind": "special", "req": { "trait": "TS", "level": 3 }, "cost": 2 }
+    ],
+    "effects": {
+      "whenTrashedFromSecurityByEffect": "Lv.4이하 엔젤/이리아스 카드 1장 핸드에서 코스트 없이 플레이 가능.",
+      "keywords": ["어센션(소멸 시 시큐리티 맨 위로)"]
+    }
+  },
+  "BT23-027": {
+    "id": "BT23-027", "nameKo": "엔젤몬(CS)", "nameJa": "エンジェモン", "category": "digimon",
+    "level": 4, "colors": ["yellow", "blue"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "types": ["Vaccine"], "traits": ["Angel", "Hudie", "Cyber Sleuth"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow", "black"], "level": 3 }, "cost": 3 },
+      { "kind": "special", "req": { "name": "파피몬" }, "cost": 2, "text": "「파피몬」에서" }
+    ],
+    "effects": {
+      "keywords": ["배리어"],
+      "onPlayOrDigivolve": "드로우1. 자신 턴이면 디지몬 2체를 손의 샤코몬으로 DNA진화 가능.",
+      "inherited": "≪배리어≫"
+    }
+  },
+  "BT25-037": {
+    "id": "BT25-037", "nameKo": "페가수스몬", "nameJa": "ペガススモン", "category": "digimon",
+    "level": 4, "colors": ["yellow", "blue"], "cost": 6, "dp": 6000, "form": "아머진화체",
+    "traits": ["聖獣型", "이리아스", "TS"],
+    "evo": [
+      { "kind": "special", "req": { "name": "파피몬", "trait": "TS", "level": 3 }, "cost": 2 },
+      { "kind": "normal", "req": { "colors": ["yellow", "blue"], "level": 3 }, "cost": 3 }
+    ],
+    "effects": {
+      "onPlayOrDigivolve": "시큐리티 맨 위 1장 핸드로. 그 후 엔젤/대천사/삼대천사/이리아스 디지몬 1장 또는 TS 테이머 1장을 시큐리티 맨 위/밑에.",
+      "keywords": ["아머퍼지"]
+    }
+  },
+  "BT24-058": {
+    "id": "BT24-058", "nameKo": "블림프몬", "nameJa": "ブリンプモン", "category": "digimon",
+    "level": 4, "colors": ["black"], "cost": 5, "dp": 5000, "form": "성숙기",
+    "traits": ["마시무형", "이리아스", "TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["black"], "level": 3 }, "cost": 2 },
+      { "kind": "special", "req": { "trait": "TS", "level": 3 }, "cost": 2 }
+    ],
+    "effects": {
+      "onPlayOrDigivolve": "덱 위 3장 오픈, 마시무형/사이보그/TS 카드 1장 핸드로 또는 해당 특징 자신 디지몬 진화원 맨 밑에. 나머지 덱 위/밑.",
+      "inherited": "≪재기동≫"
+    }
+  },
+  "BT25-040": {
+    "id": "BT25-040", "nameKo": "홀리엔젤몬", "nameJa": "マグナエンジェモン", "category": "digimon",
+    "level": 5, "colors": ["yellow"], "cost": 7, "dp": 7000, "form": "완전체",
+    "traits": [],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow"], "level": 4 }, "cost": 3 },
+      { "kind": "special", "req": { "trait": "TS", "level": 4 }, "cost": 3 }
+    ],
+    "effects": {
+      "whenTrashedFromSecurityByEffect": "Lv.4이하 엔젤/이리아스 카드 1장 핸드에서 코스트 없이 플레이 가능.",
+      "keywords": ["어센션"],
+      "onPlayOrDigivolve": "시큐리티 맨 위/밑 1장 파기 → 상대 디지몬 1체 -8000DP (상대 턴까지).",
+      "inherited": "[모든 턴][턴1회] 시큐리티 제거될 때 상대 디지몬 1체 -4000DP (그 턴)"
+    }
+  },
+  "BT25-038": {
+    "id": "BT25-038", "nameKo": "샤코몬", "nameJa": "シャッコウモン", "category": "digimon",
+    "level": 5, "colors": ["yellow", "black"], "cost": 8, "dp": 8000, "form": "완전체",
+    "traits": ["돌연변이형", "이리아스", "TS"], "ruleTraits": ["天使型"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow", "black"], "level": 4 }, "cost": 3 },
+      { "kind": "special", "req": { "trait": "TS", "level": 4 }, "cost": 3 },
+      { "kind": "dna", "req": { "colorA": "yellow", "levelA": 4, "colorB": ["blue", "black"], "levelB": 4 }, "cost": 0 }
+    ],
+    "effects": {
+      "onPlayOrDigivolve": "엔젤/대천사/삼대천사/이리아스 카드 1장(핸드 또는 자신 진화원 카드)을 시큐리티 맨 위/밑에. DNA진화라면 양쪽 시큐리티 맨 위 1장씩 파기.",
+      "inherited": "[모든 턴][턴1회] 시큐리티 제거될 때 상대 디지몬 1체 ≪퇴화1≫"
+    }
+  },
+  "BT24-030": {
+    "id": "BT24-030", "nameKo": "넵튠몬", "nameJa": "ネプトゥーンモン", "category": "digimon",
+    "level": 6, "colors": ["blue", "black"], "cost": 12, "dp": 12000, "form": "궁극체",
+    "traits": [],
+    "evo": [
+      { "kind": "special", "req": { "traitAny": ["Aqua", "Sea Animal", "TS"], "level": 5 }, "cost": 3 },
+      { "kind": "normal", "req": { "colors": ["blue", "black"], "level": 5 }, "cost": 4 }
+    ],
+    "effects": {
+      "playCostReduction": "상대 디지몬 2체 이상이면 등장코스트-5.",
+      "onPlayOrDigivolve": "상대 디지몬 중 진화원 최소인 것들 전부 덱 밑으로.",
+      "onSuspendOncePerTurn": "이 디지몬 서스펜드 시 언서스펜드 가능.",
+      "always": "[모든 턴] TS/Aqua/SeaAnimal 자신 디지몬이 상대 효과로 떠날 상황 → 이 디지몬 서스펜드로 안 떠남."
+    }
+  },
+  "BT25-044": {
+    "id": "BT25-044", "nameKo": "주노몬", "nameJa": "ユノモン", "category": "digimon",
+    "level": 6, "colors": ["yellow", "purple"], "cost": 12, "dp": 12000, "form": "궁극체",
+    "traits": ["이리아스"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow", "purple"], "level": 5 }, "cost": 4 },
+      { "kind": "special", "req": { "traitAny": ["Angel", "Archangel", "TS"], "level": 5 }, "cost": 3 }
+    ],
+    "effects": {
+      "playCostReduction": "양쪽 시큐리티 합 6장 이하면 등장코스트-5.",
+      "onPlayOrDigivolve": "다른 디지몬 1체를 시큐리티 맨 위에 → 양쪽 시큐리티 맨 위 1장씩 파기.",
+      "inherited": "[모든 턴][턴1회] 시큐리티 제거될 때, 코스트8이하 엔젤/대천사/이리아드 카드 1장 핸드/트래시에서 코스트 없이 플레이 가능."
+    }
+  },
+  "BT24-041": {
+    "id": "BT24-041", "nameKo": "미네르바몬", "nameJa": "ミネルヴァモン", "category": "digimon",
+    "level": 6, "colors": ["yellow", "black"], "cost": 12, "dp": 12000, "form": "궁극체",
+    "traits": ["신인형", "올림포스십이신", "이리아스", "TS"],
+    "evo": [
+      { "kind": "normal", "req": { "colors": ["yellow", "black"], "level": 5 }, "cost": 4 },
+      { "kind": "special", "req": { "traitAny": ["수인형", "마룡형", "TS"], "level": 5 }, "cost": 3 }
+    ],
+    "effects": {
+      "playCostReduction": "필드에 이리아스 특징 자신 디지몬/테이머 있으면 등장코스트 -5.",
+      "onPlayDigivolveOrDelete": "핸드의 이리아스 특징 등장코스트5이하 카드 1장 코스트 없이 등장 → 상대 디지몬 1체를 자신 디지몬 수만큼 ≪퇴화≫.",
+      "opponentTurn": "이리아스 특징 자신 디지몬 전부 ≪재기동≫+≪블로커≫ 획득."
+    }
+  },
+  "P-207": {
+    "id": "P-207", "nameKo": "미네르바몬(구판)", "nameJa": "ミネルヴァモン", "category": "digimon", "promo": true,
+    "level": 6, "colors": ["yellow", "purple"], "cost": 12, "dp": 12000, "form": "궁극체",
+    "traits": [],
+    "evo": [ { "kind": "special", "req": { "traitAny": ["Beastkin", "TS"], "level": 5 }, "cost": 3 } ],
+    "effects": {
+      "keywords": ["얼라이언스"],
+      "onPlayOrDigivolve": "Lv.4이하 Avian/Bird/Beast/Animal/Sovereign(SeaAnimal제외)/TS 카드 1장 핸드에서 코스트 없이 등장.",
+      "onAttackOncePerTurn": "Lv.4이하 같은 조건 카드 1장 트래시에서 코스트 없이 등장."
+    }
+  },
+  "BT24-088": {
+    "id": "BT24-088", "nameKo": "시로키 아즈나", "nameJa": "城木明日奈", "category": "tamer",
+    "colors": ["purple"], "cost": 3, "traits": ["TS"],
+    "effects": {
+      "startOfYourTurnIfMemoryLE4": "이 테이머를 덱 밑으로 → 시로키 아즈나 1장 또는 TS/삼총사 텍스트 Lv.4이하 카드 1장 트래시에서 코스트 없이 등장.",
+      "onPlay": "TS/삼총사 텍스트 카드 1장 핸드 파기 → 2드로우.",
+      "security": "이 카드를 코스트 없이 등장."
+    }
+  },
+  "BT4-104": {
+    "id": "BT4-104", "nameKo": "절광충", "nameJa": "絶光衝", "category": "option",
+    "colors": ["yellow"], "cost": 0,
+    "effects": { "main": "시큐리티 맨 위 1장 파기 → 메모리+2. (시큐리티 0장이어도 메모리는 획득)" }
+  },
+  "BT15-003": {
+    "id": "BT15-003", "nameKo": "냐로몬", "nameJa": "ニャロモン", "category": "digitama",
+    "level": 2, "colors": ["yellow"], "form": "유년기", "types": ["레서형"],
+    "effects": { "inheritedAndOwn": "[공격시][턴1회] 시큐리티 맨 위/밑 1장 파기 → 메모리+1." }
+  }
+}

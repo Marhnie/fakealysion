@@ -1,0 +1,684 @@
+import * as S from './state.js';
+import * as E from './engine.js';
+import * as Effects from './effects.js';
+
+const app = document.getElementById('app');
+let state = null;
+let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
+let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
+
+function h(tag, attrs = {}, children = []) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined) continue;
+    if (k === 'onClick') el.addEventListener('click', v);
+    else if (k === 'className') el.className = v;
+    else if (typeof v === 'boolean') el[k] = v; // disabled/checked/etc — set as DOM property, not attribute
+    else if (/^on[a-z]/.test(k) && typeof v === 'function') el[k] = v; // ondragover/ondrop/etc — assign as IDL property
+    else el.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) {
+    if (c == null) continue;
+    el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return el;
+}
+
+async function init() {
+  await S.loadData();
+  renderSetup();
+}
+
+function renderSetup() {
+  app.innerHTML = '';
+  app.appendChild(h('div', { className: 'topbar' }, [
+    h('b', {}, '디지몬 카드게임 시뮬레이터'),
+  ]));
+  const box = h('div', { className: 'board' }, [
+    h('div', { className: 'player-panel' }, [
+      h('div', { className: 'section-title' }, '새 게임'),
+      h('div', { className: 'actions-row' }, [
+        h('button', { className: 'primary', onClick: startNewGame }, '덱1 vs 덱2로 새 게임 시작'),
+      ]),
+    ]),
+  ]);
+  app.appendChild(box);
+}
+
+let mulliganDecided = { p1: false, p2: false };
+
+function startNewGame() {
+  state = S.newGame('deck1', 'deck2');
+  E.drawOpeningHand(state, 'p1');
+  E.drawOpeningHand(state, 'p2');
+  mulliganDecided = { p1: false, p2: false };
+  renderMulliganStage();
+}
+
+function renderMulliganStage() {
+  app.innerHTML = '';
+  app.appendChild(h('div', { className: 'topbar' }, [h('b', {}, '오프닝 핸드 확인 / 멀리건')]));
+  const panels = ['p1', 'p2'].map(p => {
+    const pl = state.players[p];
+    return h('div', { className: 'player-panel' }, [
+      h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
+      h('div', { className: 'hand-list' }, pl.hand.map(id => cardChip(id, {}))),
+      h('div', { className: 'actions-row' }, [
+        mulliganDecided[p]
+          ? h('span', {}, '결정 완료 ✔')
+          : h('button', {
+              className: 'primary',
+              onClick: () => { E.mulligan(state, p); mulliganDecided[p] = true; afterMulliganCheck(); },
+            }, '멀리건 (새로 5장)'),
+        !mulliganDecided[p] && h('button', {
+          onClick: () => { mulliganDecided[p] = true; afterMulliganCheck(); },
+        }, '이 핸드 유지'),
+      ].filter(Boolean)),
+    ]);
+  });
+  app.appendChild(h('div', { className: 'board' }, panels));
+}
+
+function afterMulliganCheck() {
+  if (mulliganDecided.p1 && mulliganDecided.p2) {
+    E.setSecurityStacks(state);
+    const first = E.coinFlip();
+    E.beginGame(state, first);
+    render();
+  } else {
+    renderMulliganStage();
+  }
+}
+
+// ---------- render ----------
+
+function render() {
+  if (!state) return renderSetup();
+  E.autoAdvance(state);
+  app.innerHTML = '';
+  app.appendChild(renderTopbar());
+  app.appendChild(renderBoard());
+  app.appendChild(renderActions());
+  app.appendChild(renderLog());
+}
+
+function renderTopbar() {
+  const pct = ((state.memory + 10) / 20) * 100;
+  const bar = h('div', { className: 'gauge-track' }, [
+    h('div', { className: 'gauge-mid' }),
+    h('div', { className: 'gauge-fill', style: '' }),
+  ]);
+  bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? '50%' : `${pct}%`;
+  bar.querySelector('.gauge-fill').style.width = `${Math.abs(state.memory) / 20 * 100}%`;
+  if (state.winner) {
+    return h('div', { className: 'topbar' }, [h('b', {}, `게임 종료 — 승자: ${state.winner}`)]);
+  }
+  return h('div', { className: 'topbar' }, [
+    h('b', {}, `턴 ${state.turnNumber}`),
+    h('span', {}, `활성: ${state.activePlayer}`),
+    h('span', {}, `페이즈: ${state.phase}`),
+    bar,
+    h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
+    h('button', { onClick: () => { E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', {
+      className: 'danger', disabled: state.phase !== 'main',
+      onClick: () => { E.declarePass(state); render(); },
+    }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
+  ]);
+}
+
+function cardChip(cardId, opts = {}) {
+  const c = S.card(cardId);
+  const cls = ['card-chip'];
+  if (opts.selected) cls.push('selected');
+  if (opts.suspended) cls.push('suspended');
+  const meta = [c.level ? `Lv.${c.level}` : c.category, c.dp ? `DP${c.dp}` : null, c.cost != null ? `C${c.cost}` : null]
+    .filter(Boolean).join(' · ');
+  const attrs = { className: cls.join(' '), onClick: opts.onClick };
+  if (opts.draggable) {
+    attrs.draggable = true;
+    attrs.ondragstart = (e) => { dragData = opts.dragPayload; e.target.classList.add('dragging'); };
+    attrs.ondragend = (e) => { e.target.classList.remove('dragging'); };
+  }
+  if (opts.onDrop) {
+    attrs.ondragover = (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); };
+    attrs.ondragleave = (e) => { e.currentTarget.classList.remove('drop-hover'); };
+    attrs.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover'); opts.onDrop(dragData); };
+  }
+  return h('div', attrs, [
+    c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo, loading: 'lazy' }) : null,
+    h('div', { className: 'nm' }, c.nameKo),
+    h('div', { className: 'meta' }, meta),
+    opts.sourcesCount ? h('div', { className: 'stack-src' }, `진화원 ${opts.sourcesCount}장`) : null,
+  ]);
+}
+
+function renderStack(p, stack, zoneKind) {
+  const isSelected = sel.stack && sel.stack.uid === stack.uid;
+  const isOwnActiveBattle = p === state.activePlayer && zoneKind === 'battle' && !stack.suspended && state.phase === 'main';
+  return cardChip(stack.cardId, {
+    selected: isSelected,
+    suspended: stack.suspended,
+    sourcesCount: stack.sources.length,
+    draggable: isOwnActiveBattle,
+    dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
+    onDrop: (drag) => {
+      if (!drag) return;
+      if (drag.kind === 'hand' && drag.player === p && p === state.activePlayer && state.phase === 'main') {
+        const check = E.canNormalEvolve(stack.cardId, drag.cardId, stack.extraColors || []);
+        const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
+        const cost = Math.max(0, (check.ok ? check.cost : 0) + evoModDelta);
+        S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
+        E.checkAutoEndTurn(state);
+        dragData = null; render();
+      }
+    },
+    onClick: () => {
+      if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; }
+      else if (sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
+        sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
+      } else {
+        sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
+        sel.stack2 = null;
+      }
+      render();
+    },
+  });
+}
+
+function playFreshFromDrag(drag, p) {
+  if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
+  const cost = S.card(drag.cardId).cost || 0;
+  if (cost > 0) S.spendMemory(state, cost);
+  S.playDigimonFresh(state, drag.player, drag.idx);
+  E.checkAutoEndTurn(state);
+  dragData = null; render();
+}
+
+function renderPlayerPanel(p) {
+  const pl = state.players[p];
+  const isActive = state.activePlayer === p;
+  const canAttackThisPlayer = dragData && dragData.kind === 'stack' && dragData.player !== p;
+  const header = h('div', {
+    className: 'player-header',
+    ondragover: canAttackThisPlayer ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } : undefined,
+    ondragleave: canAttackThisPlayer ? (e) => e.currentTarget.classList.remove('drop-hover') : undefined,
+    ondrop: canAttackThisPlayer ? (e) => {
+      e.preventDefault(); e.currentTarget.classList.remove('drop-hover');
+      if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle') { attackFlow(dragData.player, dragData.uid); }
+      dragData = null;
+    } : undefined,
+  }, [
+    h('b', {}, p.toUpperCase()),
+    h('span', {}, pl.deckName),
+    h('span', {}, `덱 ${pl.deck.length}장`),
+    h('span', {}, `시큐리티 ${pl.security.length}장`),
+    h('span', {}, `트래시 ${pl.trash.length}장`),
+    h('span', {}, `디지타마덱 ${pl.digitamaDeck.length}장`),
+    canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 여기에 놓아서 이 플레이어 공격') : null,
+  ]);
+
+  const raisingZone = h('div', { className: 'zone' }, [
+    h('div', { className: 'zone-label' }, '사육 에어리어'),
+    pl.raising ? renderStack(p, pl.raising, 'raising') : h('div', { className: 'empty-slot' }, '비어있음'),
+  ]);
+
+  const battleZone = h('div', { className: 'zone drop-zone' }, [
+    h('div', { className: 'zone-label' }, '배틀 에어리어 (핸드카드를 여기로 드래그하면 신규 등장)'),
+    h('div', {
+      className: 'stack-list',
+      ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
+      ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
+      ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
+    }, pl.battle.length ? pl.battle.map(s => renderStack(p, s, 'battle')) : [h('div', { className: 'empty-slot' }, '비어있음')]),
+  ]);
+
+  const handZone = h('div', { className: 'zone', style: 'flex:1' }, [
+    h('div', { className: 'zone-label' }, `핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
+    h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
+      selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
+      draggable: p === state.activePlayer && state.phase === 'main',
+      dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
+      onClick: () => { sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id }; render(); },
+    }))),
+  ]);
+
+  return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, [
+    header,
+    h('div', { className: 'zone-row' }, [raisingZone, battleZone]),
+    handZone,
+  ]);
+}
+
+function renderBoard() {
+  if (state.winner) return h('div', { className: 'board' });
+  return h('div', { className: 'board' }, [
+    renderPlayerPanel('p2'),
+    renderPlayerPanel('p1'),
+  ]);
+}
+
+// ---------- action panel ----------
+
+function numInput(id, value = 1) {
+  return h('input', { type: 'number', id, value, min: '0' });
+}
+function val(id) { return Number(document.getElementById(id)?.value || 0); }
+
+// Best-effort pattern → one-click-action compiler over the OFFICIAL Korean
+// effect text. This is intentionally NOT a full NLP parser — natural-language
+// game text has too much conditional/branching structure to fully automate.
+// It recognizes the common, unconditional numeric patterns that make up a
+// large share of card text, and leaves everything else for manual handling
+// via the generic tools (which stay visible either way).
+function quickApplyButtonsFor(text, player) {
+  const opp = S.opponentOf(player);
+  const btns = [];
+  let m;
+
+  if ((m = text.match(/[≪《]\s*(\d+)\s*드로우\s*[≫》]/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { S.drawCards(state, player, n); render(); } }, `${player} ${n}드로우`));
+  }
+  if ((m = text.match(/메모리(?:를|을)?\s*\+\s*(\d+)/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { S.grantMemory(state, player, n); render(); } }, `${player} 메모리+${n}`));
+  }
+  if ((m = text.match(/메모리(?:를|을)?\s*-\s*(\d+)/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { S.grantMemory(state, player, -n); render(); } }, `${player} 메모리-${n}`));
+  }
+  if ((m = text.match(/(?:자신의\s*)?덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*파기/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { S.trashTopOfDeck(state, player, n); render(); } }, `${player} 덱 위 ${n}장 파기`));
+  }
+  if ((m = text.match(/상대(?:의)?\s*덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*파기/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { S.trashTopOfDeck(state, opp, n); render(); } }, `${opp}(상대) 덱 위 ${n}장 파기`));
+  }
+  if (/패(?:를)?\s*전부\s*파기|핸드(?:를)?\s*전부\s*파기/.test(text)) {
+    btns.push(h('button', { onClick: () => { const n = state.players[player].hand.length; for (let i=0;i<n;i++) S.trashFromHand(state, player, 0); render(); } }, `${player} 핸드 전부 파기`));
+  }
+  if ((m = text.match(/자신의\s*시큐리티(?:를)?\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*파기/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { for (let i=0;i<n;i++) S.trashTopSecurityByEffect(state, player); render(); } }, `${player} 자기 시큐리티 위 ${n}장 파기`));
+  }
+  if ((m = text.match(/상대(?:의)?\s*시큐리티(?:를)?\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*파기/))) {
+    const n = Number(m[1]);
+    btns.push(h('button', { onClick: () => { for (let i=0;i<n;i++) S.trashTopSecurityByEffect(state, opp); render(); } }, `${opp}(상대) 시큐리티 위 ${n}장 파기`));
+  }
+  if (/자신의\s*시큐리티(?:를)?\s*아래(?:에서)?\s*(?:부터)?\s*1\s*장(?:을)?\s*파기/.test(text)) {
+    btns.push(h('button', { onClick: () => { S.trashBottomSecurityByEffect(state, player); render(); } }, `${player} 자기 시큐리티 맨 밑 1장 파기`));
+  }
+  return btns;
+}
+
+async function ctxChoose(kind, payload) {
+  return new Promise(resolve => {
+    state.uiChoice = { kind, payload, resolve: (val) => { state.uiChoice = null; resolve(val); render(); } };
+    render();
+  });
+}
+
+function scriptFor(trigger) {
+  return Effects.lookupCardSpecific(trigger.cardId, trigger.tags) || Effects.compileToScript(trigger.text);
+}
+
+async function runPendingScript(trigger) {
+  const script = scriptFor(trigger);
+  const ctx = { state, S, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
+  await Effects.runScript(script, ctx);
+  S.resolvePending(state, trigger.uid);
+  render();
+}
+
+function renderPendingEffects() {
+  if (!state.pending.length) return null;
+  const rows = state.pending.map(t => {
+    const c = S.card(t.cardId);
+    const script = scriptFor(t);
+    return h('div', { className: 'effect-box', style: 'margin-bottom:6px;' }, [
+      h('div', {}, `【${t.tags.join('】【')}】 ${c.nameKo} (${t.player})`),
+      h('div', {}, t.text),
+      h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
+        script.length
+          ? h('button', { className: 'primary', onClick: () => { runPendingScript(t); } }, `자동 실행 (${script.length}개 동작 인식됨, 선택이 필요하면 팝업)`)
+          : h('span', { className: 'meta' }, '자동 인식 실패 — 아래 버튼이나 범용 도구로 수동 처리'),
+        ...quickApplyButtonsFor(t.text, t.player),
+        h('button', { className: 'danger', onClick: () => { S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
+      ]),
+    ]);
+  });
+  return h('div', {}, [h('div', { className: 'section-title' }, '발동 대기 중인 효과'), ...rows]);
+}
+
+function renderUiChoice() {
+  const uc = state.uiChoice;
+  if (!uc) return null;
+  const { kind, payload, resolve } = uc;
+  const rows = [h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')];
+
+  if (kind === 'pickStack') {
+    const cards = payload.uids.map(uid => {
+      const pl = state.players[payload.player];
+      const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+      return { uid, cardId: st?.cardId };
+    }).filter(x => x.cardId);
+    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { onClick: () => resolve(x.uid) }))));
+    rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
+  } else if (kind === 'pickFromHand') {
+    const pl = state.players[payload.player];
+    const idxs = pl.hand.map((id, i) => i);
+    rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], { onClick: () => resolve(pl.hand[i]) }))));
+    rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
+  } else if (kind === 'pickFromHandIndexes' || kind === 'pickFromZoneIndex') {
+    const pl = state.players[payload.player];
+    const zone = payload.zone || 'hand';
+    const idxs = payload.eligibleIdxs;
+    if (kind === 'pickFromZoneIndex') {
+      rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl[zone][i], { onClick: () => resolve(i) }))));
+      rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
+    } else {
+      if (!state._multiPick) state._multiPick = [];
+      const picked = state._multiPick;
+      rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], {
+        selected: picked.includes(i),
+        onClick: () => { const p = picked.indexOf(i); if (p === -1) picked.push(i); else picked.splice(p, 1); render(); },
+      }))));
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
+        h('button', {
+          className: 'primary', disabled: picked.length !== payload.n,
+          onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); },
+        }, '확인'),
+      ]));
+    }
+  } else if (kind === 'pickFromRevealed') {
+    if (!state._multiPick) state._multiPick = [];
+    const picked = state._multiPick;
+    rows.push(h('div', { className: 'hand-list' }, payload.revealed.map((id, i) => {
+      const eligible = payload.eligible.some(x => x.i === i);
+      return cardChip(id, {
+        selected: picked.includes(i),
+        onClick: eligible ? () => { const p = picked.indexOf(i); if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
+      });
+    })));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `${picked.length}장 선택 (최대 ${payload.max})`),
+      h('button', { className: 'primary', onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); } }, '확인 (핸드로 가져가고 나머지는 자동 처리)'),
+    ]));
+  } else if (kind === 'multipleChoice') {
+    rows.push(h('div', { className: 'actions-row' }, payload.options.map((label, i) => h('button', { onClick: () => resolve(i) }, label))));
+  }
+
+  return h('div', { className: 'player-panel' }, rows);
+}
+
+function renderActions() {
+  if (state.winner) return h('div', { className: 'actions' });
+  const rows = [];
+
+  const choiceUi = renderUiChoice();
+  if (choiceUi) { return h('div', { className: 'actions' }, [choiceUi]); }
+
+  const pendingUi = renderPendingAttack();
+  if (pendingUi) { return h('div', { className: 'actions' }, [pendingUi]); }
+
+  const pendingEffectsUi = renderPendingEffects();
+  if (pendingEffectsUi) rows.push(pendingEffectsUi);
+
+  rows.push(h('div', { className: 'section-title' }, `페이즈별 행동 — 현재: ${state.phase} (${state.activePlayer})`));
+
+  if (state.phase === 'breeding') {
+    const ap = state.activePlayer;
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', { onClick: () => { S.hatchDigitama(state, ap); render(); }, disabled: !!state.players[ap].raising }, '디지타마 부화'),
+      h('button', { onClick: () => { S.moveRaisingToBattle(state, ap); render(); }, disabled: !state.players[ap].raising }, '사육→배틀 이동'),
+      h('span', { className: 'meta' }, '(둘 다 선택사항, 이동을 선택하면 이번 턴 부화는 불가 — 룰 확인됨)'),
+    ]));
+  }
+
+  if (state.phase === 'main') {
+    rows.push(h('div', { className: 'section-title' }, '메인 페이즈: 핸드/스택 선택 후 사용'));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, '선택된 핸드카드:'), h('b', {}, sel.hand ? S.card(sel.hand.cardId).nameKo : '없음'),
+      h('span', {}, '선택된 스택1:'), h('b', {}, describeSelectedStackName(sel.stack)),
+      h('span', {}, '선택된 스택2:'), h('b', {}, describeSelectedStackName(sel.stack2)),
+    ]));
+
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, '코스트'), numInput('costInput', 0),
+      h('button', {
+        className: 'primary',
+        disabled: !sel.hand || sel.hand.player !== state.activePlayer,
+        onClick: () => {
+          const cost = val('costInput');
+          if (cost > 0) S.spendMemory(state, cost);
+          S.playDigimonFresh(state, sel.hand.player, sel.hand.idx);
+          sel.hand = null;
+          E.checkAutoEndTurn(state);
+          render();
+        },
+      }, '선택 핸드카드 신규 등장'),
+      h('button', {
+        disabled: !sel.hand || !sel.stack || sel.stack.player !== state.activePlayer,
+        onClick: () => {
+          const cost = val('costInput');
+          S.digivolve(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, cost, 'hand');
+          sel.hand = null; sel.stack = null;
+          E.checkAutoEndTurn(state);
+          render();
+        },
+      }, '선택 스택을 선택 핸드카드로 진화'),
+      h('button', {
+        disabled: !sel.hand || !sel.stack || sel.stack.player !== state.activePlayer,
+        onClick: () => {
+          const cost = val('costInput');
+          S.digivolve(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, cost, 'free');
+          sel.hand = null; sel.stack = null;
+          E.checkAutoEndTurn(state);
+          render();
+        },
+      }, '(무료 서치 등) 코스트 없이 강제 진화'),
+    ]));
+
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', {
+        disabled: !sel.stack || !sel.stack2 || !sel.hand || sel.stack.player !== state.activePlayer,
+        onClick: () => {
+          const cost = val('costInput');
+          S.fuseStacks(state, sel.stack.player, sel.stack.uid, sel.stack2.uid, sel.hand.cardId, cost, 'hand');
+          sel.hand = null; sel.stack = null; sel.stack2 = null;
+          E.checkAutoEndTurn(state);
+          render();
+        },
+      }, 'DNA/조그레스: 스택1+스택2 → 핸드카드'),
+      h('span', { className: 'meta' }, '(배틀 에어리어 카드 2개를 순서대로 클릭해서 선택)'),
+    ]));
+
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', {
+        className: 'danger', disabled: !sel.stack || sel.stack.player !== state.activePlayer || sel.stack.zone !== 'battle',
+        onClick: () => { attackFlow(sel.stack.player, sel.stack.uid); },
+      }, '선택 스택으로 공격'),
+    ]));
+  }
+
+  rows.push(h('div', { className: 'section-title' }, '범용 도구 (카드 효과 수동 처리용)'));
+  rows.push(h('div', { className: 'actions-row' }, [
+    h('span', {}, '대상'),
+    ...['p1', 'p2'].map(p => h('button', { className: sel.player === p ? 'primary' : '', onClick: () => { sel.player = p; render(); } }, p)),
+    h('span', {}, '장수'), numInput('genN', 1),
+    h('button', { onClick: () => { S.drawCards(state, sel.player, val('genN')); render(); } }, '드로우'),
+    h('button', { onClick: () => { S.trashTopOfDeck(state, sel.player, val('genN')); render(); } }, '덱 위 파기'),
+  ]));
+  rows.push(h('div', { className: 'actions-row' }, [
+    h('button', { onClick: () => { S.trashTopSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 위 효과로 파기'),
+    h('button', { onClick: () => { S.trashBottomSecurityByEffect(state, sel.player); render(); } }, '시큐리티 맨 밑 효과로 파기'),
+    h('span', {}, '카드ID'), h('input', { id: 'secCardId', placeholder: 'e.g. BT25-034' }),
+    h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'top'); render(); } }, '핸드지정없이 시큐리티 맨위 추가(id입력)'),
+    h('button', { onClick: () => { const id = document.getElementById('secCardId').value.trim(); if (id) S.addToSecurity(state, sel.player, id, 'bottom'); render(); } }, '맨밑 추가(id입력)'),
+  ]));
+  rows.push(h('div', { className: 'actions-row' }, [
+    h('span', {}, '메모리'), numInput('memN', 1),
+    h('button', { onClick: () => { S.grantMemory(state, sel.player, val('memN')); render(); } }, '메모리 획득 적용'),
+    h('span', {}, '퇴화 단수'), numInput('retN', 1),
+    h('button', { disabled: !sel.stack, onClick: () => { S.retreat(state, sel.stack.player, sel.stack.uid, val('retN')); render(); } }, '선택 스택 퇴화'),
+    h('button', { className: 'danger', disabled: !sel.stack, onClick: () => { S.deleteStack(state, sel.stack.player, sel.stack.uid); sel.stack = null; render(); } }, '선택 스택 소멸(트래시)'),
+  ]));
+
+  const effText = describeSelectedEffects();
+  if (effText) rows.push(h('div', { className: 'effect-box' }, effText));
+
+  return h('div', { className: 'actions' }, rows);
+}
+
+function findStack(selRef) {
+  if (!selRef) return null;
+  const pl = state.players[selRef.player];
+  if (pl.raising?.uid === selRef.uid) return pl.raising;
+  return pl.battle.find(s => s.uid === selRef.uid) || null;
+}
+
+function describeSelectedStackName(selRef) {
+  const stack = findStack(selRef);
+  return stack ? S.card(stack.cardId).nameKo : '없음';
+}
+
+function describeSelectedEffects() {
+  if (!sel.stack && !sel.hand) return '';
+  const parts = [];
+  const showCard = (id) => {
+    const c = S.card(id);
+    const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} C${c.cost ?? '-'} DP${c.dp ?? '-'}`];
+    if (c.evoNormal) bits.push(`진화: ${(c.evoNormal.colors||[]).join('/')} Lv.${c.evoNormal.level}→코스트${c.evoNormal.cost}`);
+    if (c.effectKo) bits.push(c.effectKo);
+    if (c.inheritedKo) bits.push('[진화원효과] ' + c.inheritedKo);
+    parts.push(bits.join('\n'));
+  };
+  if (sel.hand) showCard(sel.hand.cardId);
+  const stack = findStack(sel.stack);
+  if (stack) {
+    showCard(stack.cardId);
+    stack.sources.forEach(id => showCard(id));
+  }
+  return parts.join('\n\n');
+}
+
+function attackFlow(p, uid) {
+  const dec = S.declareAttack(state, p, uid);
+  if (!dec.ok) { render(); return; }
+  S.queueTriggersFor(state, p, dec.stack.cardId, 'attack', uid);
+  const dp = S.effectiveDP(dec.stack);
+  const opp = S.opponentOf(p);
+  const digimonTargets = S.legalDigimonTargets(state, p, uid);
+  sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice' };
+  render();
+}
+
+function renderPendingAttack() {
+  const pa = sel.pendingAttack;
+  if (!pa) return null;
+  const attackerStackNow = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
+  const rows = [h('div', { className: 'section-title' }, `공격 처리 중: ${attackerStackNow ? S.card(attackerStackNow.cardId).nameKo : '(소멸됨)'} (DP${pa.dp}) → ${pa.opp}`)];
+
+  if (pa.stage === 'targetChoice') {
+    const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
+    const restrictions = attackerStack?.dynamicRestrictions || [];
+    const blockedByDynamic = restrictions.some(r => {
+      if (r.type !== 'noDigimonAttackUnlessOwn') return true;
+      return !state.players[pa.attacker].battle.some(s => S.card(s.cardId).nameKo.includes(r.filter.nameIncludes));
+    });
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', { className: 'primary', onClick: () => { pa.stage = 'blockerCheck'; render(); } }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
+    ]));
+    if (blockedByDynamic) {
+      rows.push(h('div', { className: 'meta' }, '(조건부 제약으로 이번엔 디지몬 직접 공격 불가 — 위 옵션으로만 진행)'));
+    } else if (pa.digimonTargets.length) {
+      rows.push(h('div', { className: 'zone-label' }, '또는 액티브 상태인 상대 디지몬을 직접 공격:'));
+      rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
+        const st = state.players[pa.opp].battle.find(s => s.uid === uid);
+        return cardChip(st.cardId, { onClick: () => {
+          const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, uid);
+          pa.stage = 'digimonResult'; pa.battleRes = res; render();
+        } });
+      })));
+    } else {
+      rows.push(h('div', { className: 'meta' }, '상대 필드에 레스트 상태 디지몬이 없어서(≪무진화원액티브공격≫ 등의 예외도 없어서) 직접 공격은 불가해요.'));
+    }
+  } else if (pa.stage === 'digimonResult') {
+    const res = pa.battleRes;
+    rows.push(h('div', { className: 'effect-box' }, `결과: ${res.result} (공격측 DP${res.aDp} vs 방어측 DP${res.dDp})`));
+    if (res.result === 'defenderWins' || res.result === 'tie') {
+      rows.push(h('div', { className: 'meta' }, '공격측이 소멸했어요 (배리어 등으로 살리려면 범용 도구로 직접 처리하세요).'));
+    }
+    if (res.result === 'attackerWins' && res.destroyedOnlyOpponent) {
+      const survivorsWithKw = state.players[pa.attacker].battle.filter(s => S.hasKeyword(s, '전투후액티브'));
+      if (survivorsWithKw.length) {
+        rows.push(h('div', { className: 'actions-row' }, [
+          h('span', {}, '상대만 소멸시켰어요 — ≪전투후액티브≫ 보유 디지몬을 액티브로 되돌릴까요? (턴 1회)'),
+          ...survivorsWithKw.map(s => cardChip(s.cardId, { onClick: () => { S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
+        ]));
+      }
+    }
+    if (res.result === 'attackerWins' && res.piercing) {
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, '≪관통≫ 보유 — 상대만 소멸시켰으니 어택 종료 전에 시큐리티도 체크할 수 있어요.'),
+        h('button', { className: 'primary', onClick: () => { pa.stage = 'blockerCheck'; render(); } }, '관통으로 시큐리티 체크 진행'),
+        h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '체크 안 함 / 종료'),
+      ]));
+    } else {
+      rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '확인 / 닫기'));
+    }
+  } else if (pa.stage === 'blockerCheck') {
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `${pa.opp}가 블로커로 막습니까?`),
+      h('button', {
+        onClick: () => { pa.stage = 'manualBlock'; render(); },
+      }, '블로커로 막음 (수동 처리)'),
+      h('button', {
+        className: 'primary',
+        onClick: () => {
+          const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
+          pa.stage = 'result'; pa.res = res; render();
+        },
+      }, '안 막음 → 시큐리티 체크 진행'),
+    ]));
+  } else if (pa.stage === 'manualBlock') {
+    rows.push(h('div', { className: 'effect-box' }, '블로킹한 디지몬 스택을 선택하고, 범용 도구로 DP를 비교해서 진 쪽을 "선택 스택 소멸"로 직접 트래시 처리하세요.'));
+    rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '처리 완료 / 닫기'));
+  } else if (pa.stage === 'result') {
+    const res = pa.res;
+    if (res.gameOver) {
+      rows.push(h('div', { className: 'effect-box' }, `${pa.opp} 시큐리티 0에서 피격 — 게임 종료!`));
+    } else {
+      res.checks.forEach((c, i) => {
+        rows.push(h('div', { className: 'effect-box' }, `체크 ${i + 1}/${res.checks.length}: ${S.card(c.revealed).nameKo} (DP${c.secDp}) → ${c.result}`));
+      });
+      const last = res.checks[res.checks.length - 1];
+      if (last.result === 'defenderWins' || last.result === 'tie') {
+        rows.push(h('div', { className: 'actions-row' }, [
+          h('span', {}, '공격측이 소멸합니다. 배리어 등으로 살릴까요?'),
+          h('button', {
+            className: 'primary',
+            onClick: () => { sel.pendingAttack = null; render(); },
+          }, '그냥 소멸시키지 않음 (배리어 등으로 생존 처리 — 범용 도구로 대가 지불)'),
+          h('button', {
+            className: 'danger',
+            onClick: () => { S.deleteStack(state, pa.attacker, pa.uid); sel.pendingAttack = null; render(); },
+          }, '소멸시킴'),
+        ]));
+      } else {
+        rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '확인 / 닫기'));
+      }
+    }
+  }
+  return h('div', { className: 'player-panel' }, rows);
+}
+
+function renderLog() {
+  return h('div', { className: 'log-panel' }, state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)));
+}
+
+window.__dbg = () => ({ dragData, sel, state, S, E, Effects });
+init();

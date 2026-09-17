@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "digimon-sim",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "serve", "-l", "5588", "D:\\닼웤롴덬\\digimon-sim"],
+      "port": 5588
+    }
+  ]
+}
