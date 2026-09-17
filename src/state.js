@@ -674,7 +674,10 @@ export function clearExpiredModifiers(state) {
   for (const p of ['p1', 'p2']) {
     const pl = state.players[p];
     for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
-      if (stack.dpExpiry && stack.dpExpiry !== 'permanent' && stack.dpExpiry <= state.turnNumber) { stack.tempDP = 0; stack.dpExpiry = null; }
+      if (stack.dpExpiry && stack.dpExpiry !== 'permanent' && stack.dpExpiry <= state.turnNumber) {
+        stack.tempDP = 0; stack.dpExpiry = null;
+        ruleCheckDP(state, p, stack); // 17-1-3: a positive buff expiring can newly reveal a DP≤0 rule check
+      }
       if (stack.keywordExpiry) {
         for (const [kw, exp] of Object.entries(stack.keywordExpiry)) {
           if (exp !== 'permanent' && exp <= state.turnNumber) { delete stack.keywords[kw]; delete stack.keywordExpiry[kw]; }

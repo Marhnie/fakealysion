@@ -58,6 +58,11 @@ export function nextPhase(state) {
   const pl = state.players[active];
   if (state.phase === 'unsuspend') {
     pl.battle.forEach(s => { s.suspended = false; });
+    // 16-11-1/16-11-5: a ≪재기동≫ (Reboot) Digimon also becomes Active during
+    // the OPPONENT's Active Phase, on top of its own controller's — not just
+    // whichever player's own unsuspend step this is.
+    const oppBattle = state.players[S.opponentOf(active)].battle;
+    for (const s of oppBattle) if (S.hasKeyword(s, '재기동')) s.suspended = false;
     S.log(state, `${active} 액티브 페이즈: 전부 액티브`);
     state.phase = 'draw';
     // First player's very first turn skips the draw phase entirely.
@@ -136,7 +141,10 @@ export function declarePass(state) {
   const active = state.activePlayer;
   state.memory = active === 'p1' ? -3 : 3;
   S.log(state, `${active} 패스 선언 → 메모리 상대측 3으로 고정`);
-  endTurn(state);
+  // Pass is just another way of satisfying the 6-1-4 memory condition — not
+  // an exemption from 6-6-4's turn-end-cancellation recheck. If an
+  // end-of-turn effect pushes memory back before the flip, the turn stays.
+  endTurn(state, true);
 }
 
 // Call after any memory-spending action. Returns true if the turn ended.
