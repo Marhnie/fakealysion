@@ -395,6 +395,7 @@ function makeStack(cardId, turnNumber) {
     tempDP: 0, // temporary DP modifier, cleared at cleanup (see clearTemporaryModifiers)
     keywords: {}, // { [keywordName]: 'permanent' | turnNumber-it-expires-after }
     attacksThisTurn: 0, // for [턴에 N회] "become active again" style re-attack effects
+    turnEffectUses: {}, // { [effectKey]: timesUsedThisTurn } — enforces printed "[턴에 N회]" caps
     extraColors: [], // additional colors this stack counts as, e.g. "treat as Green too"
     linkCards: [], // { cardId, grantedBy } — attached Link Cards (10). NOT evolution sources.
     inheritedDP: 0, // recomputed by recomputeStackGrants from sources'/link cards' printed stat lines
@@ -424,6 +425,28 @@ export function securityAttackBonus(stack) {
 
 export function hasKeyword(stack, name) {
   return !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]);
+}
+
+// "[턴에 N회]"/"[턴 N회]" frequency caps were being parsed as plain
+// descriptive text and never actually enforced anywhere — a card like
+// ST2-11 MetalGarurumon ("【어택 시】[턴에 1회] 이 디지몬을 액티브로 한다.")
+// could re-unsuspend and re-attack an unlimited number of times per turn.
+// Keyed per stack, per (cardId+tags) so a source's and the top card's own
+// same-named effect don't share one counter by accident.
+export function onceLimitKey(cardId, tags) { return `${cardId}::${(tags || []).join(',')}`; }
+export function turnUsesRemaining(stack, key, limit) {
+  const used = (stack.turnEffectUses && stack.turnEffectUses[key]) || 0;
+  return limit - used;
+}
+export function markTurnEffectUsed(stack, key) {
+  stack.turnEffectUses = stack.turnEffectUses || {};
+  stack.turnEffectUses[key] = (stack.turnEffectUses[key] || 0) + 1;
+}
+export function resetTurnEffectUses(state) {
+  for (const p of ['p1', 'p2']) {
+    const pl = state.players[p];
+    for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) stack.turnEffectUses = {};
+  }
 }
 
 // ---- Overflow (4-19) ----

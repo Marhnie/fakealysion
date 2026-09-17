@@ -264,6 +264,8 @@ function render() {
   app.classList.toggle('log-open', panelsOpen.log);
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
+  const infoPanel = renderSelectedInfoPanel();
+  if (infoPanel) app.appendChild(infoPanel);
   app.appendChild(renderActions());
   app.appendChild(renderLog());
 }
@@ -613,7 +615,30 @@ function scriptFor(trigger) {
   return Effects.lookupCardSpecific(trigger.cardId, trigger.tags) || Effects.compileToScript(trigger.text);
 }
 
+// "[턴에 N회]"/"[턴 N회]" printed at the start of a segment's body caps how
+// many times THIS SPECIFIC effect can fire per turn — e.g. ST2-11
+// MetalGarurumon's "【어택 시】[턴에 1회] 이 디지몬을 액티브로 한다." should
+// only re-activate it once per turn, not every time it attacks.
+function parseOnceLimit(text) {
+  const m = text.match(/^\[턴\s*에?\s*(\d+)\s*회\]/);
+  return m ? Number(m[1]) : null;
+}
+
 async function runPendingScript(trigger, opts = {}) {
+  const limit = parseOnceLimit(trigger.text);
+  if (limit != null && trigger.stackUid) {
+    const stack = findStack({ player: trigger.player, uid: trigger.stackUid });
+    if (stack) {
+      const key = S.onceLimitKey(trigger.cardId, trigger.tags);
+      if (S.turnUsesRemaining(stack, key, limit) <= 0) {
+        S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과는 이번 턴 사용 횟수(${limit}회)를 넘어서 건너뜀`);
+        S.resolvePending(state, trigger.uid);
+        render();
+        return;
+      }
+      S.markTurnEffectUsed(stack, key);
+    }
+  }
   // A deliberate pause before actually resolving — auto-running instantly
   // (previous behavior) meant the effect banner appeared and vanished on
   // the same render tick, too fast to actually read. Skipped for effects
@@ -810,9 +835,6 @@ function renderActions() {
     ]));
   }
 
-  const effText = describeSelectedEffects();
-  if (effText) rows.push(h('div', { className: 'effect-box' }, effText));
-
   return h('div', { className: `actions${pendingEffectsUi ? ' actions-attention' : ''}` }, rows);
 }
 
@@ -846,6 +868,19 @@ function describeSelectedEffects() {
     stack.sources.forEach(id => showCard(id));
   }
   return parts.join('\n\n');
+}
+
+// The card-info/진화원효과 text was only ever shown inside the (collapsed
+// by default) actions panel, so seeing it meant expanding that panel first.
+// Floats it as its own always-visible panel near the top of the screen
+// instead, independent of whatever the actions panel is doing.
+function renderSelectedInfoPanel() {
+  const text = describeSelectedEffects();
+  if (!text) return null;
+  return h('div', { className: 'selected-info-panel' }, [
+    h('div', { className: 'section-title' }, '선택한 카드 정보'),
+    h('div', { className: 'effect-box', style: 'max-width:none;' }, text),
+  ]);
 }
 
 // Some option effects grant a one-off "can only directly attack a Digimon
@@ -1109,7 +1144,10 @@ function renderLog() {
     return h('div', { className: 'log-panel log-collapsed', onClick: () => { panelsOpen.log = true; render(); } }, '◀ 로그');
   }
   return h('div', { className: 'log-panel' }, [
-    h('div', { className: 'section-title clickable', onClick: () => { panelsOpen.log = false; render(); } }, '로그 (클릭=접기)'),
+    h('div', { className: 'log-panel-header' }, [
+      h('span', { className: 'section-title', style: 'margin:0;' }, '로그'),
+      h('button', { className: 'log-close-btn', onClick: () => { panelsOpen.log = false; render(); } }, '접기 ▶'),
+    ]),
     ...state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)),
   ]);
 }
