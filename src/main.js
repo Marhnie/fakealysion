@@ -489,7 +489,14 @@ function renderPlayerPanel(p) {
       ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
       ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
-    }, pl.battle.length ? pl.battle.map(s => renderStack(p, s, 'battle', legalClickTargets.has(s.uid) ? { attackTarget: { attackerP: sel.stack.player, attackerUid: sel.stack.uid } } : {})) : [h('div', { className: 'empty-slot' }, '비어있음')]),
+    }, [
+      ...pl.battle.map(s => renderStack(p, s, 'battle', legalClickTargets.has(s.uid) ? { attackTarget: { attackerP: sel.stack.player, attackerUid: sel.stack.uid } } : {})),
+      // Always show plenty of open slots to drop a new card into — at
+      // least 3 empty ones, more if the area is still mostly empty —
+      // instead of only appearing once and disappearing the moment the
+      // area has a single card in it.
+      ...Array(Math.max(3, 6 - pl.battle.length)).fill(0).map(() => h('div', { className: 'empty-slot' }, '비어있음')),
+    ]),
   ]);
 
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
@@ -606,7 +613,12 @@ function scriptFor(trigger) {
   return Effects.lookupCardSpecific(trigger.cardId, trigger.tags) || Effects.compileToScript(trigger.text);
 }
 
-async function runPendingScript(trigger) {
+async function runPendingScript(trigger, opts = {}) {
+  // A deliberate pause before actually resolving — auto-running instantly
+  // (previous behavior) meant the effect banner appeared and vanished on
+  // the same render tick, too fast to actually read. Skipped for effects
+  // that need a real choice (ctx.choose already pauses those naturally).
+  if (opts.delay) await new Promise(r => setTimeout(r, 700));
   const script = scriptFor(trigger);
   const ctx = { state, S, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
   await Effects.runScript(script, ctx);
@@ -628,7 +640,7 @@ function autoRunMandatoryPending() {
     if (t.resolved || autoRunAttempted.has(t.uid)) continue;
     if (!scriptFor(t).length) continue;
     autoRunAttempted.add(t.uid);
-    runPendingScript(t);
+    runPendingScript(t, { delay: true });
   }
 }
 
@@ -637,12 +649,12 @@ function renderPendingEffects() {
   const rows = state.pending.map(t => {
     const c = S.card(t.cardId);
     const script = scriptFor(t);
-    return h('div', { className: 'effect-box', style: 'margin-bottom:6px;' }, [
-      h('div', {}, `【${t.tags.join('】【')}】 ${c.nameKo} (${t.player})`),
+    return h('div', { className: `effect-box${script.length ? ' effect-firing' : ''}`, style: 'margin-bottom:6px;' }, [
+      h('div', { className: 'effect-firing-title' }, `⚡ ${c.nameKo} 【${t.tags.join('】【')}】 발동`),
       h('div', {}, t.text),
       h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
         script.length
-          ? h('span', { className: 'meta' }, '자동 처리 중…')
+          ? h('span', { className: 'meta' }, '처리 중…')
           : h('span', { className: 'meta' }, '자동 인식 실패 — 아래 버튼이나 범용 도구로 수동 처리'),
         ...quickApplyButtonsFor(t.text, t.player),
         h('button', { className: 'danger', onClick: () => { S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
