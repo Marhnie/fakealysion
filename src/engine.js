@@ -39,7 +39,7 @@ export function setSecurityStacks(state) {
 function queueTurnStartTriggers(state) {
   const pl = state.players[state.activePlayer];
   const stacks = [pl.raising, ...pl.battle].filter(Boolean);
-  for (const s of stacks) S.queueTriggersFor(state, state.activePlayer, s.cardId, 'turnStart', s.uid);
+  for (const s of stacks) S.queueTriggersForStack(state, state.activePlayer, s, 'turnStart');
 }
 
 export function beginGame(state, firstPlayer) {
@@ -76,7 +76,7 @@ export function nextPhase(state) {
     state.phase = 'main';
     const pl = state.players[active];
     const stacks = [pl.raising, ...pl.battle].filter(Boolean);
-    for (const s of stacks) S.queueTriggersFor(state, active, s.cardId, 'mainPhaseStart', s.uid);
+    for (const s of stacks) S.queueTriggersForStack(state, active, s, 'mainPhaseStart');
     return;
   }
   if (state.phase === 'main') {

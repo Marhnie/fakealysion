@@ -117,6 +117,7 @@ const TRIGGER_TAGS = {
   turnStart: ['자신의 턴 시작 시', '자신의 턴 개시 시'],
   security: ['시큐리티'],
   use: ['메인'],
+  move: ['이동했을 때', '이동 시'],
   bothTurns: ['서로의 턴', '상대의 턴', '자신의 턴'],
 };
 
@@ -153,6 +154,38 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     } else {
       state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: seg.body, resolved: false });
     }
+  }
+}
+
+// A Digimon gets the inherited (진화원) effects of EVERY card in its
+// evolution stack, not just its own printed text (4-3-3). Scans a source
+// card's `inheritedKo` field for matching-tag segments the same way
+// queueTriggersFor scans a top card's `effectKo`.
+function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) {
+  const c = card(sourceCardId);
+  if (!c.inheritedKo) return;
+  const wantTags = TRIGGER_TAGS[eventKind] || [];
+  const { segments } = parseEffectSegments(c.inheritedKo);
+  for (const seg of segments) {
+    const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
+    if (!hit) continue;
+    const applied = tryAutoApplySegment(state, p, seg.body);
+    if (applied) {
+      log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
+    } else {
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: seg.body, resolved: false, inherited: true });
+    }
+  }
+}
+
+// The one entry point that should be used for any real game event on a
+// Digimon stack — checks both the top card's own effect text AND every
+// evolution source's inherited effect text.
+export function queueTriggersForStack(state, p, stack, eventKind) {
+  if (!stack) return;
+  queueTriggersFor(state, p, stack.cardId, eventKind, stack.uid);
+  for (const sourceCardId of stack.sources) {
+    queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
   }
 }
 
@@ -474,7 +507,7 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const stack = makeStack(id, state.turnNumber);
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 신규 등장 (배틀 에어리어)`);
-  queueTriggersFor(state, p, id, 'play', stack.uid);
+  queueTriggersForStack(state, p, stack, 'play');
   return stack;
 }
 
@@ -522,9 +555,11 @@ export function moveRaisingToBattle(state, p) {
   if (!pl.raising) return null;
   const c = card(pl.raising.cardId);
   if ((c.level || 0) < 3) { log(state, `${p} ${c.nameKo}는 Lv.3 미만이라 이동 불가`); return null; }
-  pl.battle.push(pl.raising);
+  const stack = pl.raising;
+  pl.battle.push(stack);
   pl.raising = null;
   log(state, `${p} ${c.nameKo} 육성→배틀 에어리어 이동`);
+  queueTriggersForStack(state, p, stack, 'move');
   return true;
 }
 
@@ -545,7 +580,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} ${card(stack.sources[stack.sources.length-1]).nameKo} → ${card(newCardId).nameKo} 진화 (코스트${cost}, 출처:${source})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
-  queueTriggersFor(state, p, newCardId, 'digivolve', stack.uid);
+  queueTriggersForStack(state, p, stack, 'digivolve');
   return stack;
 }
 
@@ -573,7 +608,7 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} DNA/조그레스 진화: ${card(a.cardId).nameKo}+${card(b.cardId).nameKo} → ${card(newCardId).nameKo} (코스트${cost})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
-  queueTriggersFor(state, p, newCardId, 'digivolve', fused.uid);
+  queueTriggersForStack(state, p, fused, 'digivolve');
   return fused;
 }
 
@@ -589,6 +624,7 @@ export function deleteStack(state, p, uid, toZone = 'trash') {
   const all = [...stack.sources, stack.cardId];
   if (toZone === 'trash') pl.trash.push(...all);
   log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 포함, 총 ${all.length}장 트래시)`);
+  queueTriggersForStack(state, p, stack, 'delete');
   return all;
 }
 

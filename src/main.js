@@ -729,7 +729,7 @@ function describeSelectedEffects() {
 function attackFlow(p, uid) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
-  S.queueTriggersFor(state, p, dec.stack.cardId, 'attack', uid);
+  S.queueTriggersForStack(state, p, dec.stack, 'attack');
   const dp = S.effectiveDP(dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
