@@ -282,7 +282,15 @@ export function drawCards(state, p, n, isDrawPhase = false) {
     pl.hand.push(c);
     drawn.push(c);
   }
-  if (drawn.length) log(state, `${p} 드로우 ${drawn.length}장: ${drawn.map(id => card(id).nameKo).join(', ')}`);
+  if (drawn.length) {
+    log(state, `${p} 드로우 ${drawn.length}장: ${drawn.map(id => card(id).nameKo).join(', ')}`);
+    // Explicit counter instead of diffing hand length — a digivolve's bonus
+    // draw nets to a ZERO length change (one card spent on the evolution,
+    // one drawn back), which silently hid the new card from a length-diff
+    // based "just drawn" detector. main.js reads and clears this once per
+    // render, so it flashes exactly the cards actually just drawn.
+    pl.pendingDrawFlash = (pl.pendingDrawFlash || 0) + drawn.length;
+  }
   return drawn;
 }
 

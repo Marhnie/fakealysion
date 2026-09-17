@@ -10,11 +10,6 @@ let state = null;
 let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
-// Diff-based draw detection: hand cards are always pushed to the END, so
-// comparing hand length across renders tells us how many trailing cards
-// were just drawn — catches ANY draw regardless of source (phase draw,
-// digivolve bonus, a card effect script) without touching every call site.
-let prevHandLen = { p1: null, p2: null };
 
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
@@ -279,8 +274,6 @@ function render() {
   app.classList.toggle('log-open', panelsOpen.log);
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
-  const infoPanel = renderSelectedInfoPanel();
-  if (infoPanel) app.appendChild(infoPanel);
   app.appendChild(renderActions());
   app.appendChild(renderLog());
   const modal = renderModal();
@@ -296,9 +289,9 @@ function renderTopbar() {
   bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? '50%' : `${pct}%`;
   bar.querySelector('.gauge-fill').style.width = `${Math.abs(state.memory) / 20 * 100}%`;
   if (state.winner) {
-    return h('div', { className: 'topbar' }, [h('b', {}, `게임 종료 — 승자: ${state.winner}`)]);
+    return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [h('b', {}, `게임 종료 — 승자: ${state.winner}`)])]);
   }
-  return h('div', { className: 'topbar' }, [
+  const mainRow = h('div', { className: 'topbar-row' }, [
     h('b', {}, `턴 ${state.turnNumber}`),
     h('span', {}, `활성: ${state.activePlayer}`),
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
@@ -310,6 +303,18 @@ function renderTopbar() {
       onClick: () => { E.declarePass(state); render(); },
     }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
   ]);
+  const rows = [mainRow];
+  // Selected-card info (including 진화원효과) lives here — part of the
+  // topbar's own normal layout flow, so it can never float on top of a
+  // board drag target the way a fixed-position overlay could.
+  const infoText = describeSelectedEffects();
+  if (infoText) {
+    rows.push(h('div', { className: 'topbar-info' }, [
+      h('div', { className: 'topbar-info-text' }, infoText),
+      h('button', { onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; render(); } }, '✕'),
+    ]));
+  }
+  return h('div', { className: 'topbar' }, rows);
 }
 
 function cardChip(cardId, opts = {}) {
@@ -519,9 +524,13 @@ function renderPlayerPanel(p) {
     ]),
   ]);
 
-  const prevLen = prevHandLen[p];
-  const justDrawnCount = prevLen == null ? 0 : Math.max(0, pl.hand.length - prevLen);
-  prevHandLen[p] = pl.hand.length;
+  // Explicit counter set by S.drawCards, not a hand.length diff — a
+  // digivolve's bonus draw nets to a ZERO length change (one card spent on
+  // the evolution, one drawn back), which silently hid it from a length-
+  // diff detector. Consumed (reset to 0) right after reading so it only
+  // flashes once, on the render right after the draw happened.
+  const justDrawnCount = pl.pendingDrawFlash || 0;
+  pl.pendingDrawFlash = 0;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
     zonePill(`핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
     h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
@@ -899,18 +908,6 @@ function describeSelectedEffects() {
   return parts.join('\n\n');
 }
 
-// The card-info/진화원효과 text was only ever shown inside the (collapsed
-// by default) actions panel, so seeing it meant expanding that panel first.
-// Floats it as its own always-visible panel near the top of the screen
-// instead, independent of whatever the actions panel is doing.
-function renderSelectedInfoPanel() {
-  const text = describeSelectedEffects();
-  if (!text) return null;
-  return h('div', { className: 'selected-info-panel' }, [
-    h('div', { className: 'section-title' }, '선택한 카드 정보'),
-    h('div', { className: 'effect-box', style: 'max-width:none;' }, text),
-  ]);
-}
 
 // Some option effects grant a one-off "can only directly attack a Digimon
 // if you also control a named ally" style restriction — shared between the

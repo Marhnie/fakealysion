@@ -9,7 +9,15 @@
 body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Malgun Gothic", sans-serif; font-size: 13px; }
 #app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
 
-.topbar { display: flex; align-items: center; gap: 16px; padding: 5px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topbar { display: flex; flex-direction: column; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topbar-row { display: flex; align-items: center; gap: 16px; padding: 5px 16px; }
+/* selected-card info lives in the topbar's own normal document flow —
+   never a floating overlay, so it can never sit on top of a drag
+   source/target the way a fixed-position panel could (confirmed: it was
+   both covering the raising area AND swallowing evolution drops aimed at
+   whatever it happened to overlap). */
+.topbar-info { display: flex; align-items: flex-start; gap: 8px; padding: 6px 16px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.25); max-height: 30vh; overflow-y: auto; }
+.topbar-info-text { white-space: pre-wrap; font-size: 12px; color: var(--muted); flex: 1; }
 
 /* Simple entrance/impact animations for the attack & security-check result
    screen — the one place in this full-rebuild UI where a "moment" plays
@@ -200,14 +208,6 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 }
 .modal-panel .player-panel { box-shadow: 0 24px 48px -12px rgba(0,0,0,0.8); }
 
-/* card info (including 진화원효과) for whatever's currently selected —
-   floats independent of the actions panel's collapsed state so it's
-   visible without having to expand anything */
-.selected-info-panel {
-  position: fixed; top: 44px; left: 8px; z-index: 40; max-width: 340px; max-height: 45vh; overflow-y: auto;
-  background: var(--panel); border: 1px solid var(--holo-accent); border-radius: 8px; padding: 8px 10px;
-  box-shadow: 0 10px 24px -6px rgba(0,0,0,0.7);
-}
 
 /* a card effect is actively resolving — held visible for a beat (see the
    deliberate delay in runPendingScript) so the player can actually read
