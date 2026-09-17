@@ -26,7 +26,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .board {
   flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 16px 40px;
   background:
-    radial-gradient(ellipse 90% 60% at 50% 0%, rgba(255,255,255,0.05) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 45% at 32% 4%, rgba(255,240,210,0.09) 0%, transparent 62%),
+    radial-gradient(ellipse 120% 90% at 50% 100%, rgba(0,0,0,0.55) 0%, transparent 55%),
     linear-gradient(180deg, var(--holo-2) 0%, var(--holo-1) 55%, #0a0806 100%);
 }
 .table-surface {
@@ -37,7 +38,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .player-panel {
   background: linear-gradient(180deg, rgba(30,26,20,0.92) 0%, rgba(14,12,9,0.95) 100%);
   border: 1px solid var(--holo-line); border-radius: 10px; padding: 10px 14px;
-  box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8);
+  box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,240,210,0.08);
   transform-style: preserve-3d;
 }
 .table-surface .player-panel:first-child { transform: translateZ(-24px) scale(0.97); filter: brightness(0.9); } /* opponent — sits further back on the table */
@@ -60,7 +61,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .pile-rail { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
 .pile-chip {
   background: rgba(0,0,0,0.4); border: 1px solid var(--holo-line); border-radius: 6px;
-  padding: 6px 8px; min-width: 56px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+  padding: 6px 8px; min-width: 56px; text-align: center;
+  /* layered offset shadows suggest a small stack of face-down cards behind the chip */
+  box-shadow: 0 4px 10px rgba(0,0,0,0.4), 2px 2px 0 -1px rgba(0,0,0,0.3), 4px 4px 0 -2px rgba(0,0,0,0.2);
 }
 .pile-count { font-size: 16px; font-weight: 700; color: var(--text); }
 .pile-label { font-size: 9px; color: var(--muted); margin-top: 2px; }
@@ -89,11 +92,17 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .card-chip {
   background: var(--card); border: 1px solid var(--border); border-radius: 6px;
   padding: 4px; cursor: pointer; width: 96px; user-select: none;
-  transform-style: preserve-3d; box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+  transform-style: preserve-3d;
+  /* directional shadow — a light source up-and-left, like the WebGL demo's key light */
+  box-shadow: 3px 6px 10px -2px rgba(0,0,0,0.6), -1px -1px 0 rgba(255,240,210,0.05) inset;
   transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
 }
-.card-chip:hover { border-color: var(--accent); transform: translateY(-10px) translateZ(30px); box-shadow: 0 18px 24px -6px rgba(0,0,0,0.65); }
-.card-chip.selected { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset, 0 10px 18px -4px rgba(0,0,0,0.6); transform: translateZ(16px); }
+.card-chip:hover {
+  border-color: var(--holo-accent);
+  transform: translateY(-10px) translateZ(30px);
+  box-shadow: 6px 20px 26px -6px rgba(0,0,0,0.7), -1px -1px 0 rgba(255,240,210,0.08) inset;
+}
+.card-chip.selected { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset, 4px 12px 20px -4px rgba(0,0,0,0.65); transform: translateZ(16px); }
 .card-chip.suspended { opacity: 0.55; transform: rotate(-4deg); }
 .card-chip.suspended:hover { transform: rotate(-4deg) translateY(-10px) translateZ(30px); }
 .card-chip.dragging { opacity: 0.3; }
@@ -101,6 +110,15 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .card-chip .nm { font-weight: 600; font-size: 11px; line-height: 1.2; }
 .card-chip .meta { color: var(--muted); font-size: 10px; }
 .stack-src { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+/* fanned-hand look — alternating tilt/lift per card, like cards held in hand */
+.hand-list .card-chip { transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease; }
+.hand-list .card-chip:nth-child(5n+1) { transform: rotate(-3deg) translateY(2px); }
+.hand-list .card-chip:nth-child(5n+2) { transform: rotate(-1deg); }
+.hand-list .card-chip:nth-child(5n+3) { transform: rotate(0.5deg) translateY(-2px); }
+.hand-list .card-chip:nth-child(5n+4) { transform: rotate(2deg); }
+.hand-list .card-chip:nth-child(5n+5) { transform: rotate(3.5deg) translateY(2px); }
+.hand-list .card-chip:hover { transform: translateY(-10px) translateZ(30px) !important; }
 
 .empty-slot { color: var(--muted); font-size: 12px; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; width: 96px; height: 60px; display:flex; align-items:center; justify-content:center; text-align: center; box-shadow: inset 0 2px 6px rgba(0,0,0,0.5); }
 .empty-slot.drop-hover, .drop-zone.drop-hover { border-color: var(--ok) !important; background: rgba(87,176,106,0.08); }
