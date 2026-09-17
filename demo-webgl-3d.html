@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>WebGL 3D 옵션 미리보기</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0806; color: #e8e8e6; font-family: -apple-system, "Malgun Gothic", sans-serif; overflow: hidden; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; padding: 10px 16px; z-index: 10;
+    background: rgba(10,8,6,0.85); border-bottom: 1px solid rgba(255,255,255,0.14);
+    display: flex; gap: 16px; align-items: center; font-size: 13px;
+  }
+  #hud b { color: #d9b36c; }
+  #hud span { color: #9aa0a8; }
+  #canvas-wrap { position: fixed; top: 48px; left: 0; right: 0; bottom: 0; }
+  canvas { display: block; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #9aa0a8; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div id="hud">
+    <b>WebGL(Three.js) 풀 3D — 선택 안 한 옵션 미리보기</b>
+    <span>드래그 = 카메라 회전 · 스크롤 = 줌 · 실제 채택된 CSS 3D 버전은 카메라를 못 돌리고 이 각도로 고정된 "가짜" 3D입니다.</span>
+  </div>
+  <div id="canvas-wrap"><div id="loading">불러오는 중…</div></div>
+
+<script type="module">
+import * as THREE from 'https://esm.sh/three@0.160.0';
+import { OrbitControls } from 'https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+const wrap = document.getElementById('canvas-wrap');
+document.getElementById('loading').remove();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0806);
+scene.fog = new THREE.Fog(0x0a0806, 12, 30);
+
+const camera = new THREE.PerspectiveCamera(45, wrap.clientWidth / wrap.clientHeight, 0.1, 100);
+camera.position.set(0, 7.5, 7.5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+wrap.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.maxPolarAngle = Math.PI * 0.49; // don't let the camera dip below the table
+controls.minDistance = 4;
+controls.maxDistance = 18;
+controls.enableDamping = true;
+
+// ---- table ----
+const tableGeo = new THREE.PlaneGeometry(14, 10, 1, 1);
+const tableMat = new THREE.MeshStandardMaterial({ color: 0x1a1712, roughness: 0.95, metalness: 0 });
+const table = new THREE.Mesh(tableGeo, tableMat);
+table.rotation.x = -Math.PI / 2;
+table.receiveShadow = true;
+scene.add(table);
+
+// faint printed zone outlines on the mat
+function addZoneOutline(x, z, w, h, color = 0x3a3428) {
+  const geo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, h));
+  const mat = new THREE.LineBasicMaterial({ color });
+  const line = new THREE.LineSegments(geo, mat);
+  line.rotation.x = -Math.PI / 2;
+  line.position.set(x, 0.01, z);
+  scene.add(line);
+}
+addZoneOutline(-3, -1.2, 2.4, 3.2);   // raising area
+addZoneOutline(0.6, -1.2, 5.2, 3.2);  // battle area
+addZoneOutline(-3, 2.6, 2.4, 3.2);
+addZoneOutline(0.6, 2.6, 5.2, 3.2);
+
+// ---- lighting ----
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xffe9c7, 1.1);
+key.position.set(4, 9, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x6d8fff, 0.25);
+rim.position.set(-6, 4, -6);
+scene.add(rim);
+
+// ---- real card textures ----
+const CARD_URLS = [
+  'https://dgchub.com/webp/images/small/BT21-018',
+  'https://dgchub.com/webp/images/small/BT21-009_L4104',
+  'https://dgchub.com/webp/images/small/ST16-12',
+  'https://dgchub.com/webp/images/small/BT21-041',
+  'https://dgchub.com/webp/images/small/BT21-023_L4118',
+  'https://dgchub.com/webp/images/small/EX1-066',
+];
+const loader = new THREE.TextureLoader();
+loader.setCrossOrigin('anonymous');
+const CARD_W = 1.0, CARD_H = 1.4;
+const cardBackMat = new THREE.MeshStandardMaterial({ color: 0x2a2a32, roughness: 0.6 });
+
+function makeCard(url) {
+  const geo = new THREE.BoxGeometry(CARD_W, 0.02, CARD_H);
+  const sideMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+  const frontMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+  const mesh = new THREE.Mesh(geo, [sideMat, sideMat, frontMat, cardBackMat, sideMat, sideMat]);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  loader.load(url, (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    frontMat.map = tex;
+    frontMat.needsUpdate = true;
+  }, undefined, () => {}); // silently ignore load errors (hotlink/CORS) — geometry still renders
+  return mesh;
+}
+
+// hand: fanned out toward the viewer
+const handGroup = new THREE.Group();
+const handCount = CARD_URLS.length;
+CARD_URLS.forEach((url, i) => {
+  const card = makeCard(url);
+  const t = (i - (handCount - 1) / 2) * 0.28;
+  card.position.set(t * 4.2, 0.05 + i * 0.002, 3.6);
+  card.rotation.z = -t * 0.5;
+  card.rotation.x = -0.25;
+  handGroup.add(card);
+});
+scene.add(handGroup);
+
+// a couple of "battle area" cards lying flat, evolution-stacked look
+const battle1 = makeCard(CARD_URLS[0]);
+battle1.position.set(0.6, 0.05, -1.2);
+battle1.rotation.x = -0.06;
+scene.add(battle1);
+const battle1Src = makeCard(CARD_URLS[2]);
+battle1Src.position.set(0.6, 0.03, -1.18);
+battle1Src.rotation.x = -0.06;
+scene.add(battle1Src);
+
+const battle2 = makeCard(CARD_URLS[3]);
+battle2.position.set(2.0, 0.05, -1.3);
+battle2.rotation.x = -0.06;
+battle2.rotation.y = 0.15;
+scene.add(battle2);
+
+// digitama-style face-down deck stack (raising area)
+for (let i = 0; i < 4; i++) {
+  const back = new THREE.Mesh(new THREE.BoxGeometry(CARD_W, 0.02, CARD_H), cardBackMat);
+  back.position.set(-3, 0.03 + i * 0.02, -1.2);
+  back.castShadow = true;
+  scene.add(back);
+}
+
+function onResize() {
+  camera.aspect = wrap.clientWidth / wrap.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
