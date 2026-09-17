@@ -2,7 +2,8 @@
   --p1: #1d6fa5; --p2: #a53d1d; --bg: #14161a; --panel: #1e2126;
   --card: #262a31; --border: #3a3f47; --text: #e8e8e6; --muted: #9aa0a8;
   --accent: #4ea8de; --danger: #d85a5a; --ok: #57b06a;
-  --holo-1: #0a1f3d; --holo-2: #123a63; --holo-line: rgba(110,200,255,0.22); --holo-accent: #34c3ff;
+  /* dark cloth playmat palette (real card art does the rest) */
+  --holo-1: #17140f; --holo-2: #262019; --holo-line: rgba(255,255,255,0.14); --holo-accent: #d9b36c;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, "Malgun Gothic", sans-serif; font-size: 13px; }
@@ -24,7 +25,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 
 .board {
   flex: 1; overflow-y: auto; overflow-x: hidden; padding: 8px 16px 40px;
-  background: radial-gradient(ellipse 130% 100% at 50% -20%, var(--holo-2) 0%, var(--holo-1) 55%, #050c17 100%);
+  background:
+    radial-gradient(ellipse 90% 60% at 50% 0%, rgba(255,255,255,0.05) 0%, transparent 60%),
+    linear-gradient(180deg, var(--holo-2) 0%, var(--holo-1) 55%, #0a0806 100%);
 }
 .table-surface {
   display: flex; flex-direction: column; gap: 14px;
@@ -32,34 +35,34 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
   padding-top: 24px;
 }
 .player-panel {
-  background: linear-gradient(180deg, rgba(18,42,72,0.9) 0%, rgba(8,20,38,0.95) 100%);
-  border: 1px solid var(--holo-line); border-radius: 14px; padding: 10px 14px;
-  box-shadow: 0 18px 30px -10px rgba(0,0,0,0.7), 0 0 24px -8px var(--holo-accent) inset;
+  background: linear-gradient(180deg, rgba(30,26,20,0.92) 0%, rgba(14,12,9,0.95) 100%);
+  border: 1px solid var(--holo-line); border-radius: 10px; padding: 10px 14px;
+  box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8);
   transform-style: preserve-3d;
 }
 .table-surface .player-panel:first-child { transform: translateZ(-24px) scale(0.97); filter: brightness(0.9); } /* opponent — sits further back on the table */
 .table-surface .player-panel:last-child { transform: translateZ(18px); } /* self — closer to the viewer */
-.player-panel.active { border-color: var(--holo-accent); box-shadow: 0 18px 30px -10px rgba(0,0,0,0.7), 0 0 0 1px var(--holo-accent) inset; }
+.player-panel.active { border-color: var(--holo-accent); box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), 0 0 0 1px var(--holo-accent) inset; }
 .player-header { display: flex; gap: 16px; align-items: center; font-weight: 600; margin-bottom: 8px; color: var(--muted); flex-wrap: wrap; }
 .player-header b { color: var(--text); flex-shrink: 0; }
 .player-header span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 
-/* memory number-line, shared between the two panels */
+/* memory number-line, shared between the two panels — printed chalk-line style */
 .mem-track { position: relative; padding: 6px 0; transform-style: preserve-3d; }
-.mem-numbers { display: flex; justify-content: space-between; background: rgba(6,16,30,0.7); border: 1px solid var(--holo-line); border-radius: 999px; padding: 4px 10px; }
+.mem-numbers { display: flex; justify-content: space-between; background: rgba(0,0,0,0.35); border: 1px solid var(--holo-line); border-radius: 999px; padding: 4px 10px; }
 .mem-num { font-size: 10px; color: var(--muted); flex: 1; text-align: center; }
 .mem-num.mem-zero { color: var(--holo-accent); font-weight: 700; }
-.mem-marker { position: absolute; top: 0; bottom: 0; width: 14px; height: 14px; margin-top: 5px; background: var(--holo-accent); border-radius: 50%; box-shadow: 0 0 10px 2px var(--holo-accent); transform: translateX(-50%); transition: left 0.2s ease; }
+.mem-marker { position: absolute; top: 0; bottom: 0; width: 12px; height: 12px; margin-top: 6px; background: var(--holo-accent); border-radius: 50%; border: 2px solid #0a0806; transform: translateX(-50%); transition: left 0.2s ease; }
 
 /* field composition: play zones on the left, pile counters rail on the right */
 .field-row { display: flex; gap: 12px; align-items: stretch; }
 .field-zones { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .pile-rail { display: flex; flex-direction: row; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
 .pile-chip {
-  background: rgba(6,16,30,0.75); border: 1px solid var(--holo-line); border-radius: 8px;
+  background: rgba(0,0,0,0.4); border: 1px solid var(--holo-line); border-radius: 6px;
   padding: 6px 8px; min-width: 56px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.4);
 }
-.pile-count { font-size: 16px; font-weight: 700; color: var(--holo-accent); }
+.pile-count { font-size: 16px; font-weight: 700; color: var(--text); }
 .pile-label { font-size: 9px; color: var(--muted); margin-top: 2px; }
 .pile-chip.pile-security { border-color: rgba(216,90,90,0.4); }
 .pile-chip.pile-security .pile-count { color: var(--danger); }
@@ -68,27 +71,20 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .zone { min-width: 110px; }
 .zone-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .zone-pill {
-  display: inline-block; font-size: 10px; color: var(--text); background: rgba(52,195,255,0.15);
+  display: inline-block; font-size: 10px; color: var(--muted); background: transparent;
   border: 1px solid var(--holo-line); border-radius: 999px; padding: 3px 10px; margin-bottom: 6px;
 }
 .stack-list, .hand-list { display: flex; gap: 6px; flex-wrap: wrap; }
 
-/* hex-grid "holo table" background for the actual play surfaces */
+/* plain cloth-mat panel for the actual play surfaces — no sci-fi pattern,
+   just a slightly recessed dark rectangle like a printed zone on a mat */
 .hex-field {
-  background-color: rgba(8,22,42,0.55);
-  background-image:
-    linear-gradient(30deg, var(--holo-line) 12%, transparent 12.5%, transparent 87%, var(--holo-line) 87.5%, var(--holo-line)),
-    linear-gradient(150deg, var(--holo-line) 12%, transparent 12.5%, transparent 87%, var(--holo-line) 87.5%, var(--holo-line)),
-    linear-gradient(30deg, var(--holo-line) 12%, transparent 12.5%, transparent 87%, var(--holo-line) 87.5%, var(--holo-line)),
-    linear-gradient(150deg, var(--holo-line) 12%, transparent 12.5%, transparent 87%, var(--holo-line) 87.5%, var(--holo-line)),
-    linear-gradient(60deg, rgba(110,200,255,0.12) 25%, transparent 25.5%, transparent 75%, rgba(110,200,255,0.12) 75%, rgba(110,200,255,0.12)),
-    linear-gradient(60deg, rgba(110,200,255,0.12) 25%, transparent 25.5%, transparent 75%, rgba(110,200,255,0.12) 75%, rgba(110,200,255,0.12));
-  background-size: 34px 60px;
-  background-position: 0 0, 0 0, 17px 30px, 17px 30px, 0 0, 17px 30px;
-  border: 1px solid var(--holo-line); border-radius: 10px; padding: 8px;
+  background: rgba(0,0,0,0.28);
+  border: 1px solid var(--holo-line); border-radius: 8px; padding: 8px;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
 }
 .hex-slot-row { display: flex; gap: 6px; flex-wrap: wrap; min-height: 68px; }
-.hand-zone { background: rgba(6,16,30,0.4); border-radius: 10px; padding: 6px 8px; }
+.hand-zone { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 6px 8px; }
 
 .card-chip {
   background: var(--card); border: 1px solid var(--border); border-radius: 6px;
