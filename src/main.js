@@ -923,11 +923,31 @@ function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
   ]);
 }
 
+// Short breadcrumb of the fixed attack sequence (11-1-3), current step
+// highlighted — lets the player see at a glance where they are instead of
+// parsing a paragraph each stage.
+const ATTACK_STEP_ORDER = ['targetChoice', 'counterTiming', 'blockCheck', 'digimonResult', 'result'];
+const ATTACK_STEP_LABEL = { targetChoice: '대상', counterTiming: '카운터', blockCheck: '블록', digimonResult: '결과', result: '결과' };
+function renderAttackSteps(currentStage) {
+  const seen = new Set();
+  const steps = ATTACK_STEP_ORDER.filter(s => { const label = ATTACK_STEP_LABEL[s]; if (seen.has(label)) return false; seen.add(label); return true; });
+  const currentIdx = ATTACK_STEP_ORDER.indexOf(currentStage);
+  return h('div', { className: 'actions-row' }, steps.map((s) => {
+    const idx = ATTACK_STEP_ORDER.indexOf(s);
+    const isPast = idx < currentIdx || (currentStage === 'result' && s === 'digimonResult');
+    const isNow = s === currentStage || (currentStage === 'digimonResult' && s === 'result') || (currentStage === 'result' && s === 'digimonResult');
+    return h('span', { className: `zone-pill${s === currentStage ? ' step-now' : ''}${isPast ? ' step-done' : ''}` }, ATTACK_STEP_LABEL[s]);
+  }));
+}
+
 function renderPendingAttack() {
   const pa = sel.pendingAttack;
   if (!pa) return null;
   const attackerStackNow = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
-  const rows = [h('div', { className: 'section-title' }, `공격 처리 중: ${attackerStackNow ? S.card(attackerStackNow.cardId).nameKo : '(소멸됨)'} (DP${pa.dp}) → ${pa.opp}`)];
+  const rows = [
+    h('div', { className: 'section-title' }, `${attackerStackNow ? S.card(attackerStackNow.cardId).nameKo : '(소멸됨)'} DP${pa.dp} 공격 중`),
+    renderAttackSteps(pa.stage),
+  ];
 
   if (pa.stage === 'targetChoice') {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
@@ -936,12 +956,12 @@ function renderPendingAttack() {
       h('button', {
         className: 'primary',
         onClick: () => { pa.targetKind = 'player'; enterCounterTiming(pa); render(); },
-      }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
+      }, `${pa.opp} 본체 공격`),
     ]));
     if (blockedByDynamic) {
-      rows.push(h('div', { className: 'meta' }, '(조건부 제약으로 이번엔 디지몬 직접 공격 불가 — 위 옵션으로만 진행)'));
+      rows.push(h('div', { className: 'meta' }, '지금은 디지몬 직접 공격 불가 (효과 제약)'));
     } else if (pa.digimonTargets.length) {
-      rows.push(h('div', { className: 'zone-label' }, '또는 액티브 상태인 상대 디지몬을 직접 공격:'));
+      rows.push(h('div', { className: 'zone-label' }, '또는 디지몬 직접 공격:'));
       rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
         const st = state.players[pa.opp].battle.find(s => s.uid === uid);
         return cardChip(st.cardId, { onClick: () => {
@@ -949,58 +969,54 @@ function renderPendingAttack() {
         } });
       })));
     } else {
-      rows.push(h('div', { className: 'meta' }, '상대 필드에 레스트 상태 디지몬이 없어서(≪무진화원액티브공격≫ 등의 예외도 없어서) 직접 공격은 불가해요.'));
+      rows.push(h('div', { className: 'meta' }, '레스트 상태 디지몬이 없어서 직접 공격 불가'));
     }
   } else if (pa.stage === 'counterTiming') {
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, `${pa.opp}의 카운터 타이밍 — 사용 가능한 【카운터】:`),
-    ]));
+    rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {
       rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, `${S.card(opt.cardId).nameKo} (${opt.zone}): ${opt.body}`),
+        h('span', {}, `${S.card(opt.cardId).nameKo}: ${opt.body}`),
         h('button', {
           onClick: () => {
             state.pending.push({ uid: 'ct' + Math.random().toString(36).slice(2), player: pa.opp, cardId: opt.cardId, stackUid: opt.stackUid, tags: opt.tags, text: opt.body, resolved: false });
             enterBlockCheck(pa); render();
           },
-        }, '발동 (범용 도구/직접 처리로 이어짐)'),
+        }, '발동'),
       ]));
     });
-    rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '카운터 사용 안 함 → 블록 타이밍'));
+    rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '넘기기'));
   } else if (pa.stage === 'digimonResult') {
     const res = pa.battleRes;
     rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result));
     if (res.result === 'defenderWins' || res.result === 'tie') {
-      rows.push(h('div', { className: 'meta' }, '공격측이 소멸했어요 (배리어 등으로 살리려면 범용 도구로 직접 처리하세요).'));
+      rows.push(h('div', { className: 'meta' }, '공격측 소멸 (생존 효과가 있다면 범용 도구로 처리)'));
     }
     if (res.result === 'attackerWins' && res.destroyedOnlyOpponent) {
       const survivorsWithKw = state.players[pa.attacker].battle.filter(s => S.hasKeyword(s, '전투후액티브'));
       if (survivorsWithKw.length) {
         rows.push(h('div', { className: 'actions-row' }, [
-          h('span', {}, '상대만 소멸시켰어요 — ≪전투후액티브≫ 보유 디지몬을 액티브로 되돌릴까요? (턴 1회)'),
+          h('span', {}, '≪전투후액티브≫ 액티브로 되돌리기?'),
           ...survivorsWithKw.map(s => cardChip(s.cardId, { onClick: () => { S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
         ]));
       }
     }
     if (res.result === 'attackerWins' && res.piercing) {
       rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, '≪관통≫ 보유 — 상대만 소멸시켰으니 어택 종료 전에 시큐리티도 체크할 수 있어요.'),
+        h('span', {}, '≪관통≫ — 시큐리티도 체크할까요?'),
         h('button', {
           className: 'primary',
           // Piercing's bonus check is still part of THIS attack's single
           // "성립의 확인" — Counter/Block Timing already happened once for
           // this attack and don't repeat here.
           onClick: () => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
-        }, '관통으로 시큐리티 체크 진행'),
-        h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '체크 안 함 / 종료'),
+        }, '체크'),
+        h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '안 함'),
       ]));
     } else {
-      rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '확인 / 닫기'));
+      rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '닫기'));
     }
   } else if (pa.stage === 'blockCheck') {
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, `${pa.opp}가 ≪블로커≫로 막습니까? — 막을 디지몬을 클릭하면 그 디지몬이 레스트되며 (대상이었다면 원래 대상 대신) 방어측이 됩니다:`),
-    ]));
+    rows.push(h('div', { className: 'zone-label' }, '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {
       onClick: () => {
         S.restStack(state, pa.opp, s.uid);
@@ -1013,7 +1029,7 @@ function renderPendingAttack() {
       h('button', {
         className: 'primary',
         onClick: () => { resolveFinalTarget(pa); render(); },
-      }, pa.targetKind === 'player' ? '안 막음 → 시큐리티 체크 진행' : '안 막음 → 배틀 진행'),
+      }, '넘기기'),
     ]));
   } else if (pa.stage === 'result') {
     const res = pa.res;
@@ -1030,13 +1046,13 @@ function renderPendingAttack() {
         // informational. No "survive anyway" button: there's no tracked
         // keyword for it, every real instance is bespoke card text handled
         // via the normal trigger/pending-effect system instead.
-        rows.push(h('div', { className: 'meta' }, '공격측이 소멸했어요 (정말로 생존 효과가 있다면 범용 도구로 직접 처리하세요).'));
+        rows.push(h('div', { className: 'meta' }, '공격측 소멸 (생존 효과가 있다면 범용 도구로 처리)'));
         rows.push(h('button', {
           className: 'primary',
           onClick: () => { sel.pendingAttack = null; render(); },
-        }, '확인 / 닫기'));
+        }, '닫기'));
       } else {
-        rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '확인 / 닫기'));
+        rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '닫기'));
       }
     }
   }
