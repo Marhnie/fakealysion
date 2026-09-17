@@ -266,6 +266,9 @@ async function runOne(instr, ctx) {
       }
       break;
     }
+    case 'placeThisInBattle':
+      S.placeThisInBattle(state, ctx.self, ctx.sourceCardId);
+      break;
     case 'noop':
       S.log(state, `(확인) ${instr.note}`);
       break;
@@ -444,6 +447,13 @@ export function compileToScript(text) {
     script.push({ op: 'returnToHandStripSources', target: 'opponent' });
   }
 
+  // Option cards that stay on the field after resolving ("그 후 이 카드를
+  // 배틀 에어리어에 놓는다") — the card was provisionally trashed by
+  // useOptionCard; this relocates it.
+  if (/그\s*후,?\s*이\s*카드를\s*배틀\s*에어리어에\s*놓는다/.test(t)) {
+    script.push({ op: 'placeThisInBattle' });
+  }
+
   // Return a named/trait-matching card from own trash to hand.
   if ((m = t.match(/자신(?:의)?\s*트래시에서,?\s*명칭에\s*「([^」]+)」(?:를|을)?\s*포함하는\s*(?:디지몬\s*)?카드\s*(\d+)?\s*장?(?:을)?\s*패로\s*되돌린다/))) {
     for (let i = 0; i < Number(m[2] || 1); i++) script.push({ op: 'returnFromTrash', who: 'self', filter: { nameIncludes: m[1] } });
@@ -553,9 +563,9 @@ const CARD_SPECIFIC = {
   'BT1-089::메인': [
     { op: 'condition', if: { hasDigimon: { colors: ['green'], levelMin: 5 } }, then: [
       { op: 'restStack', target: 'self', thisStack: true },
-      { op: 'choice', prompt: '빈 사육 에어리어에 부화 또는 Lv.3+ 자신 디지몬 배틀로 이동', options: [
+      { op: 'choice', prompt: '빈 육성 에어리어에 부화 또는 Lv.3+ 자신 디지몬 배틀로 이동', options: [
         { label: '부화', then: [{ op: 'hatch', who: 'self' }] },
-        { label: '사육→배틀 이동', then: [{ op: 'moveRaising', who: 'self' }] },
+        { label: '육성→배틀 이동', then: [{ op: 'moveRaising', who: 'self' }] },
       ] },
     ], else: [] },
   ],

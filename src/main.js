@@ -3,6 +3,8 @@ import * as E from './engine.js';
 import * as Effects from './effects.js';
 import * as DB from './deckbuilder.js';
 
+const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
+
 const app = document.getElementById('app');
 let state = null;
 let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
@@ -266,7 +268,7 @@ function renderTopbar() {
   return h('div', { className: 'topbar' }, [
     h('b', {}, `턴 ${state.turnNumber}`),
     h('span', {}, `활성: ${state.activePlayer}`),
-    h('span', {}, `페이즈: ${state.phase}`),
+    h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
     h('button', { onClick: () => { E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
@@ -314,7 +316,7 @@ function renderStack(p, stack, zoneKind) {
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     onDrop: (drag) => {
       if (!drag) return;
-      if (drag.kind === 'hand' && drag.player === p && p === state.activePlayer && state.phase === 'main') {
+      if (drag.kind === 'hand' && drag.player === p && p === state.activePlayer && state.phase === 'main' && S.card(drag.cardId).category === 'digimon') {
         const check = E.canNormalEvolve(stack.cardId, drag.cardId, stack.extraColors || []);
         const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
         const cost = Math.max(0, (check.ok ? check.cost : 0) + evoModDelta);
@@ -338,9 +340,14 @@ function renderStack(p, stack, zoneKind) {
 
 function playFreshFromDrag(drag, p) {
   if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
-  const cost = S.card(drag.cardId).cost || 0;
-  if (cost > 0) S.spendMemory(state, cost);
-  S.playDigimonFresh(state, drag.player, drag.idx);
+  const category = S.card(drag.cardId).category;
+  if (category === 'option') {
+    S.useOptionCard(state, drag.player, drag.idx);
+  } else {
+    const cost = S.card(drag.cardId).cost || 0;
+    if (cost > 0) S.spendMemory(state, cost);
+    S.playDigimonFresh(state, drag.player, drag.idx);
+  }
   E.checkAutoEndTurn(state);
   dragData = null; render();
 }
@@ -369,12 +376,12 @@ function renderPlayerPanel(p) {
   ]);
 
   const raisingZone = h('div', { className: 'zone' }, [
-    h('div', { className: 'zone-label' }, '사육 에어리어'),
+    h('div', { className: 'zone-label' }, '육성 에어리어'),
     pl.raising ? renderStack(p, pl.raising, 'raising') : h('div', { className: 'empty-slot' }, '비어있음'),
   ]);
 
   const battleZone = h('div', { className: 'zone drop-zone' }, [
-    h('div', { className: 'zone-label' }, '배틀 에어리어 (핸드카드를 여기로 드래그하면 신규 등장)'),
+    h('div', { className: 'zone-label' }, '배틀 에어리어 (핸드카드를 여기로 드래그하면 등장)'),
     h('div', {
       className: 'stack-list',
       ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
@@ -577,13 +584,13 @@ function renderActions() {
   const pendingEffectsUi = renderPendingEffects();
   if (pendingEffectsUi) rows.push(pendingEffectsUi);
 
-  rows.push(h('div', { className: 'section-title' }, `페이즈별 행동 — 현재: ${state.phase} (${state.activePlayer})`));
+  rows.push(h('div', { className: 'section-title' }, `페이즈별 행동 — 현재: ${PHASE_LABEL[state.phase] || state.phase} (${state.activePlayer})`));
 
   if (state.phase === 'breeding') {
     const ap = state.activePlayer;
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', { onClick: () => { S.hatchDigitama(state, ap); render(); }, disabled: !!state.players[ap].raising }, '디지타마 부화'),
-      h('button', { onClick: () => { S.moveRaisingToBattle(state, ap); render(); }, disabled: !state.players[ap].raising }, '사육→배틀 이동'),
+      h('button', { onClick: () => { S.moveRaisingToBattle(state, ap); render(); }, disabled: !state.players[ap].raising }, '육성→배틀 이동'),
       h('span', { className: 'meta' }, '(둘 다 선택사항, 이동을 선택하면 이번 턴 부화는 불가 — 룰 확인됨)'),
     ]));
   }
@@ -602,14 +609,18 @@ function renderActions() {
         className: 'primary',
         disabled: !sel.hand || sel.hand.player !== state.activePlayer,
         onClick: () => {
-          const cost = val('costInput');
-          if (cost > 0) S.spendMemory(state, cost);
-          S.playDigimonFresh(state, sel.hand.player, sel.hand.idx);
+          if (S.card(sel.hand.cardId).category === 'option') {
+            S.useOptionCard(state, sel.hand.player, sel.hand.idx);
+          } else {
+            const cost = val('costInput');
+            if (cost > 0) S.spendMemory(state, cost);
+            S.playDigimonFresh(state, sel.hand.player, sel.hand.idx);
+          }
           sel.hand = null;
           E.checkAutoEndTurn(state);
           render();
         },
-      }, '선택 핸드카드 신규 등장'),
+      }, sel.hand && S.card(sel.hand.cardId).category === 'option' ? '선택 핸드카드 사용(옵션)' : '선택 핸드카드 등장'),
       h('button', {
         disabled: !sel.hand || !sel.stack || sel.stack.player !== state.activePlayer,
         onClick: () => {
@@ -722,8 +733,20 @@ function attackFlow(p, uid) {
   const dp = S.effectiveDP(dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
-  sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice' };
+  sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice', attackerCardId: dec.stack.cardId };
   render();
+}
+
+const RESULT_LABEL_KO = { attackerWins: '공격측 승리', defenderWins: '방어측 승리', tie: '동점 (양쪽 소멸)', jammedSurvive: '≪재밍≫으로 생존' };
+
+function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
+  const leftWins = result === 'attackerWins' || result === 'jammedSurvive';
+  const rightWins = result === 'defenderWins';
+  return h('div', { className: 'vs-battle' }, [
+    h('div', { className: `vs-side${leftWins ? ' vs-winner' : ''}` }, [cardChip(leftCardId, {}), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
+    h('div', { className: 'vs-mid' }, [h('div', { className: 'vs-vs' }, 'VS'), h('div', { className: 'vs-result' }, RESULT_LABEL_KO[result] || result)]),
+    h('div', { className: `vs-side${rightWins ? ' vs-winner' : ''}` }, [cardChip(rightCardId, {}), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
+  ]);
 }
 
 function renderPendingAttack() {
@@ -758,7 +781,7 @@ function renderPendingAttack() {
     }
   } else if (pa.stage === 'digimonResult') {
     const res = pa.battleRes;
-    rows.push(h('div', { className: 'effect-box' }, `결과: ${res.result} (공격측 DP${res.aDp} vs 방어측 DP${res.dDp})`));
+    rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result));
     if (res.result === 'defenderWins' || res.result === 'tie') {
       rows.push(h('div', { className: 'meta' }, '공격측이 소멸했어요 (배리어 등으로 살리려면 범용 도구로 직접 처리하세요).'));
     }
@@ -803,7 +826,8 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'effect-box' }, `${pa.opp} 시큐리티 0에서 피격 — 게임 종료!`));
     } else {
       res.checks.forEach((c, i) => {
-        rows.push(h('div', { className: 'effect-box' }, `체크 ${i + 1}/${res.checks.length}: ${S.card(c.revealed).nameKo} (DP${c.secDp}) → ${c.result}`));
+        rows.push(h('div', { className: 'zone-label' }, `시큐리티 체크 ${i + 1}/${res.checks.length}`));
+        rows.push(renderVsBattle(pa.attackerCardId, pa.dp, c.revealed, c.secDp, c.result));
       });
       const last = res.checks[res.checks.length - 1];
       if (last.result === 'defenderWins' || last.result === 'tie') {

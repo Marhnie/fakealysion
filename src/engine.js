@@ -58,7 +58,7 @@ export function nextPhase(state) {
   const pl = state.players[active];
   if (state.phase === 'unsuspend') {
     pl.battle.forEach(s => { s.suspended = false; });
-    S.log(state, `${active} 언서스펜드 페이즈: 전부 언서스펜드`);
+    S.log(state, `${active} 액티브 페이즈: 전부 액티브`);
     state.phase = 'draw';
     // First player's very first turn skips the draw phase entirely.
     if (state.turnNumber === 1 && active === state.firstPlayer) {

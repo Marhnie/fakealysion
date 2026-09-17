@@ -116,6 +116,7 @@ const TRIGGER_TAGS = {
   mainPhaseStart: ['메인 페이즈 시작 시', '메인 페이즈 개시 시'],
   turnStart: ['자신의 턴 시작 시', '자신의 턴 개시 시'],
   security: ['시큐리티'],
+  use: ['메인'],
   bothTurns: ['서로의 턴', '상대의 턴', '자신의 턴'],
 };
 
@@ -363,7 +364,7 @@ export function unsuspendStack(state, p, uid) {
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
   stack.suspended = false;
-  log(state, `${p} ${card(stack.cardId).nameKo} 액티브(언서스펜드)`);
+  log(state, `${p} ${card(stack.cardId).nameKo} 액티브`);
 }
 
 export function restStack(state, p, uid) {
@@ -477,9 +478,38 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   return stack;
 }
 
+// Using an Option card (9-1) is a distinct action from playing/evolving a
+// Digimon. Per 9-1-4/9-1-5, while its first 【메인】 effect is resolving the
+// card belongs to no zone; if it still belongs to no zone once that effect
+// finishes, it's immediately trashed. We approximate this by trashing it
+// up front — a script instruction like 'placeThisInBattle' (for cards that
+// say "그 후 이 카드를 배틀 에어리어에 놓는다") relocates it out of the trash
+// when it resolves.
+export function useOptionCard(state, p, handIndex) {
+  const pl = state.players[p];
+  const [id] = pl.hand.splice(handIndex, 1);
+  if (!id) return null;
+  const cost = card(id).cost || 0;
+  if (cost > 0) spendMemory(state, cost);
+  pl.trash.push(id);
+  log(state, `${p} ${card(id).nameKo} 사용 (코스트${cost})`);
+  queueTriggersFor(state, p, id, 'use');
+  return id;
+}
+
+export function placeThisInBattle(state, p, cardId) {
+  const pl = state.players[p];
+  const idx = pl.trash.lastIndexOf(cardId);
+  if (idx !== -1) pl.trash.splice(idx, 1);
+  const stack = { uid: 'u' + Math.random().toString(36).slice(2), cardId, sources: [], suspended: false, attackEligibleTurn: state.turnNumber + 1 };
+  pl.battle.push(stack);
+  log(state, `${p} ${card(cardId).nameKo}을(를) 배틀 에어리어에 놓음`);
+  return stack;
+}
+
 export function hatchDigitama(state, p) {
   const pl = state.players[p];
-  if (pl.raising) { log(state, `${p} 사육 에어리어에 이미 카드가 있어 부화 불가`); return null; }
+  if (pl.raising) { log(state, `${p} 육성 에어리어에 이미 카드가 있어 부화 불가`); return null; }
   const id = pl.digitamaDeck.shift();
   if (!id) return null;
   pl.raising = makeStack(id, state.turnNumber);
@@ -494,7 +524,7 @@ export function moveRaisingToBattle(state, p) {
   if ((c.level || 0) < 3) { log(state, `${p} ${c.nameKo}는 Lv.3 미만이라 이동 불가`); return null; }
   pl.battle.push(pl.raising);
   pl.raising = null;
-  log(state, `${p} ${c.nameKo} 사육→배틀 에어리어 이동`);
+  log(state, `${p} ${c.nameKo} 육성→배틀 에어리어 이동`);
   return true;
 }
 
@@ -617,6 +647,7 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   const aStack = apl.battle.find(s => s.uid === attackerUid);
   const dStack = dpl.battle.find(s => s.uid === defenderUid);
   if (!aStack || !dStack) return null;
+  const attackerCardId = aStack.cardId, defenderCardId = dStack.cardId;
   const aDp = effectiveDP(aStack), dDp = effectiveDP(dStack);
   let result;
   if (aDp > dDp) result = 'attackerWins';
@@ -627,7 +658,7 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   if (result === 'defenderWins' || result === 'tie') deleteStack(state, attackerP, attackerUid);
   if (result === 'attackerWins' || result === 'tie') deleteStack(state, defenderP, defenderUid);
   const piercing = hasKeyword(aStack, '관통');
-  return { result, aDp, dDp, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
+  return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }
 
 export function declareAttack(state, attackerP, stackUid) {
