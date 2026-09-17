@@ -352,6 +352,20 @@ function playFreshFromDrag(drag, p) {
   dragData = null; render();
 }
 
+// A small square tile showing a face-down pile's count + label — deck/
+// security/digitama/trash, styled like the reference layout's side piles
+// instead of plain text.
+function pileChip(label, count, extraClass = '') {
+  return h('div', { className: `pile-chip ${extraClass}` }, [
+    h('div', { className: 'pile-count' }, String(count)),
+    h('div', { className: 'pile-label' }, label),
+  ]);
+}
+
+function zonePill(text) {
+  return h('div', { className: 'zone-pill' }, text);
+}
+
 function renderPlayerPanel(p) {
   const pl = state.players[p];
   const isActive = state.activePlayer === p;
@@ -368,30 +382,35 @@ function renderPlayerPanel(p) {
   }, [
     h('b', {}, p.toUpperCase()),
     h('span', {}, pl.deckName),
-    h('span', {}, `덱 ${pl.deck.length}장`),
-    h('span', {}, `시큐리티 ${pl.security.length}장`),
-    h('span', {}, `트래시 ${pl.trash.length}장`),
-    h('span', {}, `디지타마덱 ${pl.digitamaDeck.length}장`),
     canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 여기에 놓아서 이 플레이어 공격') : null,
   ]);
 
-  const raisingZone = h('div', { className: 'zone' }, [
-    h('div', { className: 'zone-label' }, '육성 에어리어'),
-    pl.raising ? renderStack(p, pl.raising, 'raising') : h('div', { className: 'empty-slot' }, '비어있음'),
+  const pileRail = h('div', { className: 'pile-rail' }, [
+    pileChip('덱', pl.deck.length, 'pile-deck'),
+    pileChip('시큐리티', pl.security.length, 'pile-security'),
+    pileChip('디지타마', pl.digitamaDeck.length, 'pile-digitama'),
+    pileChip('트래시', pl.trash.length, 'pile-trash'),
   ]);
 
-  const battleZone = h('div', { className: 'zone drop-zone' }, [
-    h('div', { className: 'zone-label' }, '배틀 에어리어 (핸드카드를 여기로 드래그하면 등장)'),
+  const raisingZone = h('div', { className: 'zone hex-field' }, [
+    zonePill('육성 에어리어'),
+    h('div', { className: 'hex-slot-row' }, [
+      pl.raising ? renderStack(p, pl.raising, 'raising') : h('div', { className: 'empty-slot' }, '비어있음'),
+    ]),
+  ]);
+
+  const battleZone = h('div', { className: 'zone drop-zone hex-field' }, [
+    zonePill('배틀 에어리어 (핸드카드를 여기로 드래그하면 등장)'),
     h('div', {
-      className: 'stack-list',
+      className: 'stack-list hex-slot-row',
       ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
       ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
     }, pl.battle.length ? pl.battle.map(s => renderStack(p, s, 'battle')) : [h('div', { className: 'empty-slot' }, '비어있음')]),
   ]);
 
-  const handZone = h('div', { className: 'zone', style: 'flex:1' }, [
-    h('div', { className: 'zone-label' }, `핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
+  const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
+    zonePill(`핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
     h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
       selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
       draggable: p === state.activePlayer && state.phase === 'main',
@@ -402,8 +421,28 @@ function renderPlayerPanel(p) {
 
   return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, [
     header,
-    h('div', { className: 'zone-row' }, [raisingZone, battleZone]),
-    handZone,
+    h('div', { className: 'field-row' }, [
+      h('div', { className: 'field-zones' }, [
+        h('div', { className: 'zone-row' }, [raisingZone, battleZone]),
+        handZone,
+      ]),
+      pileRail,
+    ]),
+  ]);
+}
+
+// Horizontal memory-gauge number line (-10..0..+10 with a position marker),
+// shared between both panels — mirrors the physical "메모리 게이지" strip.
+function renderMemoryTrack() {
+  const cells = [];
+  for (let n = 10; n >= 0; n--) cells.push(n);
+  for (let n = 1; n <= 10; n++) cells.push(n);
+  const numRow = h('div', { className: 'mem-numbers' },
+    cells.map((n, i) => h('span', { className: 'mem-num' + (i === 10 ? ' mem-zero' : '') }, String(n))));
+  const pos = ((state.memory + 10) / 20) * 100;
+  return h('div', { className: 'mem-track' }, [
+    numRow,
+    h('div', { className: 'mem-marker', style: `left:${pos}%` }),
   ]);
 }
 
@@ -412,6 +451,7 @@ function renderBoard() {
   return h('div', { className: 'board' }, [
     h('div', { className: 'table-surface' }, [
       renderPlayerPanel('p2'),
+      renderMemoryTrack(),
       renderPlayerPanel('p1'),
     ]),
   ]);
