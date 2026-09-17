@@ -349,9 +349,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
         dragData = null; render();
         return;
       }
-      const check = E.canNormalEvolve(stack.cardId, drag.cardId, stack.extraColors || []);
+      // canEvolveAny checks evoNormal AND every special "〔진화〕 <이름/특징>"
+      // line on the target — a failure here means NO printed condition
+      // justifies this evolution, so the drop must be rejected outright
+      // rather than silently let through for cost 0.
+      const check = E.canEvolveAny(stack.cardId, drag.cardId, stack.extraColors || []);
+      if (!check.ok) {
+        S.log(state, `${p} 진화 조건 불일치로 거부: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} (${check.reason})`);
+        dragData = null; render();
+        return;
+      }
       const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
-      const cost = Math.max(0, (check.ok ? check.cost : 0) + evoModDelta);
+      const cost = Math.max(0, check.cost + evoModDelta);
       S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
       E.checkAutoEndTurn(state);
       dragData = null; render();

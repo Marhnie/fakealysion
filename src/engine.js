@@ -181,3 +181,54 @@ export function canNormalEvolve(sourceCardId, targetCardId, extraColors = []) {
   }
   return { ok: true, cost: normal.cost, note: '이건 "일반 진화" 조건만 체크한 것 — 카드에 특수진화/조그레스/DNA 등 대체 조건이 텍스트로 더 있을 수 있음(효과 텍스트 참고)' };
 }
+
+// A card can print several alternate "〔진화〕 <조건> : 코스트 N" lines (special
+// evolutions keyed on a specific name/trait rather than the plain
+// level+color path evoNormal captures) — e.g. "〔진화〕 「페닉스몬」 : 코스트 2"
+// (exact name) or "〔진화〕 특징 「CS」를 가진 Lv.5 : 코스트 3" (trait+level).
+// Scans the card's own raw text for every such line, on top of evoNormal.
+function parseEvoConditions(targetCardId) {
+  const tgt = S.card(targetCardId);
+  const conditions = [];
+  if (tgt.evoNormal) conditions.push({ ...tgt.evoNormal, raw: tgt.evoNormal.conditionText || '' });
+  const text = tgt.effectKo || '';
+  for (const m of text.matchAll(/〔진화〕\s*([^:：\n]+?)\s*[:：]\s*코스트\s*(\d+)/g)) {
+    const desc = m[1].trim();
+    const cost = Number(m[2]);
+    const cond = { cost, raw: desc };
+    const lvM = desc.match(/Lv\.(\d+)/);
+    if (lvM) cond.level = Number(lvM[1]);
+    const includesM = desc.match(/명칭에\s*「([^」]+)」(?:을|를)?\s*포함/);
+    if (includesM) cond.nameIncludes = includesM[1];
+    const traitM = desc.match(/특징\s*「([^」]+)」(?:을|를)?\s*가진/);
+    if (traitM) cond.trait = traitM[1];
+    const bareNameM = desc.match(/^「([^」]+)」$/);
+    if (bareNameM) cond.nameExact = bareNameM[1];
+    conditions.push(cond);
+  }
+  return conditions;
+}
+
+// Tries evoNormal AND every special "〔진화〕 <이름/특징 조건>" line printed on
+// the target — returns the first one the source actually satisfies. Unlike
+// canNormalEvolve, a failed result here means the drop should be BLOCKED,
+// not silently allowed for free — there's no condition left that could
+// justify it.
+export function canEvolveAny(sourceCardId, targetCardId, extraColors = []) {
+  const src = S.card(sourceCardId);
+  const conditions = parseEvoConditions(targetCardId);
+  if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
+  const srcColors = [...(src.colors || []), ...extraColors];
+  for (const cond of conditions) {
+    if (typeof cond.level === 'number' && src.level !== cond.level) continue;
+    if (cond.nameExact && src.nameKo !== cond.nameExact) continue;
+    if (cond.nameIncludes && !src.nameKo.includes(cond.nameIncludes)) continue;
+    if (cond.trait && !(src.types || []).some(t => t.includes(cond.trait))) continue;
+    if (cond.colors && cond.colors.length) {
+      const isAny = cond.colors.length >= 7;
+      if (!isAny && !cond.colors.some(c => srcColors.includes(c))) continue;
+    }
+    return { ok: true, cost: cond.cost, raw: cond.raw };
+  }
+  return { ok: false, reason: `어떤 진화 조건도 만족 못함 (대상: ${src.nameKo} Lv.${src.level})` };
+}

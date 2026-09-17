@@ -461,11 +461,18 @@ function parseStaticGrants(text) {
     if ((m = t.match(/^DP\s*([+-]\d+)$/))) { out.dp += Number(m[1]); continue; }
     if (/^링크\s*[:：]/.test(t)) continue; // handled by parseLinkGrant, not a standing stat
     if (/오버플로우/.test(t)) continue; // handled by overflowDelta, an on-leave trigger not a standing stat
-    const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫]$/);
+    // The keyword token is often followed by a plain-language parenthetical
+    // explanation on the SAME line (e.g. beginner-deck cards spelling out
+    // what the keyword does) — that trailing "(...)" must still count as a
+    // bare grant, not get rejected as "extra prose" the way a genuine
+    // triggered-effect clause would.
+    const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫](?:\s*\([^()]*\))?$/);
     if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
     const label = bare[1];
     if (['재밍', '블로커', '관통', '재기동'].includes(label)) { out.keywords[label] = true; continue; }
-    if ((m = label.match(/^S\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
+    // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
+    // beginner/starter-deck cards) are the same keyword.
+    if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
     if ((m = label.match(/^링크\+(\d+)$/))) { out.keywords['링크+'] = (out.keywords['링크+'] || 0) + Number(m[1]); continue; } // 4-9-5: raises the 1-per-Digimon Link Card cap
     // other bare keyword tokens (e.g. 《돌진》) intentionally left unmapped for now —
     // no existing engine flag consumes them; surfaced via the effect box only.
@@ -473,16 +480,24 @@ function parseStaticGrants(text) {
   return out;
 }
 
-// Recompute a stack's inherited DP/keywords from its evolution sources AND
-// attached link cards. Call after anything that changes either list.
+// Recompute a stack's standing DP/keywords from THREE sources: the current
+// top card's own printed bare lines (e.g. a Digimon that just innately has
+// "《블로커》" on its own text — confirmed extremely common, ST1-06 etc. —
+// applies to itself while it's the active top card), its evolution
+// sources', and any attached link cards' inherited text. Call after
+// anything that changes stack.cardId, stack.sources, or stack.linkCards.
 export function recomputeStackGrants(stack) {
   let dp = 0;
   let secAtk = 0;
   let linkCap = 0;
   const flags = {};
-  const contributors = [...stack.sources, ...(stack.linkCards || []).map(l => l.cardId)];
-  for (const id of contributors) {
-    const g = parseStaticGrants(card(id).inheritedKo);
+  const contributors = [
+    { id: stack.cardId, own: true },
+    ...stack.sources.map(id => ({ id, own: false })),
+    ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
+  ];
+  for (const { id, own } of contributors) {
+    const g = parseStaticGrants(own ? card(id).effectKo : card(id).inheritedKo);
     dp += g.dp;
     secAtk += g.keywords['시큐리티어택'] || 0;
     linkCap += g.keywords['링크+'] || 0;
@@ -749,6 +764,7 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
+  recomputeStackGrants(stack); // picks up any keyword the card innately has on its own printed text
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 신규 등장 (배틀 에어리어)`);
   queueTriggersForStack(state, p, stack, 'play');
@@ -779,6 +795,7 @@ export function placeThisInBattle(state, p, cardId) {
   const idx = pl.trash.lastIndexOf(cardId);
   if (idx !== -1) pl.trash.splice(idx, 1);
   const stack = { uid: 'u' + Math.random().toString(36).slice(2), cardId, sources: [], suspended: false, attackEligibleTurn: state.turnNumber + 1 };
+  recomputeStackGrants(stack);
   pl.battle.push(stack);
   log(state, `${p} ${card(cardId).nameKo}을(를) 배틀 에어리어에 놓음`);
   return stack;
@@ -819,6 +836,7 @@ export function hatchDigitama(state, p) {
   const id = pl.digitamaDeck.shift();
   if (!id) return null;
   pl.raising = makeStack(id, state.turnNumber);
+  recomputeStackGrants(pl.raising);
   state.breedingActionTaken = true;
   log(state, `${p} 디지타마 부화: ${card(id).nameKo}`);
   return pl.raising;
@@ -1034,8 +1052,18 @@ export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
     const id = pl.security.shift();
     pl.trash.push(id);
     const suppressSecurityEffect = attackerStack && hasKeyword(attackerStack, '옵션시큐리티효과무효') && card(id).category === 'option';
-    if (!suppressSecurityEffect) queueTriggersFor(state, defenderP, id, 'security');
-    else log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
+    if (!suppressSecurityEffect) {
+      // A card's 【시큐리티】 text is very often printed in the SAME "not the
+      // active top card" box as its 진화원(evolution-source) effects
+      // (inheritedKo/sourceEffect) — real examples confirmed (ST1-12/13/14/
+      // 15). Scanning only effectKo silently missed all of these. There's
+      // no stack for a card being revealed straight from security, so pass
+      // stackUid=null.
+      queueTriggersFor(state, defenderP, id, 'security');
+      queueInheritedTriggersFor(state, defenderP, id, 'security', null);
+    } else {
+      log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
+    }
     const secDp = (card(id).dp || 0) + activeSecurityDPBonus(state, defenderP);
     let result;
     if (attackerDp > secDp) result = 'attackerWins';
