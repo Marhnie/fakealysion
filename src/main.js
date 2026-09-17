@@ -102,6 +102,13 @@ function matchesDbFilter(c) {
 function allCardIds() { return Object.keys(S.CARDS); }
 
 function renderDeckBuilderScreen() {
+  // Full re-render destroys/recreates every DOM node (this app's usual
+  // pattern), which would otherwise steal focus out of the search box on
+  // every keystroke. Snapshot + restore focus/cursor across the rebuild.
+  const prevActive = document.activeElement;
+  const wasSearchFocused = prevActive && prevActive.placeholder === '이름/카드번호 검색';
+  const prevCursor = wasSearchFocused ? prevActive.selectionStart : null;
+
   app.innerHTML = '';
   const v = DB.validate(dbDraft);
   app.appendChild(h('div', { className: 'topbar' }, [
@@ -174,6 +181,11 @@ function renderDeckBuilderScreen() {
     h('div', { className: 'player-panel' }, [filterRow, cardGrid, loadMore]),
     rightCol,
   ]));
+
+  if (wasSearchFocused) {
+    const freshInput = [...app.querySelectorAll('input')].find(i => i.placeholder === '이름/카드번호 검색');
+    if (freshInput) { freshInput.focus(); freshInput.setSelectionRange(prevCursor, prevCursor); }
+  }
 }
 
 function deckLineItem(id, n) {
