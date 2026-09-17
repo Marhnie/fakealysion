@@ -330,6 +330,14 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     onDrop: (drag) => {
       if (!drag) return;
+      // An opposing battle stack dropped directly onto this one is a direct
+      // attack declaration on THIS specific digimon — no separate target-
+      // choice menu needed, the drop location already said which target.
+      if (drag.kind === 'stack' && drag.player !== p && drag.zone === 'battle' && zoneKind === 'battle') {
+        attackFlow(drag.player, drag.uid, stack.uid);
+        dragData = null; render();
+        return;
+      }
       if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
       // Dropping the hand card on the SECOND of two selected battle stacks
       // is how DNA/Jogress fusion is triggered — no separate button needed,
@@ -420,7 +428,7 @@ function renderPlayerPanel(p) {
     ondragleave: canAttackThisPlayer ? (e) => e.currentTarget.classList.remove('drop-hover') : undefined,
     ondrop: canAttackThisPlayer ? (e) => {
       e.preventDefault(); e.currentTarget.classList.remove('drop-hover');
-      if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle') { attackFlow(dragData.player, dragData.uid); }
+      if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle') { attackFlow(dragData.player, dragData.uid, 'PLAYER'); }
       dragData = null;
     } : undefined,
   }, [
@@ -433,7 +441,6 @@ function renderPlayerPanel(p) {
   const pileRail = h('div', { className: 'pile-rail' }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
-    pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { S.hatchDigitama(state, p); render(); } : undefined),
     pileChip('트래시', pl.trash.length, 'pile-trash'),
   ]);
 
@@ -444,6 +451,9 @@ function renderPlayerPanel(p) {
       pl.raising
         ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { S.moveRaisingToBattle(state, p); render(); } } : {})
         : h('div', { className: 'empty-slot' }, '비어있음'),
+      // digitama pile lives right next to the raising area it feeds, not
+      // grouped with the unrelated deck/security/trash counters
+      pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { S.hatchDigitama(state, p); render(); } : undefined),
     ]),
   ]);
 
@@ -776,7 +786,24 @@ function describeSelectedEffects() {
   return parts.join('\n\n');
 }
 
-function attackFlow(p, uid) {
+// Some option effects grant a one-off "can only directly attack a Digimon
+// if you also control a named ally" style restriction — shared between the
+// direct-drop auto-resolve path and the fallback target-choice menu.
+function blockedFromDigimonTarget(p, attackerStack) {
+  const restrictions = attackerStack?.dynamicRestrictions || [];
+  return restrictions.some(r => {
+    if (r.type !== 'noDigimonAttackUnlessOwn') return true;
+    return !state.players[p].battle.some(s => S.card(s.cardId).nameKo.includes(r.filter.nameIncludes));
+  });
+}
+
+// `directTarget`: 'PLAYER' to attack the opponent player directly, an
+// opposing stack uid to attack that specific Digimon, or omitted to fall
+// back to the target-choice menu (e.g. an illegal/ambiguous drop). Letting
+// the drop location itself express the target — instead of always opening
+// a menu — is what makes attack (the single most common action) a single
+// drag instead of drag-then-pick-from-a-list.
+function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
   S.queueTriggersForStack(state, p, dec.stack, 'attack');
@@ -784,6 +811,14 @@ function attackFlow(p, uid) {
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
   sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice', attackerCardId: dec.stack.cardId };
+
+  if (directTarget === 'PLAYER') {
+    sel.pendingAttack.stage = 'blockerCheck';
+  } else if (directTarget && digimonTargets.includes(directTarget) && !blockedFromDigimonTarget(p, dec.stack)) {
+    const res = S.resolveDigimonBattle(state, p, uid, directTarget);
+    sel.pendingAttack.stage = 'digimonResult';
+    sel.pendingAttack.battleRes = res;
+  }
   render();
 }
 
@@ -807,11 +842,7 @@ function renderPendingAttack() {
 
   if (pa.stage === 'targetChoice') {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
-    const restrictions = attackerStack?.dynamicRestrictions || [];
-    const blockedByDynamic = restrictions.some(r => {
-      if (r.type !== 'noDigimonAttackUnlessOwn') return true;
-      return !state.players[pa.attacker].battle.some(s => S.card(s.cardId).nameKo.includes(r.filter.nameIncludes));
-    });
+    const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', { className: 'primary', onClick: () => { pa.stage = 'blockerCheck'; render(); } }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
     ]));
@@ -910,5 +941,5 @@ function renderLog() {
   ]);
 }
 
-window.__dbg = () => ({ dragData, sel, state, S, E, Effects });
+window.__dbg = () => ({ dragData, sel, state, S, E, Effects, render, attackFlow });
 init();
