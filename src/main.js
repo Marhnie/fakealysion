@@ -1,6 +1,7 @@
 import * as S from './state.js';
 import * as E from './engine.js';
 import * as Effects from './effects.js';
+import * as DB from './deckbuilder.js';
 
 const app = document.getElementById('app');
 let state = null;
@@ -29,26 +30,163 @@ async function init() {
   renderSetup();
 }
 
+let setupPick = { p1: 'deck1', p2: 'deck2' };
+
+function deckOptionsList() {
+  const saved = DB.loadSavedDecks();
+  return [
+    { key: 'deck1', label: `[기본] ${S.DECKS.deck1.name}` },
+    { key: 'deck2', label: `[기본] ${S.DECKS.deck2.name}` },
+    ...Object.keys(saved).map(name => ({ key: 'saved:' + name, label: `[커스텀] ${name}` })),
+  ];
+}
+
+function resolveDeckPick(key) {
+  if (key.startsWith('saved:')) {
+    const saved = DB.loadSavedDecks();
+    return saved[key.slice(6)];
+  }
+  return key; // built-in key string, looked up inside state.newGame
+}
+
 function renderSetup() {
   app.innerHTML = '';
   app.appendChild(h('div', { className: 'topbar' }, [
     h('b', {}, '디지몬 카드게임 시뮬레이터'),
   ]));
+  const options = deckOptionsList();
+  const selectFor = (p) => {
+    const sel = h('select', {}, options.map(o => h('option', { value: o.key }, o.label)));
+    sel.value = setupPick[p];
+    sel.addEventListener('change', (e) => { setupPick[p] = e.target.value; });
+    return sel;
+  };
   const box = h('div', { className: 'board' }, [
     h('div', { className: 'player-panel' }, [
       h('div', { className: 'section-title' }, '새 게임'),
+      h('div', { className: 'actions-row' }, [h('span', {}, 'P1 덱'), selectFor('p1')]),
+      h('div', { className: 'actions-row' }, [h('span', {}, 'P2 덱'), selectFor('p2')]),
       h('div', { className: 'actions-row' }, [
-        h('button', { className: 'primary', onClick: startNewGame }, '덱1 vs 덱2로 새 게임 시작'),
+        h('button', { className: 'primary', onClick: startNewGame }, '선택한 덱으로 새 게임 시작'),
+        h('button', { onClick: openDeckBuilder }, '덱 빌더 열기'),
       ]),
     ]),
   ]);
   app.appendChild(box);
 }
 
+// ---------- deck builder ----------
+
+let dbDraft = null;
+let dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+let dbSavedName = '';
+let dbLastError = '';
+
+function openDeckBuilder() {
+  dbDraft = DB.newDraft();
+  dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+  dbSavedName = '';
+  renderDeckBuilderScreen();
+}
+
+function matchesDbFilter(c) {
+  if (dbFilter.category && c.category !== dbFilter.category) return false;
+  if (dbFilter.colors.length && !dbFilter.colors.some(col => (c.colors || []).includes(col))) return false;
+  if (dbFilter.q) {
+    const q = dbFilter.q.toLowerCase();
+    if (!c.nameKo.includes(dbFilter.q) && !(c.id || '').toLowerCase().includes(q) && !(c.nameEn || '').toLowerCase().includes(q)) return false;
+  }
+  return true;
+}
+
+function allCardIds() { return Object.keys(S.CARDS); }
+
+function renderDeckBuilderScreen() {
+  app.innerHTML = '';
+  const v = DB.validate(dbDraft);
+  app.appendChild(h('div', { className: 'topbar' }, [
+    h('b', {}, '덱 빌더'),
+    h('span', {}, `메인 ${v.mainN}/50`),
+    h('span', { style: v.digitamaN > 5 ? 'color:var(--danger)' : '' }, `디지타마 ${v.digitamaN}/5`),
+    h('button', { onClick: () => { state = null; render(); } }, '나가기'),
+  ]));
+
+  const filterRow = h('div', { className: 'actions-row' }, [
+    (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
+    ...['red', 'blue', 'yellow', 'green', 'black', 'purple', 'white'].map(col => h('button', {
+      className: dbFilter.colors.includes(col) ? 'primary' : '',
+      onClick: () => { const i = dbFilter.colors.indexOf(col); if (i === -1) dbFilter.colors.push(col); else dbFilter.colors.splice(i, 1); renderDeckBuilderScreen(); },
+    }, col)),
+    ...['', 'digimon', 'tamer', 'option', 'digitama'].map(cat => h('button', {
+      className: dbFilter.category === cat ? 'primary' : '',
+      onClick: () => { dbFilter.category = cat; renderDeckBuilderScreen(); },
+    }, cat || '전체')),
+  ]);
+
+  const matched = allCardIds().filter(id => matchesDbFilter(S.card(id)));
+  const shown = matched.slice(0, dbFilter.pageSize);
+  const cardGrid = h('div', { className: 'hand-list' }, shown.map(id => {
+    const have = DB.copiesInDeck(dbDraft, id);
+    return cardChip(id, {
+      selected: have > 0,
+      sourcesCount: have || undefined,
+      onClick: () => { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; renderDeckBuilderScreen(); },
+    });
+  }));
+  if (dbLastError) filterRow.appendChild(h('span', { style: 'color:var(--danger)' }, dbLastError));
+  const loadMore = matched.length > shown.length
+    ? h('button', { onClick: () => { dbFilter.pageSize += 60; renderDeckBuilderScreen(); } }, `더 보기 (${matched.length - shown.length}장 더 있음)`)
+    : h('span', { className: 'meta' }, `총 ${matched.length}장 검색됨`);
+
+  const draftMainList = Object.entries(dbDraft.main).map(([id, n]) => deckLineItem(id, n));
+  const draftDigitamaList = Object.entries(dbDraft.digitama).map(([id, n]) => deckLineItem(id, n));
+
+  const saved = DB.loadSavedDecks();
+  const nameInput = h('input', { placeholder: '덱 이름', value: dbSavedName });
+  nameInput.addEventListener('input', (e) => { dbSavedName = e.target.value; });
+
+  const rightCol = h('div', { className: 'player-panel', style: 'min-width:260px;' }, [
+    h('div', { className: 'section-title' }, '내 덱'),
+    v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'),
+    h('div', { className: 'zone-label' }, `메인덱 (${v.mainN}/50)`),
+    h('div', { className: 'stack-list' }, draftMainList),
+    h('div', { className: 'zone-label' }, `디지타마덱 (${v.digitamaN}/5)`),
+    h('div', { className: 'stack-list' }, draftDigitamaList),
+    h('div', { className: 'actions-row' }, [nameInput, h('button', { className: 'primary', onClick: () => {
+      if (!dbSavedName.trim()) return;
+      const all = DB.loadSavedDecks();
+      all[dbSavedName.trim()] = DB.toDeckDefRecord({ ...dbDraft, name: dbSavedName.trim() });
+      DB.saveSavedDecks(all);
+      renderDeckBuilderScreen();
+    } }, '저장')]),
+    Object.keys(saved).length ? h('div', {}, [
+      h('div', { className: 'zone-label' }, '저장된 덱'),
+      ...Object.keys(saved).map(name => h('div', { className: 'actions-row' }, [
+        h('span', {}, name),
+        h('button', { onClick: () => { dbDraft = { name, main: { ...saved[name].main }, digitama: { ...saved[name].digitama } }; dbSavedName = name; renderDeckBuilderScreen(); } }, '불러오기'),
+        h('button', { className: 'danger', onClick: () => { delete saved[name]; DB.saveSavedDecks(saved); renderDeckBuilderScreen(); } }, '삭제'),
+      ])),
+    ]) : null,
+    h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; renderDeckBuilderScreen(); } }, '새로 만들기(초기화)'),
+  ]);
+
+  app.appendChild(h('div', { className: 'board' }, [
+    h('div', { className: 'player-panel' }, [filterRow, cardGrid, loadMore]),
+    rightCol,
+  ]));
+}
+
+function deckLineItem(id, n) {
+  return cardChip(id, {
+    sourcesCount: n,
+    onClick: () => { DB.removeCard(dbDraft, id); renderDeckBuilderScreen(); },
+  });
+}
+
 let mulliganDecided = { p1: false, p2: false };
 
 function startNewGame() {
-  state = S.newGame('deck1', 'deck2');
+  state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
   E.drawOpeningHand(state, 'p1');
   E.drawOpeningHand(state, 'p2');
   mulliganDecided = { p1: false, p2: false };

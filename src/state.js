@@ -74,8 +74,8 @@ function nextUid() {
   return 'u' + (uidCounter++);
 }
 
-function emptyPlayer(deckKey) {
-  const deckDef = DECKS[deckKey];
+function emptyPlayer(deckKeyOrDef) {
+  const deckDef = typeof deckKeyOrDef === 'string' ? DECKS[deckKeyOrDef] : deckKeyOrDef;
   return {
     deckName: deckDef.name,
     hand: [],
