@@ -877,7 +877,11 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   drawCards(state, p, 1); // universal digivolve bonus draw
   recomputeStackGrants(stack);
   ruleCheckDP(state, p, stack);
-  queueTriggersForStack(state, p, stack, 'digivolve');
+  // 【진화 시】/【등장 시】 (and any equivalent inherited from evolution
+  // sources) only fire while the resulting card is actually in the battle
+  // area — evolving a card that's still sitting in the raising area (legal,
+  // just uncommon) doesn't trigger them.
+  if (pl.battle.includes(stack)) queueTriggersForStack(state, p, stack, 'digivolve');
   return stack;
 }
 

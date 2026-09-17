@@ -259,6 +259,7 @@ function afterMulliganCheck() {
 function render() {
   if (!state) return renderSetup();
   E.autoAdvance(state);
+  autoRunMandatoryPending();
   app.innerHTML = '';
   app.classList.toggle('log-open', panelsOpen.log);
   app.appendChild(renderTopbar());
@@ -613,6 +614,24 @@ async function runPendingScript(trigger) {
   render();
 }
 
+// 15-8-3-1: a triggered effect ALWAYS triggers once its condition is met —
+// there's no top-level "activate or not" for the trigger itself in this
+// game's rules (any real optionality is a sub-decision WITHIN resolution,
+// e.g. "up to N cards" or picking a target, which the compiled script
+// already pauses for via ctx.choose). So a pending item with a
+// successfully-compiled script should just run the instant it appears,
+// not sit waiting for a redundant "run it?" click. Only genuinely
+// uncompiled text (script.length === 0) needs the manual fallback UI.
+const autoRunAttempted = new Set();
+function autoRunMandatoryPending() {
+  for (const t of state.pending) {
+    if (t.resolved || autoRunAttempted.has(t.uid)) continue;
+    if (!scriptFor(t).length) continue;
+    autoRunAttempted.add(t.uid);
+    runPendingScript(t);
+  }
+}
+
 function renderPendingEffects() {
   if (!state.pending.length) return null;
   const rows = state.pending.map(t => {
@@ -623,7 +642,7 @@ function renderPendingEffects() {
       h('div', {}, t.text),
       h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
         script.length
-          ? h('button', { className: 'primary', onClick: () => { runPendingScript(t); } }, `자동 실행 (${script.length}개 동작 인식됨, 선택이 필요하면 팝업)`)
+          ? h('span', { className: 'meta' }, '자동 처리 중…')
           : h('span', { className: 'meta' }, '자동 인식 실패 — 아래 버튼이나 범용 도구로 수동 처리'),
         ...quickApplyButtonsFor(t.text, t.player),
         h('button', { className: 'danger', onClick: () => { S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
