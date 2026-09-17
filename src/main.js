@@ -297,6 +297,7 @@ function cardChip(cardId, opts = {}) {
   const cls = ['card-chip'];
   if (opts.selected) cls.push('selected');
   if (opts.suspended) cls.push('suspended');
+  if (opts.attackable) cls.push('attackable');
   const meta = [c.level ? `Lv.${c.level}` : c.category, c.dp ? `DP${c.dp}` : null, c.cost != null ? `C${c.cost}` : null]
     .filter(Boolean).join(' · ');
   const attrs = { className: cls.join(' '), onClick: opts.onClick };
@@ -328,6 +329,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     sourcesCount: stack.sources.length,
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
+    attackable: !!opts.attackTarget,
     onDrop: (drag) => {
       if (!drag) return;
       // An opposing battle stack dropped directly onto this one is a direct
@@ -365,16 +367,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       E.checkAutoEndTurn(state);
       dragData = null; render();
     },
-    onClick: opts.onClickOverride || (() => {
-      if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; }
-      else if (sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
-        sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
-      } else {
-        sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
-        sel.stack2 = null;
-      }
-      render();
-    }),
+    onClick: opts.onClickOverride || (opts.attackTarget
+      ? (() => { attackFlow(opts.attackTarget.attackerP, opts.attackTarget.attackerUid, stack.uid); sel.stack = null; render(); })
+      : (() => {
+        if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; }
+        else if (sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
+          sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
+        } else {
+          sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
+          sel.stack2 = null;
+        }
+        render();
+      })),
   });
 
   const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
@@ -430,20 +434,30 @@ function zonePill(text) {
 function renderPlayerPanel(p) {
   const pl = state.players[p];
   const isActive = state.activePlayer === p;
-  const canAttackThisPlayer = dragData && dragData.kind === 'stack' && dragData.player !== p;
+  const canAttackThisPlayerByDrag = dragData && dragData.kind === 'stack' && dragData.player !== p;
+  // Selecting your own eligible attacker (click, same as picking DNA/link
+  // targets) highlights every legal target on the OPPONENT's side directly
+  // on the board — the player and each attackable Digimon — as a second,
+  // more discoverable way to attack besides dragging.
+  const selectedEnemyAttacker = (sel.stack && sel.stack.player !== p && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer && state.phase === 'main')
+    ? findStack(sel.stack) : null;
+  const canAttackThisPlayerByClick = selectedEnemyAttacker && !selectedEnemyAttacker.suspended;
+  const canAttackThisPlayer = canAttackThisPlayerByDrag || canAttackThisPlayerByClick;
+  const legalClickTargets = canAttackThisPlayerByClick ? new Set(S.legalDigimonTargets(state, sel.stack.player, sel.stack.uid)) : new Set();
   const header = h('div', {
-    className: 'player-header',
-    ondragover: canAttackThisPlayer ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } : undefined,
-    ondragleave: canAttackThisPlayer ? (e) => e.currentTarget.classList.remove('drop-hover') : undefined,
-    ondrop: canAttackThisPlayer ? (e) => {
+    className: `player-header${canAttackThisPlayer ? ' attackable' : ''}`,
+    ondragover: canAttackThisPlayerByDrag ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } : undefined,
+    ondragleave: canAttackThisPlayerByDrag ? (e) => e.currentTarget.classList.remove('drop-hover') : undefined,
+    ondrop: canAttackThisPlayerByDrag ? (e) => {
       e.preventDefault(); e.currentTarget.classList.remove('drop-hover');
       if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle') { attackFlow(dragData.player, dragData.uid, 'PLAYER'); }
       dragData = null;
     } : undefined,
+    onClick: canAttackThisPlayerByClick ? () => { attackFlow(sel.stack.player, sel.stack.uid, 'PLAYER'); sel.stack = null; render(); } : undefined,
   }, [
     h('b', {}, p.toUpperCase()),
     h('span', {}, pl.deckName),
-    canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 여기에 놓아서 이 플레이어 공격') : null,
+    canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 클릭/드래그로 이 플레이어 공격') : null,
   ]);
 
   // 6-4: hatch OR move, not both, per breeding phase visit
@@ -474,7 +488,7 @@ function renderPlayerPanel(p) {
       ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
       ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
-    }, pl.battle.length ? pl.battle.map(s => renderStack(p, s, 'battle')) : [h('div', { className: 'empty-slot' }, '비어있음')]),
+    }, pl.battle.length ? pl.battle.map(s => renderStack(p, s, 'battle', legalClickTargets.has(s.uid) ? { attackTarget: { attackerP: sel.stack.player, attackerUid: sel.stack.uid } } : {})) : [h('div', { className: 'empty-slot' }, '비어있음')]),
   ]);
 
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
