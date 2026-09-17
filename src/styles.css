@@ -32,24 +32,26 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 }
 .table-surface {
   display: flex; flex-direction: column; gap: 14px;
-  transform-style: preserve-3d; transform: rotateX(22deg); transform-origin: top center;
   padding-top: 24px;
 }
+/* NOTE: no 3D transforms (rotateX/translateZ/preserve-3d) anywhere in this
+   file, deliberately — Chromium breaks native HTML5 drag-and-drop for
+   draggable elements sitting inside a 3D-transformed ancestor, and drag is
+   the ONLY way to play cards in this UI. Depth is faked with 2D-safe
+   tricks only (scale, shadows, gradients), never real 3D transforms. */
 .player-panel {
   background: linear-gradient(180deg, rgba(30,26,20,0.92) 0%, rgba(14,12,9,0.95) 100%);
   border: 1px solid var(--holo-line); border-radius: 10px; padding: 10px 14px;
   box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,240,210,0.08);
-  transform-style: preserve-3d;
 }
-.table-surface .player-panel:first-child { transform: translateZ(-24px) scale(0.97); filter: brightness(0.9); } /* opponent — sits further back on the table */
-.table-surface .player-panel:last-child { transform: translateZ(18px); } /* self — closer to the viewer */
+.table-surface .player-panel:first-child { transform: scale(0.97); filter: brightness(0.9); } /* opponent — reads as further back on the table */
 .player-panel.active { border-color: var(--holo-accent); box-shadow: 0 18px 30px -10px rgba(0,0,0,0.8), 0 0 0 1px var(--holo-accent) inset; }
 .player-header { display: flex; gap: 16px; align-items: center; font-weight: 600; margin-bottom: 8px; color: var(--muted); flex-wrap: wrap; }
 .player-header b { color: var(--text); flex-shrink: 0; }
 .player-header span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 
 /* memory number-line, shared between the two panels — printed chalk-line style */
-.mem-track { position: relative; padding: 6px 0; transform-style: preserve-3d; }
+.mem-track { position: relative; padding: 6px 0; }
 .mem-numbers { display: flex; justify-content: space-between; background: rgba(0,0,0,0.35); border: 1px solid var(--holo-line); border-radius: 999px; padding: 4px 10px; }
 .mem-num { font-size: 10px; color: var(--muted); flex: 1; text-align: center; }
 .mem-num.mem-zero { color: var(--holo-accent); font-weight: 700; }
@@ -92,19 +94,18 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .card-chip {
   background: var(--card); border: 1px solid var(--border); border-radius: 6px;
   padding: 4px; cursor: pointer; width: 96px; user-select: none;
-  transform-style: preserve-3d;
   /* directional shadow — a light source up-and-left, like the WebGL demo's key light */
   box-shadow: 3px 6px 10px -2px rgba(0,0,0,0.6), -1px -1px 0 rgba(255,240,210,0.05) inset;
   transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
 }
 .card-chip:hover {
   border-color: var(--holo-accent);
-  transform: translateY(-10px) translateZ(30px);
+  transform: translateY(-10px) scale(1.06);
   box-shadow: 6px 20px 26px -6px rgba(0,0,0,0.7), -1px -1px 0 rgba(255,240,210,0.08) inset;
 }
-.card-chip.selected { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset, 4px 12px 20px -4px rgba(0,0,0,0.65); transform: translateZ(16px); }
+.card-chip.selected { border-color: var(--ok); box-shadow: 0 0 0 2px var(--ok) inset, 4px 12px 20px -4px rgba(0,0,0,0.65); }
 .card-chip.suspended { opacity: 0.55; transform: rotate(-4deg); }
-.card-chip.suspended:hover { transform: rotate(-4deg) translateY(-10px) translateZ(30px); }
+.card-chip.suspended:hover { transform: rotate(-4deg) translateY(-10px) scale(1.06); }
 .card-chip.dragging { opacity: 0.3; }
 .card-chip img { width: 100%; border-radius: 4px; display: block; margin-bottom: 3px; pointer-events: none; }
 .card-chip .nm { font-weight: 600; font-size: 11px; line-height: 1.2; }
@@ -118,7 +119,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .hand-list .card-chip:nth-child(5n+3) { transform: rotate(0.5deg) translateY(-2px); }
 .hand-list .card-chip:nth-child(5n+4) { transform: rotate(2deg); }
 .hand-list .card-chip:nth-child(5n+5) { transform: rotate(3.5deg) translateY(2px); }
-.hand-list .card-chip:hover { transform: translateY(-10px) translateZ(30px) !important; }
+.hand-list .card-chip:hover { transform: translateY(-10px) scale(1.06) !important; }
 
 .empty-slot { color: var(--muted); font-size: 12px; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; width: 96px; height: 60px; display:flex; align-items:center; justify-content:center; text-align: center; box-shadow: inset 0 2px 6px rgba(0,0,0,0.5); }
 .empty-slot.drop-hover, .drop-zone.drop-hover { border-color: var(--ok) !important; background: rgba(87,176,106,0.08); }
