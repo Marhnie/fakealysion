@@ -604,46 +604,11 @@ function renderActions() {
     ]));
 
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, '코스트'), numInput('costInput', 0),
-      h('button', {
-        className: 'primary',
-        disabled: !sel.hand || sel.hand.player !== state.activePlayer,
-        onClick: () => {
-          if (S.card(sel.hand.cardId).category === 'option') {
-            S.useOptionCard(state, sel.hand.player, sel.hand.idx);
-          } else {
-            const cost = val('costInput');
-            if (cost > 0) S.spendMemory(state, cost);
-            S.playDigimonFresh(state, sel.hand.player, sel.hand.idx);
-          }
-          sel.hand = null;
-          E.checkAutoEndTurn(state);
-          render();
-        },
-      }, sel.hand && S.card(sel.hand.cardId).category === 'option' ? '선택 핸드카드 사용(옵션)' : '선택 핸드카드 등장'),
-      h('button', {
-        disabled: !sel.hand || !sel.stack || sel.stack.player !== state.activePlayer,
-        onClick: () => {
-          const cost = val('costInput');
-          S.digivolve(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, cost, 'hand');
-          sel.hand = null; sel.stack = null;
-          E.checkAutoEndTurn(state);
-          render();
-        },
-      }, '선택 스택을 선택 핸드카드로 진화'),
-      h('button', {
-        disabled: !sel.hand || !sel.stack || sel.stack.player !== state.activePlayer,
-        onClick: () => {
-          const cost = val('costInput');
-          S.digivolve(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, cost, 'free');
-          sel.hand = null; sel.stack = null;
-          E.checkAutoEndTurn(state);
-          render();
-        },
-      }, '(무료 서치 등) 코스트 없이 강제 진화'),
+      h('span', { className: 'meta' }, '핸드카드는 배틀 에어리어나 자신의 디지몬 위로 드래그해서 등장/진화시키세요.'),
     ]));
 
     rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, '코스트'), numInput('costInput', 0),
       h('button', {
         disabled: !sel.stack || !sel.stack2 || !sel.hand || sel.stack.player !== state.activePlayer,
         onClick: () => {
