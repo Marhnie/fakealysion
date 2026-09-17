@@ -230,9 +230,11 @@ async function runOne(instr, ctx) {
         const pl = state.players[targetPlayer];
         const stack = pl.battle.find(s => s.uid === targetUid);
         pl.battle.splice(pl.battle.indexOf(stack), 1);
+        const linkIds = (stack.linkCards || []).map(l => l.cardId);
         pl.hand.push(stack.cardId);
-        pl.trash.push(...stack.sources);
-        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 핸드로, 진화원 ${stack.sources.length}장 파기`);
+        pl.trash.push(...stack.sources, ...linkIds);
+        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 핸드로, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
+        for (const id of [...stack.sources, stack.cardId, ...linkIds]) S.applyOverflowIfAny(state, targetPlayer, id);
       }
       break;
     }
@@ -250,9 +252,11 @@ async function runOne(instr, ctx) {
         const stack = pl.battle.find(s => s.uid === targetUid);
         const idx = pl.battle.indexOf(stack);
         pl.battle.splice(idx, 1);
+        const linkIds = (stack.linkCards || []).map(l => l.cardId);
         pl.deck.push(stack.cardId); // sources are simply discarded (trashed), per "그 디지몬이 가진 진화원은 파기"
-        pl.trash.push(...stack.sources);
-        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 덱 아래로, 진화원 ${stack.sources.length}장 파기`);
+        pl.trash.push(...stack.sources, ...linkIds);
+        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 덱 아래로, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
+        for (const id of [...stack.sources, stack.cardId, ...linkIds]) S.applyOverflowIfAny(state, targetPlayer, id);
       }
       break;
     }

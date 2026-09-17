@@ -118,6 +118,7 @@ const TRIGGER_TAGS = {
   security: ['시큐리티'],
   use: ['메인'],
   move: ['이동했을 때', '이동 시'],
+  linked: ['링크했을 때', '링크 시'],
   bothTurns: ['서로의 턴', '상대의 턴', '자신의 턴'],
 };
 
@@ -338,6 +339,9 @@ function makeStack(cardId, turnNumber) {
     keywords: {}, // { [keywordName]: 'permanent' | turnNumber-it-expires-after }
     attacksThisTurn: 0, // for [턴에 N회] "become active again" style re-attack effects
     extraColors: [], // additional colors this stack counts as, e.g. "treat as Green too"
+    linkCards: [], // { cardId, grantedBy } — attached Link Cards (10). NOT evolution sources.
+    inheritedDP: 0, // recomputed by recomputeStackGrants from sources'/link cards' printed stat lines
+    inheritedKeywords: {}, // ditto, for bare 《키워드》 grant lines
   };
 }
 
@@ -352,15 +356,156 @@ export function grantColor(state, p, uid, color) {
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동']);
 
 export function effectiveDP(stack) {
-  return (card(stack.cardId).dp || 0) + (stack.tempDP || 0);
+  return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0);
 }
 
 export function securityAttackBonus(stack) {
-  return stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
+  const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
+  const inherited = stack.inheritedKeywords?.['시큐리티어택'] ? Number(stack.inheritedKeywords['시큐리티어택']) || 0 : 0;
+  return own + inherited;
 }
 
 export function hasKeyword(stack, name) {
-  return !!(stack.keywords && stack.keywords[name]);
+  return !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]);
+}
+
+// ---- Overflow (4-19) ----
+// Printed as a bare line in a card's own OR inherited text, e.g.
+// "《오버플로우 《-4》》(에어리어 또는 카드 아래에서부터, 그 이외의 장소로 보내질 경우, 메모리 -4)".
+// Fires the printed memory delta on the controlling player the moment THIS
+// physical card actually leaves the battle area or leaves being an
+// evolution-source/link-card attachment, to any other area.
+function overflowDelta(cardId) {
+  const c = card(cardId);
+  const text = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
+  const m = text.match(/오버플로우\s*[《≪]\s*([+-]?\d+)\s*[》≫]/);
+  return m ? Number(m[1]) : 0;
+}
+
+export function applyOverflowIfAny(state, p, cardId) {
+  const delta = overflowDelta(cardId);
+  if (!delta) return;
+  grantMemory(state, p, delta);
+  log(state, `${p} ${card(cardId).nameKo} 《오버플로우》 발동: 메모리 ${delta >= 0 ? '+' : ''}${delta}`);
+}
+
+// ---- inherited static stat/keyword grants (4-3-3), from evolution sources
+// AND from attached Link Cards (10) alike ----
+// Cards print these as bare lines alongside their bracket-tagged triggered
+// segments, e.g. "DP +2000\n링크: 특징 「어플몬」: 코스트 1\n《돌진》" — none of
+// which parseEffectSegments captures (it only splits 【...】-tagged clauses).
+function parseStaticGrants(text) {
+  const out = { dp: 0, keywords: {} };
+  if (!text) return out;
+  for (const rawLine of text.split('\n')) {
+    const t = rawLine.trim();
+    if (!t) continue;
+    let m;
+    if ((m = t.match(/^DP\s*([+-]\d+)$/))) { out.dp += Number(m[1]); continue; }
+    if (/^링크\s*[:：]/.test(t)) continue; // handled by parseLinkGrant, not a standing stat
+    if (/오버플로우/.test(t)) continue; // handled by overflowDelta, an on-leave trigger not a standing stat
+    const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫]$/);
+    if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
+    const label = bare[1];
+    if (['재밍', '블로커', '관통', '재기동'].includes(label)) { out.keywords[label] = true; continue; }
+    if ((m = label.match(/^S\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
+    // other bare keyword tokens (e.g. 《돌진》) intentionally left unmapped for now —
+    // no existing engine flag consumes them; surfaced via the effect box only.
+  }
+  return out;
+}
+
+// Recompute a stack's inherited DP/keywords from its evolution sources AND
+// attached link cards. Call after anything that changes either list.
+export function recomputeStackGrants(stack) {
+  let dp = 0;
+  let secAtk = 0;
+  const flags = {};
+  const contributors = [...stack.sources, ...(stack.linkCards || []).map(l => l.cardId)];
+  for (const id of contributors) {
+    const g = parseStaticGrants(card(id).inheritedKo);
+    dp += g.dp;
+    secAtk += g.keywords['시큐리티어택'] || 0;
+    for (const k of ['재밍', '블로커', '관통', '재기동']) if (g.keywords[k]) flags[k] = true;
+  }
+  stack.inheritedDP = dp;
+  stack.inheritedKeywords = { ...flags, ...(secAtk ? { '시큐리티어택': secAtk } : {}) };
+}
+
+// ---- Link (10) ----
+// A source card's inherited text can grant the digimon built on top of it
+// the standing ability to attach ANY card matching a filter, sideways, as a
+// Link Card — printed as a bare "링크: <조건>: 코스트 <N>" line, e.g.
+// "링크: 특징 「어플몬」: 코스트 1". Link Cards do NOT count as evolution
+// sources (10-1-3), are capped at one per granting source (10-2-1 — a new
+// link through the SAME grant replaces/discards the old one), and are
+// discarded the moment the host becomes a "new card" via further
+// digivolving (10-4-1).
+function parseLinkGrant(sourceCardId) {
+  const c = card(sourceCardId);
+  if (!c.inheritedKo) return null;
+  const m = c.inheritedKo.match(/링크\s*[:：]\s*(.+?)\s*[:：]\s*코스트\s*(\d+)/);
+  if (!m) return null;
+  return { grantedBy: sourceCardId, conditionText: m[1].trim(), cost: Number(m[2]) };
+}
+
+// All link slots currently available to a stack — one per distinct
+// link-granting evolution source it has accumulated so far.
+export function availableLinkSlots(stack) {
+  return stack.sources.map(id => parseLinkGrant(id)).filter(Boolean);
+}
+
+function queueLinkTriggers(state, p, stack, linkCardId) {
+  const lc = card(linkCardId);
+  const { segments } = parseEffectSegments(lc.effectKo);
+  for (const seg of segments) {
+    const hit = seg.tags.some(tag => tag.includes('링크 시') || tag.includes('링크했을 때'));
+    if (!hit) continue;
+    const applied = tryAutoApplySegment(state, p, seg.body);
+    if (applied) log(state, `(자동 처리, 링크: ${lc.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
+    else state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: linkCardId, stackUid: stack.uid, tags: seg.tags, text: seg.body, resolved: false, linked: true });
+  }
+  // The host's own printed "이 디지몬이 링크했을 때" reaction (see BT21-009/018/023)
+  queueTriggersFor(state, p, stack.cardId, 'linked', stack.uid);
+  for (const srcId of stack.sources) queueInheritedTriggersFor(state, p, srcId, 'linked', stack.uid);
+}
+
+export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, source = 'hand') {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return null;
+  stack.linkCards = stack.linkCards || [];
+  const existingIdx = stack.linkCards.findIndex(l => l.grantedBy === grantedBySourceId);
+  if (existingIdx !== -1) {
+    const [old] = stack.linkCards.splice(existingIdx, 1);
+    pl.trash.push(old.cardId);
+    applyOverflowIfAny(state, p, old.cardId);
+    log(state, `${p} 기존 링크 카드 ${card(old.cardId).nameKo} 파기 (교체)`);
+  }
+  if (source === 'hand') {
+    const idx = pl.hand.indexOf(linkCardId);
+    if (idx === -1) { log(state, `핸드에 ${linkCardId} 없음`); return null; }
+    pl.hand.splice(idx, 1);
+  }
+  if (cost > 0) spendMemory(state, cost);
+  stack.linkCards.push({ cardId: linkCardId, grantedBy: grantedBySourceId });
+  recomputeStackGrants(stack);
+  log(state, `${p} ${card(stack.cardId).nameKo}에 ${card(linkCardId).nameKo} 링크 (코스트 ${cost})`);
+  queueLinkTriggers(state, p, stack, linkCardId);
+  return stack;
+}
+
+// 10-4-1: the host becoming a new card (further digivolve/DNA fusion)
+// discards any Link Cards attached to it.
+function discardLinkCardsOnNewCard(state, p, stack) {
+  if (!stack.linkCards || !stack.linkCards.length) return;
+  const pl = state.players[p];
+  for (const l of stack.linkCards) {
+    pl.trash.push(l.cardId);
+    applyOverflowIfAny(state, p, l.cardId);
+    log(state, `${p} ${card(l.cardId).nameKo} 링크 해제 (진화로 새로운 카드가 되어 파기)`);
+  }
+  stack.linkCards = [];
 }
 
 // Grant a keyword/DP buff for a limited duration. `duration`: 'turn' (clears
@@ -468,6 +613,8 @@ export function trashEvoSources(state, p, uid, count) {
   const removed = stack.sources.splice(0, n); // sources[] is oldest-first; "from the bottom" = earliest pushed
   pl.trash.push(...removed);
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
+  for (const id of removed) applyOverflowIfAny(state, p, id);
+  recomputeStackGrants(stack);
   return removed;
 }
 
@@ -540,6 +687,33 @@ export function placeThisInBattle(state, p, cardId) {
   return stack;
 }
 
+// ---- Arts Digivolve (4-20) ----
+// A DUAL-type card is simultaneously an Option and a Digimon. Per 9-1-5, an
+// Option normally gets trashed after its last effect resolves if it still
+// belongs to no zone — but a DUAL card can instead evolve for free onto an
+// eligible in-play Digimon (becoming its new top card) in place of that
+// trash step. STUB, intentionally unwired to any UI/compiler pattern: as of
+// this dataset's snapshot (raw dump cardType enum is only
+// DIGITAMA/DIGIMON/TAMER/OPTION — zero DUAL cards, zero "아츠진화" text hits
+// anywhere), there is no real card to verify the condition-line wording
+// against, so this mirrors digivolve()'s mechanics on a best-effort basis
+// and should be re-checked against dgchub data once a real DUAL card ships.
+export function artsDigivolve(state, p, dualCardId, targetStackUid) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === targetStackUid ? pl.raising : pl.battle.find(s => s.uid === targetStackUid);
+  if (!stack) return null;
+  const idx = pl.trash.lastIndexOf(dualCardId); // useOptionCard already provisionally trashed it
+  if (idx !== -1) pl.trash.splice(idx, 1);
+  discardLinkCardsOnNewCard(state, p, stack);
+  stack.sources.push(stack.cardId);
+  stack.cardId = dualCardId;
+  log(state, `${p} 《아츠진화》: ${card(dualCardId).nameKo}으로 무료 진화 (DUAL 카드)`);
+  drawCards(state, p, 1); // universal digivolve bonus draw
+  recomputeStackGrants(stack);
+  queueTriggersForStack(state, p, stack, 'digivolve');
+  return stack;
+}
+
 export function hatchDigitama(state, p) {
   const pl = state.players[p];
   if (pl.raising) { log(state, `${p} 육성 에어리어에 이미 카드가 있어 부화 불가`); return null; }
@@ -575,11 +749,13 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
     if (idx === -1) { log(state, `핸드에 ${newCardId} 없음`); return null; }
     pl.hand.splice(idx, 1);
   }
+  discardLinkCardsOnNewCard(state, p, stack); // 10-4-1: this stack is about to become a new card
   stack.sources.push(stack.cardId);
   stack.cardId = newCardId;
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} ${card(stack.sources[stack.sources.length-1]).nameKo} → ${card(newCardId).nameKo} 진화 (코스트${cost}, 출처:${source})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
+  recomputeStackGrants(stack);
   queueTriggersForStack(state, p, stack, 'digivolve');
   return stack;
 }
@@ -593,6 +769,8 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   const [a] = pl.battle.splice(idxA, 1);
   const bIdx = pl.battle.findIndex(s => s.uid === uidB);
   const [b] = pl.battle.splice(bIdx, 1);
+  discardLinkCardsOnNewCard(state, p, a); // 10-4-1: both materials become part of a new card
+  discardLinkCardsOnNewCard(state, p, b);
   if (source === 'hand') {
     const hi = pl.hand.indexOf(newCardId);
     if (hi === -1) { log(state, `핸드에 ${newCardId} 없음`); pl.battle.push(a, b); return null; }
@@ -608,6 +786,7 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} DNA/조그레스 진화: ${card(a.cardId).nameKo}+${card(b.cardId).nameKo} → ${card(newCardId).nameKo} (코스트${cost})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
+  recomputeStackGrants(fused);
   queueTriggersForStack(state, p, fused, 'digivolve');
   return fused;
 }
@@ -621,9 +800,11 @@ export function deleteStack(state, p, uid, toZone = 'trash') {
     if (idx !== -1) [stack] = pl.battle.splice(idx, 1);
   }
   if (!stack) return null;
-  const all = [...stack.sources, stack.cardId];
+  const linkIds = (stack.linkCards || []).map(l => l.cardId);
+  const all = [...stack.sources, stack.cardId, ...linkIds];
   if (toZone === 'trash') pl.trash.push(...all);
-  log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 포함, 총 ${all.length}장 트래시)`);
+  log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 포함, 총 ${all.length}장 트래시)`);
+  for (const id of all) applyOverflowIfAny(state, p, id);
   queueTriggersForStack(state, p, stack, 'delete');
   return all;
 }
@@ -641,8 +822,11 @@ export function retreat(state, p, uid, stages) {
     stack.cardId = stack.sources.pop();
   }
   if (trashed.length) {
+    discardLinkCardsOnNewCard(state, p, stack); // the peeled-off top's link cards go too — it's no longer the host
     state.players[p].trash.push(...trashed);
     log(state, `${p} ${trashed.map(id=>card(id).nameKo).join(',')} 퇴화(트래시), 현재 최상단: ${card(stack.cardId).nameKo}`);
+    for (const id of trashed) applyOverflowIfAny(state, p, id);
+    recomputeStackGrants(stack);
   } else {
     log(state, `${p} 퇴화 시도했지만 벗길 진화원이 없어 효과 없음`);
   }

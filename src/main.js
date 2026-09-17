@@ -657,6 +657,39 @@ function renderActions() {
       h('span', { className: 'meta' }, '(배틀 에어리어 카드 2개를 순서대로 클릭해서 선택)'),
     ]));
 
+    if (sel.stack && sel.stack.player === state.activePlayer) {
+      const hostStack = findStack(sel.stack);
+      const linkSlots = hostStack ? S.availableLinkSlots(hostStack) : [];
+      if (linkSlots.length) {
+        const slotSelect = h('select', { id: 'linkSlotSelect' }, linkSlots.map((s, i) =>
+          h('option', { value: String(i) }, `${S.card(s.grantedBy).nameKo} 링크: ${s.conditionText} (코스트 ${s.cost})`)
+        ));
+        rows.push(h('div', { className: 'actions-row' }, [
+          h('span', {}, '링크 슬롯'), slotSelect,
+          h('span', {}, '핸드에서 링크할 카드:'), h('b', {}, sel.hand ? S.card(sel.hand.cardId).nameKo : '없음'),
+          h('button', {
+            disabled: !sel.hand || sel.hand.player !== state.activePlayer,
+            onClick: () => {
+              const idx = Number(document.getElementById('linkSlotSelect').value || 0);
+              const slot = linkSlots[idx];
+              if (slot) {
+                S.linkCardTo(state, sel.stack.player, sel.stack.uid, sel.hand.cardId, slot.grantedBy, slot.cost, 'hand');
+                sel.hand = null;
+              }
+              E.checkAutoEndTurn(state);
+              render();
+            },
+          }, '선택 핸드카드를 링크'),
+        ]));
+      }
+      if (hostStack && hostStack.linkCards && hostStack.linkCards.length) {
+        rows.push(h('div', { className: 'actions-row' }, [
+          h('span', {}, '현재 링크된 카드:'),
+          ...hostStack.linkCards.map(l => h('span', { className: 'meta' }, S.card(l.cardId).nameKo)),
+        ]));
+      }
+    }
+
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', {
         className: 'danger', disabled: !sel.stack || sel.stack.player !== state.activePlayer || sel.stack.zone !== 'battle',
