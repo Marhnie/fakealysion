@@ -105,10 +105,20 @@ export function autoAdvance(state) {
   }
 }
 
-export function endTurn(state) {
+export function endTurn(state, viaMemoryCondition = false) {
   const finishing = state.activePlayer;
   S.runEndOfTurnEffects(state);
   S.clearExpiredModifiers(state);
+  // 6-6-4: if an end-of-turn effect pushed memory back off the opponent's
+  // side before the turn actually finishes ending, the turn-end is called
+  // off and play continues in the same phase. This only applies to a turn
+  // ending BECAUSE of the memory condition (6-6-1/6-1-4) — a manual
+  // phase-advance or an explicit Pass (which fixes memory itself) always
+  // ends the turn outright regardless of what end-of-turn effects do.
+  if (viaMemoryCondition && !S.isTurnAutoEnding(state)) {
+    S.log(state, `${finishing} 턴 종료 처리 중 메모리가 되돌아와 턴 종료 취소 (6-6-4)`);
+    return;
+  }
   const next = S.opponentOf(finishing);
   state.activePlayer = next;
   state.turnNumber += 1;
@@ -132,7 +142,7 @@ export function declarePass(state) {
 // Call after any memory-spending action. Returns true if the turn ended.
 export function checkAutoEndTurn(state) {
   if (S.isTurnAutoEnding(state)) {
-    endTurn(state);
+    endTurn(state, true);
     return true;
   }
   return false;

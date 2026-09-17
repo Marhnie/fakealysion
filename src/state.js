@@ -409,6 +409,7 @@ function parseStaticGrants(text) {
     const label = bare[1];
     if (['재밍', '블로커', '관통', '재기동'].includes(label)) { out.keywords[label] = true; continue; }
     if ((m = label.match(/^S\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
+    if ((m = label.match(/^링크\+(\d+)$/))) { out.keywords['링크+'] = (out.keywords['링크+'] || 0) + Number(m[1]); continue; } // 4-9-5: raises the 1-per-Digimon Link Card cap
     // other bare keyword tokens (e.g. 《돌진》) intentionally left unmapped for now —
     // no existing engine flag consumes them; surfaced via the effect box only.
   }
@@ -420,16 +421,22 @@ function parseStaticGrants(text) {
 export function recomputeStackGrants(stack) {
   let dp = 0;
   let secAtk = 0;
+  let linkCap = 0;
   const flags = {};
   const contributors = [...stack.sources, ...(stack.linkCards || []).map(l => l.cardId)];
   for (const id of contributors) {
     const g = parseStaticGrants(card(id).inheritedKo);
     dp += g.dp;
     secAtk += g.keywords['시큐리티어택'] || 0;
+    linkCap += g.keywords['링크+'] || 0;
     for (const k of ['재밍', '블로커', '관통', '재기동']) if (g.keywords[k]) flags[k] = true;
   }
   stack.inheritedDP = dp;
-  stack.inheritedKeywords = { ...flags, ...(secAtk ? { '시큐리티어택': secAtk } : {}) };
+  stack.inheritedKeywords = {
+    ...flags,
+    ...(secAtk ? { '시큐리티어택': secAtk } : {}),
+    ...(linkCap ? { '링크+': linkCap } : {}),
+  };
 }
 
 // ---- Link (10) ----
@@ -437,10 +444,9 @@ export function recomputeStackGrants(stack) {
 // the standing ability to attach ANY card matching a filter, sideways, as a
 // Link Card — printed as a bare "링크: <조건>: 코스트 <N>" line, e.g.
 // "링크: 특징 「어플몬」: 코스트 1". Link Cards do NOT count as evolution
-// sources (10-1-3), are capped at one per granting source (10-2-1 — a new
-// link through the SAME grant replaces/discards the old one), and are
-// discarded the moment the host becomes a "new card" via further
-// digivolving (10-4-1).
+// sources (10-1-3), are capped at ONE per Digimon total (4-9-5 — raised
+// only by ≪링크+N≫), and are discarded the moment the host becomes a "new
+// card" via further digivolving (10-4-1).
 function parseLinkGrant(sourceCardId) {
   const c = card(sourceCardId);
   if (!c.inheritedKo) return null;
@@ -475,12 +481,16 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return null;
   stack.linkCards = stack.linkCards || [];
-  const existingIdx = stack.linkCards.findIndex(l => l.grantedBy === grantedBySourceId);
-  if (existingIdx !== -1) {
-    const [old] = stack.linkCards.splice(existingIdx, 1);
+  // 4-9-5: the cap is ONE Link Card per Digimon TOTAL (raised only by
+  // ≪링크+N≫), not one per granting source. Exceeding it discards existing
+  // link card(s) to make room — the rulebook has the player choose which;
+  // there's no picker UI yet, so this discards oldest-attached first.
+  const cap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
+  while (stack.linkCards.length >= cap && stack.linkCards.length > 0) {
+    const [old] = stack.linkCards.splice(0, 1);
     pl.trash.push(old.cardId);
-    applyOverflowIfAny(state, p, old.cardId);
-    log(state, `${p} 기존 링크 카드 ${card(old.cardId).nameKo} 파기 (교체)`);
+    // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — no applyOverflowIfAny here.
+    log(state, `${p} 기존 링크 카드 ${card(old.cardId).nameKo} 파기 (링크 상한 초과)`);
   }
   if (source === 'hand') {
     const idx = pl.hand.indexOf(linkCardId);
@@ -490,6 +500,7 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   if (cost > 0) spendMemory(state, cost);
   stack.linkCards.push({ cardId: linkCardId, grantedBy: grantedBySourceId });
   recomputeStackGrants(stack);
+  ruleCheckDP(state, p, stack);
   log(state, `${p} ${card(stack.cardId).nameKo}에 ${card(linkCardId).nameKo} 링크 (코스트 ${cost})`);
   queueLinkTriggers(state, p, stack, linkCardId);
   return stack;
@@ -502,7 +513,8 @@ function discardLinkCardsOnNewCard(state, p, stack) {
   const pl = state.players[p];
   for (const l of stack.linkCards) {
     pl.trash.push(l.cardId);
-    applyOverflowIfAny(state, p, l.cardId);
+    // Link Cards aren't "area" or "stacked underneath a card" (4-9-1/4-9-4),
+    // so Overflow's 4-19-1 trigger locations don't cover this departure.
     log(state, `${p} ${card(l.cardId).nameKo} 링크 해제 (진화로 새로운 카드가 되어 파기)`);
   }
   stack.linkCards = [];
@@ -518,9 +530,19 @@ export function grantKeyword(state, p, uid, keyword, value, duration = 'turn') {
   const expiresAfterTurn = duration === 'permanent' ? 'permanent'
     : duration === 'opponentTurn' ? state.turnNumber + 2
     : state.turnNumber; // 'turn' — clears at end of this same turn
-  stack.keywords[keyword] = value === undefined ? true : value;
+  // 16-4-2/16-4-3: separate Security Attack grants on the same Digimon are
+  // additive (two +1 grants check +2) — unlike most keywords, where
+  // re-granting is idempotent, so this one accumulates instead of
+  // overwriting.
+  if (keyword === '시큐리티어택') {
+    stack.keywords[keyword] = (Number(stack.keywords[keyword]) || 0) + (Number(value) || 0);
+  } else {
+    stack.keywords[keyword] = value === undefined ? true : value;
+  }
   stack.keywordExpiry = stack.keywordExpiry || {};
-  stack.keywordExpiry[keyword] = expiresAfterTurn;
+  const prevExpiry = stack.keywordExpiry[keyword];
+  stack.keywordExpiry[keyword] = (prevExpiry === 'permanent' || expiresAfterTurn === 'permanent')
+    ? 'permanent' : Math.max(prevExpiry || 0, expiresAfterTurn);
   log(state, `${p} ${card(stack.cardId).nameKo}이(가) ${keyword}${value && value !== true ? '+' + value : ''} 획득 (${duration})`);
 }
 
@@ -535,6 +557,20 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
   stack.tempDP = (stack.tempDP || 0) + amount;
   stack.dpExpiry = duration === 'permanent' ? 'permanent' : (duration === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber);
   log(state, `${p} ${card(stack.cardId).nameKo} DP ${amount >= 0 ? '+' : ''}${amount} (${duration})`);
+  ruleCheckDP(state, p, stack);
+}
+
+// 17-1-3-1/17-1-3-1-1: a battle-area Digimon whose DP is reduced to 0 (or
+// below) vanishes automatically the moment a rule check is possible — not
+// tied to any specific card's own effect. Swept after anything that can
+// move a stack's effective DP downward.
+function ruleCheckDP(state, p, stack) {
+  const pl = state.players[p];
+  if (!pl.battle.includes(stack)) return; // rule applies to the battle area only, not the raising area
+  if (effectiveDP(stack) <= 0) {
+    log(state, `${p} ${card(stack.cardId).nameKo} DP 0 이하 — 룰체크로 소멸 (17-1-3-1)`);
+    deleteStack(state, p, stack.uid);
+  }
 }
 
 export function unsuspendStack(state, p, uid) {
@@ -615,6 +651,7 @@ export function trashEvoSources(state, p, uid, count) {
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
   for (const id of removed) applyOverflowIfAny(state, p, id);
   recomputeStackGrants(stack);
+  ruleCheckDP(state, p, stack);
   return removed;
 }
 
@@ -710,6 +747,7 @@ export function artsDigivolve(state, p, dualCardId, targetStackUid) {
   log(state, `${p} 《아츠진화》: ${card(dualCardId).nameKo}으로 무료 진화 (DUAL 카드)`);
   drawCards(state, p, 1); // universal digivolve bonus draw
   recomputeStackGrants(stack);
+  ruleCheckDP(state, p, stack);
   queueTriggersForStack(state, p, stack, 'digivolve');
   return stack;
 }
@@ -756,6 +794,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   log(state, `${p} ${card(stack.sources[stack.sources.length-1]).nameKo} → ${card(newCardId).nameKo} 진화 (코스트${cost}, 출처:${source})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
   recomputeStackGrants(stack);
+  ruleCheckDP(state, p, stack);
   queueTriggersForStack(state, p, stack, 'digivolve');
   return stack;
 }
@@ -776,17 +815,21 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
     if (hi === -1) { log(state, `핸드에 ${newCardId} 없음`); pl.battle.push(a, b); return null; }
     pl.hand.splice(hi, 1);
   }
-  const fused = {
-    uid: nextUid(), cardId: newCardId,
-    sources: [...a.sources, a.cardId, ...b.sources, b.cardId],
-    suspended: false, // DNA digivolve results always enter unsuspended
-    attackEligibleTurn: state.turnNumber, // DNA/Jogress results can attack immediately
-  };
+  // Built via makeStack (not a bespoke literal) so the fused result carries
+  // the same field set as every other stack (tempDP/keywords/extraColors/
+  // linkCards/etc.) — a bare {uid,cardId,sources,suspended,attackEligibleTurn}
+  // object crashes the moment its own "진화 시" effect grants it a keyword or
+  // color, since grantKeyword/grantColor assume those fields already exist.
+  const fused = makeStack(newCardId, state.turnNumber);
+  fused.sources = [...a.sources, a.cardId, ...b.sources, b.cardId];
+  fused.suspended = false; // DNA digivolve results always enter unsuspended
+  fused.attackEligibleTurn = state.turnNumber; // DNA/Jogress results can attack immediately
   pl.battle.push(fused);
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} DNA/조그레스 진화: ${card(a.cardId).nameKo}+${card(b.cardId).nameKo} → ${card(newCardId).nameKo} (코스트${cost})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
   recomputeStackGrants(fused);
+  ruleCheckDP(state, p, fused);
   queueTriggersForStack(state, p, fused, 'digivolve');
   return fused;
 }
@@ -804,7 +847,10 @@ export function deleteStack(state, p, uid, toZone = 'trash') {
   const all = [...stack.sources, stack.cardId, ...linkIds];
   if (toZone === 'trash') pl.trash.push(...all);
   log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 포함, 총 ${all.length}장 트래시)`);
-  for (const id of all) applyOverflowIfAny(state, p, id);
+  // Overflow (4-19-1) only covers cards leaving the area or leaving being
+  // stacked underneath a card — Link Cards are neither (4-9-1/4-9-4), so
+  // they're excluded here even though they're trashed alongside the stack.
+  for (const id of [...stack.sources, stack.cardId]) applyOverflowIfAny(state, p, id);
   queueTriggersForStack(state, p, stack, 'delete');
   return all;
 }
@@ -827,6 +873,7 @@ export function retreat(state, p, uid, stages) {
     log(state, `${p} ${trashed.map(id=>card(id).nameKo).join(',')} 퇴화(트래시), 현재 최상단: ${card(stack.cardId).nameKo}`);
     for (const id of trashed) applyOverflowIfAny(state, p, id);
     recomputeStackGrants(stack);
+    ruleCheckDP(state, p, stack);
   } else {
     log(state, `${p} 퇴화 시도했지만 벗길 진화원이 없어 효과 없음`);
   }
