@@ -33,21 +33,43 @@ export function parseEffectSegments(text) {
   // 【...】 — inside a 「...」 quoted "grant this ability" block, or used as a
   // bare noun reference like "이 카드의 【시큐리티】 효과" — must stay part of
   // the segment body, not be mistaken for another trigger on THIS card.
+  //
+  // A zone marker like "[패]"/"[트래시]" can sit BEFORE the 【...】 group on
+  // the same line (e.g. "[패]【카운터】 …", printed on 【카운터】 cards to say
+  // it's usable from hand) — without accounting for it, the boundary check
+  // sees "]" right before "【" instead of a real line start and silently
+  // drops the whole segment into the preamble, making it invisible to every
+  // trigger/effect consumer. Treat "boundary, then a bracket marker" as
+  // still a valid boundary for the 【...】 that follows.
   const re = /(?:【([^】]+)】)+/g;
   const groups = [];
   let m;
   while ((m = re.exec(text))) {
-    const atBoundary = m.index === 0 || text[m.index - 1] === '\n';
+    let boundaryIndex = m.index;
+    let zoneMarker = null;
+    if (boundaryIndex > 0 && text[boundaryIndex - 1] !== '\n') {
+      const before = text.slice(0, boundaryIndex);
+      const bracket = before.match(/\[([^\[\]]*)\]\s*$/);
+      if (bracket) {
+        const bracketStart = boundaryIndex - bracket[0].length;
+        if (bracketStart === 0 || text[bracketStart - 1] === '\n') { boundaryIndex = bracketStart; zoneMarker = bracket[1]; }
+      }
+    }
+    const atBoundary = boundaryIndex === 0 || text[boundaryIndex - 1] === '\n';
     if (!atBoundary) continue;
     const fullMatch = m[0];
     const tags = [...fullMatch.matchAll(/【([^】]+)】/g)].map(x => x[1]);
-    groups.push({ index: m.index, endOfHeader: m.index + fullMatch.length, tags });
+    groups.push({ index: boundaryIndex, endOfHeader: m.index + fullMatch.length, tags, zoneMarker });
   }
   if (groups.length === 0) return { preamble: text.trim(), segments: [] };
   const preamble = text.slice(0, groups[0].index).trim();
   const segments = groups.map((g, i) => {
     const end = i + 1 < groups.length ? groups[i + 1].index : text.length;
-    return { tags: g.tags, body: text.slice(g.endOfHeader, end).trim() };
+    // zoneMarker: the "[패]"/"[트래시]" etc. printed immediately before this
+    // segment's 【...】 tag, if any — says which zone the card must be in
+    // for this specific ability to be usable (e.g. 【카운터】 from hand).
+    // null means no such restriction was printed.
+    return { tags: g.tags, body: text.slice(g.endOfHeader, end).trim(), zoneMarker: g.zoneMarker };
   });
   return { preamble, segments };
 }
@@ -120,6 +142,8 @@ const TRIGGER_TAGS = {
   use: ['메인'],
   move: ['이동했을 때', '이동 시'],
   linked: ['링크했을 때', '링크 시'],
+  attackEnd: ['어택 종료 시'],
+  counter: ['카운터'],
   bothTurns: ['서로의 턴', '상대의 턴', '자신의 턴'],
 };
 
@@ -189,6 +213,38 @@ export function queueTriggersForStack(state, p, stack, eventKind) {
   for (const sourceCardId of stack.sources) {
     queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
   }
+}
+
+// 11-3: the (non-turn) defending player's window to activate a 【카운터】
+// effect, between attack declaration and Block Timing. Scans hand and
+// battle-area stacks' own + inherited text for 카운터-tagged segments —
+// e.g. "[패]【카운터】 《블래스트 진화》(...)". The "[패]" zone marker means
+// this specific ability only works while the card is actually IN hand —
+// checked against the zone actually being scanned, so a card that happens
+// to also sit in the battle area doesn't wrongly offer its hand-only
+// counter ability from there.
+export function findCounterOptions(state, p) {
+  const pl = state.players[p];
+  const options = [];
+  const collect = (segments, cardId, stackUid, zone) => {
+    for (const seg of segments) {
+      if (!seg.tags.some(t => t.includes('카운터'))) continue;
+      if (seg.zoneMarker && !seg.zoneMarker.includes(zone === 'hand' ? '패' : '배틀')) continue;
+      options.push({ zone, cardId, stackUid, tags: seg.tags, body: seg.body });
+    }
+  };
+  pl.hand.forEach((cardId) => {
+    collect(parseEffectSegments(card(cardId).effectKo).segments, cardId, null, 'hand');
+  });
+  for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
+    collect(parseEffectSegments(card(stack.cardId).effectKo).segments, stack.cardId, stack.uid, 'battle');
+    for (const srcId of stack.sources) {
+      const c = card(srcId);
+      if (!c.inheritedKo) continue;
+      collect(parseEffectSegments(c.inheritedKo).segments, srcId, stack.uid, 'battle');
+    }
+  }
+  return options;
 }
 
 export function resolvePending(state, uid) {

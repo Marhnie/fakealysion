@@ -678,6 +678,13 @@ function renderActions() {
   const choiceUi = renderUiChoice();
   if (choiceUi) { return h('div', { className: 'actions actions-attention' }, [choiceUi]); }
 
+  // 11-1-4: a timing never advances until everything resolvable in it is
+  // resolved — a triggered effect from the attack declaration (or anything
+  // else queued) must be dealt with before the Counter/Block/etc. attack-
+  // flow UI is shown, not hidden behind it.
+  const pendingEffectsUiEarly = renderPendingEffects();
+  if (pendingEffectsUiEarly) { return h('div', { className: 'actions actions-attention' }, [pendingEffectsUiEarly]); }
+
   const pendingUi = renderPendingAttack();
   if (pendingUi) { return h('div', { className: 'actions actions-attention' }, [pendingUi]); }
 
@@ -829,11 +836,44 @@ function runSecurityCheck(pa) {
   }
 }
 
-function enterBlockerCheck(pa) {
-  if (eligibleBlockers(pa.opp).length === 0) {
+// 11-5/14: resolve against whatever the FINAL target is after Block Timing
+// (block can redirect a player-attack, or even a direct digimon-attack, to
+// a different Digimon — 12-1-5 only bars blocking with the digimon that's
+// already the target).
+function resolveFinalTarget(pa) {
+  if (pa.targetKind === 'player') {
     runSecurityCheck(pa);
   } else {
-    pa.stage = 'blockerCheck';
+    const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
+    pa.stage = 'digimonResult'; pa.battleRes = res;
+  }
+}
+
+// 11-4/12-1: Block Timing — applies regardless of whether the attack
+// targeted the player or a specific Digimon; 12-1-5 only excludes the
+// Digimon that's already the target from blocking (it can't block itself).
+function enterBlockCheck(pa) {
+  const blockers = eligibleBlockers(pa.opp).filter(s => s.uid !== pa.targetUid);
+  if (blockers.length === 0) {
+    resolveFinalTarget(pa);
+  } else {
+    pa.stage = 'blockCheck';
+    pa.blockers = blockers;
+  }
+}
+
+// 11-3: Counter Timing — the defender's window to activate 【카운터】
+// effects before Block Timing. Genuinely automating arbitrary counter
+// effects (e.g. a full free evolution) is out of scope for the compiler,
+// so activating one hands it to the normal pending-effect/manual-tools
+// path instead of silently skipping the timing altogether.
+function enterCounterTiming(pa) {
+  const counters = S.findCounterOptions(state, pa.opp);
+  if (counters.length === 0) {
+    enterBlockCheck(pa);
+  } else {
+    pa.stage = 'counterTiming';
+    pa.counters = counters;
   }
 }
 
@@ -844,14 +884,15 @@ function attackFlow(p, uid, directTarget) {
   const dp = S.effectiveDP(dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
-  sel.pendingAttack = { attacker: p, uid, dp, opp, digimonTargets, stage: 'targetChoice', attackerCardId: dec.stack.cardId };
+  const pa = { attacker: p, uid, dp, opp, digimonTargets, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
+  sel.pendingAttack = pa;
 
   if (directTarget === 'PLAYER') {
-    enterBlockerCheck(sel.pendingAttack);
+    pa.targetKind = 'player';
+    enterCounterTiming(pa);
   } else if (directTarget && digimonTargets.includes(directTarget) && !blockedFromDigimonTarget(p, dec.stack)) {
-    const res = S.resolveDigimonBattle(state, p, uid, directTarget);
-    sel.pendingAttack.stage = 'digimonResult';
-    sel.pendingAttack.battleRes = res;
+    pa.targetKind = 'digimon'; pa.targetUid = directTarget;
+    enterCounterTiming(pa);
   }
   render();
 }
@@ -883,7 +924,10 @@ function renderPendingAttack() {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
     const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
     rows.push(h('div', { className: 'actions-row' }, [
-      h('button', { className: 'primary', onClick: () => { enterBlockerCheck(pa); render(); } }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
+      h('button', {
+        className: 'primary',
+        onClick: () => { pa.targetKind = 'player'; enterCounterTiming(pa); render(); },
+      }, `${pa.opp}(플레이어)를 공격 → 시큐리티 체크`),
     ]));
     if (blockedByDynamic) {
       rows.push(h('div', { className: 'meta' }, '(조건부 제약으로 이번엔 디지몬 직접 공격 불가 — 위 옵션으로만 진행)'));
@@ -892,13 +936,28 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
         const st = state.players[pa.opp].battle.find(s => s.uid === uid);
         return cardChip(st.cardId, { onClick: () => {
-          const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, uid);
-          pa.stage = 'digimonResult'; pa.battleRes = res; render();
+          pa.targetKind = 'digimon'; pa.targetUid = uid; enterCounterTiming(pa); render();
         } });
       })));
     } else {
       rows.push(h('div', { className: 'meta' }, '상대 필드에 레스트 상태 디지몬이 없어서(≪무진화원액티브공격≫ 등의 예외도 없어서) 직접 공격은 불가해요.'));
     }
+  } else if (pa.stage === 'counterTiming') {
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `${pa.opp}의 카운터 타이밍 — 사용 가능한 【카운터】:`),
+    ]));
+    pa.counters.forEach(opt => {
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, `${S.card(opt.cardId).nameKo} (${opt.zone}): ${opt.body}`),
+        h('button', {
+          onClick: () => {
+            state.pending.push({ uid: 'ct' + Math.random().toString(36).slice(2), player: pa.opp, cardId: opt.cardId, stackUid: opt.stackUid, tags: opt.tags, text: opt.body, resolved: false });
+            enterBlockCheck(pa); render();
+          },
+        }, '발동 (범용 도구/직접 처리로 이어짐)'),
+      ]));
+    });
+    rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '카운터 사용 안 함 → 블록 타이밍'));
   } else if (pa.stage === 'digimonResult') {
     const res = pa.battleRes;
     rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result));
@@ -917,30 +976,35 @@ function renderPendingAttack() {
     if (res.result === 'attackerWins' && res.piercing) {
       rows.push(h('div', { className: 'actions-row' }, [
         h('span', {}, '≪관통≫ 보유 — 상대만 소멸시켰으니 어택 종료 전에 시큐리티도 체크할 수 있어요.'),
-        h('button', { className: 'primary', onClick: () => { enterBlockerCheck(pa); render(); } }, '관통으로 시큐리티 체크 진행'),
+        h('button', {
+          className: 'primary',
+          // Piercing's bonus check is still part of THIS attack's single
+          // "성립의 확인" — Counter/Block Timing already happened once for
+          // this attack and don't repeat here.
+          onClick: () => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
+        }, '관통으로 시큐리티 체크 진행'),
         h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '체크 안 함 / 종료'),
       ]));
     } else {
       rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '확인 / 닫기'));
     }
-  } else if (pa.stage === 'blockerCheck') {
-    const blockers = eligibleBlockers(pa.opp);
+  } else if (pa.stage === 'blockCheck') {
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, `${pa.opp}가 ≪블로커≫로 막습니까? — 막을 디지몬을 클릭하면 그 디지몬이 레스트되며 방어측이 됩니다:`),
+      h('span', {}, `${pa.opp}가 ≪블로커≫로 막습니까? — 막을 디지몬을 클릭하면 그 디지몬이 레스트되며 (대상이었다면 원래 대상 대신) 방어측이 됩니다:`),
     ]));
-    rows.push(h('div', { className: 'stack-list' }, blockers.map(s => cardChip(s.cardId, {
+    rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {
       onClick: () => {
         S.restStack(state, pa.opp, s.uid);
-        const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, s.uid);
-        pa.stage = 'digimonResult'; pa.battleRes = res;
+        pa.targetKind = 'digimon'; pa.targetUid = s.uid;
+        resolveFinalTarget(pa);
         render();
       },
     }))));
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', {
         className: 'primary',
-        onClick: () => { runSecurityCheck(pa); render(); },
-      }, '안 막음 → 시큐리티 체크 진행'),
+        onClick: () => { resolveFinalTarget(pa); render(); },
+      }, pa.targetKind === 'player' ? '안 막음 → 시큐리티 체크 진행' : '안 막음 → 배틀 진행'),
     ]));
   } else if (pa.stage === 'result') {
     const res = pa.res;
