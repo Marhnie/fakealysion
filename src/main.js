@@ -410,8 +410,10 @@ function renderPlayerPanel(p) {
 function renderBoard() {
   if (state.winner) return h('div', { className: 'board' });
   return h('div', { className: 'board' }, [
-    renderPlayerPanel('p2'),
-    renderPlayerPanel('p1'),
+    h('div', { className: 'table-surface' }, [
+      renderPlayerPanel('p2'),
+      renderPlayerPanel('p1'),
+    ]),
   ]);
 }
 
