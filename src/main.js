@@ -10,6 +10,11 @@ let state = null;
 let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
+// Diff-based draw detection: hand cards are always pushed to the END, so
+// comparing hand length across renders tells us how many trailing cards
+// were just drawn — catches ANY draw regardless of source (phase draw,
+// digivolve bonus, a card effect script) without touching every call site.
+let prevHandLen = { p1: null, p2: null };
 
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
@@ -260,6 +265,16 @@ function render() {
   if (!state) return renderSetup();
   E.autoAdvance(state);
   autoRunMandatoryPending();
+  // 6-1-4: once memory sits on the opponent's side and there's genuinely
+  // nothing left to resolve (no pending effect, no attack/choice in
+  // progress), the turn ends immediately — don't wait for a manual "다음
+  // 페이즈" click. Checked on every render, so it also catches memory
+  // shifted by a card effect (e.g. an "어택 시 메모리 -2" effect) finishing
+  // resolution, not just the direct memory-spending actions that already
+  // called checkAutoEndTurn themselves.
+  if (state.phase === 'main' && !state.pending.length && !sel.pendingAttack && !state.uiChoice) {
+    E.checkAutoEndTurn(state);
+  }
   app.innerHTML = '';
   app.classList.toggle('log-open', panelsOpen.log);
   app.appendChild(renderTopbar());
@@ -268,6 +283,8 @@ function render() {
   if (infoPanel) app.appendChild(infoPanel);
   app.appendChild(renderActions());
   app.appendChild(renderLog());
+  const modal = renderModal();
+  if (modal) app.appendChild(modal);
 }
 
 function renderTopbar() {
@@ -301,6 +318,7 @@ function cardChip(cardId, opts = {}) {
   if (opts.selected) cls.push('selected');
   if (opts.suspended) cls.push('suspended');
   if (opts.attackable) cls.push('attackable');
+  if (opts.justDrawn) cls.push('just-drawn');
   const meta = [c.level ? `Lv.${c.level}` : c.category, c.dp ? `DP${c.dp}` : null, c.cost != null ? `C${c.cost}` : null]
     .filter(Boolean).join(' · ');
   const attrs = { className: cls.join(' '), onClick: opts.onClick };
@@ -501,12 +519,16 @@ function renderPlayerPanel(p) {
     ]),
   ]);
 
+  const prevLen = prevHandLen[p];
+  const justDrawnCount = prevLen == null ? 0 : Math.max(0, pl.hand.length - prevLen);
+  prevHandLen[p] = pl.hand.length;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
     zonePill(`핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
     h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
       selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
       draggable: p === state.activePlayer && state.phase === 'main',
       dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
+      justDrawn: i >= pl.hand.length - justDrawnCount,
       onClick: () => { sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id }; render(); },
     }))),
   ]);
@@ -751,11 +773,21 @@ function renderUiChoice() {
   return h('div', { className: 'player-panel' }, rows);
 }
 
+// The attack flow (declaration → counter → block → result) and any
+// ctx.choose() prompt are both "must address now" dialogs — floated as a
+// centered modal instead of buried in the bottom actions bar, which could
+// be scrolled/collapsed out of view. Checked in render() before the
+// regular actions panel; whichever of these exists takes over the screen.
+function renderModal() {
+  const choiceUi = renderUiChoice();
+  if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
+  const pendingUi = renderPendingAttack();
+  if (pendingUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]);
+  return null;
+}
+
 function renderActions() {
   if (state.winner) return h('div', { className: 'actions' });
-
-  const choiceUi = renderUiChoice();
-  if (choiceUi) { return h('div', { className: 'actions actions-attention' }, [choiceUi]); }
 
   // 11-1-4: a timing never advances until everything resolvable in it is
   // resolved — a triggered effect from the attack declaration (or anything
@@ -763,9 +795,6 @@ function renderActions() {
   // flow UI is shown, not hidden behind it.
   const pendingEffectsUiEarly = renderPendingEffects();
   if (pendingEffectsUiEarly) { return h('div', { className: 'actions actions-attention' }, [pendingEffectsUiEarly]); }
-
-  const pendingUi = renderPendingAttack();
-  if (pendingUi) { return h('div', { className: 'actions actions-attention' }, [pendingUi]); }
 
   const pendingEffectsUi = renderPendingEffects();
 

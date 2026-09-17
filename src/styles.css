@@ -161,6 +161,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .player-header.attackable { outline: 2px solid var(--danger); cursor: pointer; animation: attackPulse 1.2s ease-in-out infinite; border-radius: 6px; }
 .card-chip.attackable { border-color: var(--danger); animation: attackPulse 1.2s ease-in-out infinite; }
 
+/* a freshly-drawn card slides/fades in from the deck side and briefly glows */
+@keyframes cardDrawFlash {
+  0% { opacity: 0; transform: translateY(-18px) scale(0.85); box-shadow: 0 0 16px 4px var(--holo-accent); }
+  60% { opacity: 1; transform: translateY(0) scale(1.04); box-shadow: 0 0 16px 4px var(--holo-accent); }
+  100% { box-shadow: 3px 6px 10px -2px rgba(0,0,0,0.6); }
+}
+.card-chip.just-drawn { animation: cardDrawFlash 0.6s ease-out; border-color: var(--holo-accent); }
+
 .actions { background: var(--panel); border-top: 1px solid var(--border); padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; max-height: 42vh; overflow-y: auto; }
 /* something needs the player's attention — a small slide-up cue */
 @keyframes actionsAttentionIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
@@ -177,6 +185,20 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 .section-title.clickable, .clickable { cursor: pointer; user-select: none; }
 .section-title.clickable:hover { color: var(--holo-accent); }
 .effect-box { background: #14161a; border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; color: var(--muted); max-width: 480px; white-space: pre-wrap; }
+
+/* attack-flow / choice dialogs float centered — easy to see, easy to
+   close — instead of living in the (possibly collapsed/scrolled) bottom
+   actions bar */
+@keyframes modalPopIn { from { opacity: 0; transform: translateY(10px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55);
+}
+.modal-panel {
+  max-width: min(560px, 92vw); max-height: 85vh; overflow-y: auto;
+  animation: modalPopIn 0.18s ease-out;
+}
+.modal-panel .player-panel { box-shadow: 0 24px 48px -12px rgba(0,0,0,0.8); }
 
 /* card info (including 진화원효과) for whatever's currently selected —
    floats independent of the actions panel's collapsed state so it's
