@@ -103,8 +103,13 @@ export function autoAdvance(state) {
     if (state.phase === 'unsuspend' || state.phase === 'draw') { nextPhase(state); continue; }
     if (state.phase === 'breeding') {
       const pl = state.players[state.activePlayer];
-      const canHatch = !pl.raising && pl.digitamaDeck.length > 0;
-      const canMove = pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
+      // Matches the same gate hatchDigitama/moveRaisingToBattle enforce: once
+      // this turn's one breeding action is used, neither is available
+      // anymore, regardless of what raising/digitamaDeck look like — without
+      // this check, moving (which empties raising) made canHatch look true
+      // again and this stopped auto-skipping an already-finished phase.
+      const canHatch = !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
+      const canMove = !state.breedingActionTaken && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
       if (!canHatch && !canMove) { nextPhase(state); continue; }
     }
     break;

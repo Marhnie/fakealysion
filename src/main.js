@@ -812,10 +812,26 @@ function eligibleBlockers(p) {
   return state.players[p].battle.filter(s => S.hasKeyword(s, '블로커') && !s.suspended);
 }
 
+// Runs the security check and — same as resolveDigimonBattle already does
+// for digimon-vs-digimon combat — immediately destroys the attacker if it
+// lost. There's no tracked "survives destruction" keyword in this game (no
+// card prints one; each is bespoke text), so this must never be left as an
+// unconditional player choice — that was letting an attacker survive with
+// no actual effect backing it up.
+function runSecurityCheck(pa) {
+  const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
+  pa.stage = 'result'; pa.res = res;
+  if (!res.gameOver) {
+    const last = res.checks[res.checks.length - 1];
+    if (last.result === 'defenderWins' || last.result === 'tie') {
+      S.deleteStack(state, pa.attacker, pa.uid);
+    }
+  }
+}
+
 function enterBlockerCheck(pa) {
   if (eligibleBlockers(pa.opp).length === 0) {
-    const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
-    pa.stage = 'result'; pa.res = res;
+    runSecurityCheck(pa);
   } else {
     pa.stage = 'blockerCheck';
   }
@@ -923,10 +939,7 @@ function renderPendingAttack() {
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', {
         className: 'primary',
-        onClick: () => {
-          const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
-          pa.stage = 'result'; pa.res = res; render();
-        },
+        onClick: () => { runSecurityCheck(pa); render(); },
       }, '안 막음 → 시큐리티 체크 진행'),
     ]));
   } else if (pa.stage === 'result') {
@@ -940,17 +953,15 @@ function renderPendingAttack() {
       });
       const last = res.checks[res.checks.length - 1];
       if (last.result === 'defenderWins' || last.result === 'tie') {
-        rows.push(h('div', { className: 'actions-row' }, [
-          h('span', {}, '공격측이 소멸합니다. 배리어 등으로 살릴까요?'),
-          h('button', {
-            className: 'primary',
-            onClick: () => { sel.pendingAttack = null; render(); },
-          }, '그냥 소멸시키지 않음 (배리어 등으로 생존 처리 — 범용 도구로 대가 지불)'),
-          h('button', {
-            className: 'danger',
-            onClick: () => { S.deleteStack(state, pa.attacker, pa.uid); sel.pendingAttack = null; render(); },
-          }, '소멸시킴'),
-        ]));
+        // Already destroyed by runSecurityCheck — this is purely
+        // informational. No "survive anyway" button: there's no tracked
+        // keyword for it, every real instance is bespoke card text handled
+        // via the normal trigger/pending-effect system instead.
+        rows.push(h('div', { className: 'meta' }, '공격측이 소멸했어요 (정말로 생존 효과가 있다면 범용 도구로 직접 처리하세요).'));
+        rows.push(h('button', {
+          className: 'primary',
+          onClick: () => { sel.pendingAttack = null; render(); },
+        }, '확인 / 닫기'));
       } else {
         rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '확인 / 닫기'));
       }
