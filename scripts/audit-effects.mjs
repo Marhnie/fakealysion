@@ -78,6 +78,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via trySurviveBySacrifice, checked from deleteStack.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬이\s*소멸할\s*때,?\s*명칭에\s*「[^」]+」\s*(?:을|를)?\s*포함하는\s*다른\s*디지몬\s*\d+\s*마리를?\s*소멸시키는\s*것으로,?\s*소멸하지\s*않는다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {

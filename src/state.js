@@ -1195,8 +1195,41 @@ export function saveCardUnderTamer(state, p, cardId, tamerUid) {
   return true;
 }
 
+// "이 디지몬이 소멸할 때, 명칭에 「X」을 포함하는 다른 디지몬 1마리를
+// 소멸시키는 것으로, 소멸하지 않는다." — a barrier paid for by sacrificing
+// another same-name-family Digimon on the SAME board, instead of an
+// interactive choice (deleteStack has no async path, and every real print
+// of this ability only ever asks for exactly 1 substitute) auto-picks the
+// first eligible one it finds. Returns true if the stack survived (caller
+// must abort the destruction).
+function trySurviveBySacrifice(state, p, stack) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      const m = seg.body.trim().match(/^이\s*디지몬이\s*소멸할\s*때,?\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*다른\s*디지몬\s*(\d+)\s*마리를?\s*소멸시키는\s*것으로,?\s*소멸하지\s*않는다\.?$/);
+      if (!m) continue;
+      const [, nameIncludes, nStr] = m;
+      const n = Number(nStr);
+      const candidates = state.players[p].battle.filter(s => s !== stack && card(s.cardId).nameKo.includes(nameIncludes));
+      if (candidates.length < n) continue;
+      const sacrificed = candidates.slice(0, n);
+      log(state, `${p} ${card(stack.cardId).nameKo} 소멸 대신 ${sacrificed.map(s => card(s.cardId).nameKo).join(', ')} 소멸 (생존 효과)`);
+      for (const s of sacrificed) deleteStack(state, p, s.uid);
+      return true;
+    }
+  }
+  return false;
+}
+
 export function deleteStack(state, p, uid, toZone = 'trash') {
   const pl = state.players[p];
+  const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (peek && trySurviveBySacrifice(state, p, peek)) return null;
   let stack = null;
   if (pl.raising?.uid === uid) { stack = pl.raising; pl.raising = null; }
   else {
