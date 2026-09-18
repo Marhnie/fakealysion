@@ -833,7 +833,8 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose,
+    startAttack: (p, uid) => setTimeout(() => { if (!sel.pendingAttack) { attackFlow(p, uid); render(); } }, 0) };
   await Effects.runScript(script, ctx);
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly) {

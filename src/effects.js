@@ -369,6 +369,15 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'attackNow': {
+      const pl = state.players[who];
+      let uid = instr.thisStack ? ctx.sourceStackUid : null;
+      if (!uid) uid = await ctx.choose('pickStack', { player: who, uids: pl.battle.filter(x => !x.suspended && S.card(x.cardId).category === 'digimon').map(x => x.uid), prompt: '어택할 디지몬 선택' });
+      const st = uid && pl.battle.find(x => x.uid === uid);
+      if (!st || st.suspended) { S.log(state, `${who} 어택할 수 있는 디지몬이 없음`); break; }
+      if (ctx.startAttack) ctx.startAttack(who, uid);
+      break;
+    }
     case 'shuffleSecurity': {
       const sec = state.players[who].security;
       for (let i = sec.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [sec[i], sec[j]] = [sec[j], sec[i]]; }
@@ -633,6 +642,14 @@ function compileInner(text) {
     script.push({ op: 'retreat', target: 'self', n: Number(m[1]) });
   }
 
+  // "(그 후,) 이 디지몬을 소멸시킨다" as a trailing clause (the anchored form above only matched a lone sentence).
+  if (/이\s*디지몬을\s*소멸시킨다/.test(t) && !/것으로\s*,?\s*이\s*디지몬을\s*소멸시킨다/.test(t) && !script.some(o => o.op === 'destroy' && o.mode === 'thisStack')) {
+    script.push({ op: 'destroy', target: 'self', mode: 'thisStack', deferLast: true });
+  }
+  // "이 디지몬/자신의 디지몬 N마리로 (상대의 디지몬에게) 어택할 수 있다" — an effect-granted immediate attack.
+  if ((m = t.match(/(이\s*디지몬|자신(?:의)?\s*디지몬\s*\d+\s*마리)(?:으로|로)\s*(?:상대(?:의)?\s*디지몬에게\s*)?어택할\s*수\s*있다/)) && !/(?:동안|때)[^.]*어택할\s*수\s*있다/.test(t.replace(/\([^()]*\)/g, ''))) {
+    script.push({ op: 'attackNow', who: 'self', thisStack: /^이/.test(m[1]) });
+  }
   if (/자신(?:의)?\s*시큐리티를\s*셔플한다/.test(t)) script.push({ op: 'shuffleSecurity', who: 'self' });
   if (/자신(?:의)?\s*시큐리티를\s*전부\s*확인한다/.test(t)) script.push({ op: 'lookSecurity', who: 'self' });
   // "상대의 턴 종료까지 상대의 디지몬/테이머 N마리(명)는 액티브가 되지 않는다" — chosen targets skip their next unsuspend.
@@ -797,7 +814,7 @@ function compileInner(text) {
 
   // Trash evolution sources: "상대 디지몬 N마리/전부의 진화원을 (아래에서부터|
   // 위에서부터) N장(까지)/전부 파기한다".
-  if ((m = t.match(/상대(?:의)?\s*디지몬\s*(?:(\d+)\s*마리|(전부))(?:의)?\s*진화원을?,?\s*(아래에서(?:부터)?|위에서(?:부터)?)?\s*(?:(\d+)\s*장(?:까지)?|(전부))\s*파기/))) {
+  if ((m = t.match(/상대(?:의)?\s*디지몬\s*(?:(\d+)\s*마리|(전부))(?:의)?\s*진화원을?,?\s*(?:선택하여\s*)?(아래에서(?:부터)?|위에서(?:부터)?)?\s*(?:(\d+)\s*장(?:까지)?|(전부))\s*파기/))) {
     script.push({
       op: 'trashEvoSources', target: 'opponent',
       ...(m[2] ? { all: true } : { stacks: Number(m[1]) }),
@@ -1046,7 +1063,8 @@ function compileInner(text) {
     }
   }
 
-  return script;
+  // "…한 뒤 이 디지몬을 소멸시킨다" runs after everything else that needs the source stack.
+  return [...script.filter(o => !o.deferLast), ...script.filter(o => o.deferLast)];
 }
 
 // ---- leading conditions ("<조건>라면/다면, <효과>") ----
