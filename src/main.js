@@ -711,7 +711,7 @@ async function runPendingScript(trigger, opts = {}) {
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, 700));
   const script = scriptFor(trigger);
-  const ctx = { state, S, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
   await Effects.runScript(script, ctx);
   S.resolvePending(state, trigger.uid);
   render();

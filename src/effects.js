@@ -174,6 +174,20 @@ async function runOne(instr, ctx) {
       if (tamerUid) S.saveCardUnderTamer(state, ctx.self, ctx.sourceCardId, tamerUid);
       break;
     }
+    case 'blastEvolve': {
+      // 16-26: "evolve your Digimon into this hand card for free" — the
+      // COST is waived, but which cards this can target still follows the
+      // normal evolution rules (evoNormal / printed 〔진화〕 conditions),
+      // same check the drag-drop digivolve path uses. Only stacks that
+      // actually satisfy some printed condition are offered as choices.
+      const pl = state.players[ctx.self];
+      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, s.extraColors || []).ok);
+      if (!eligible.length) break;
+      const targetUid = eligible.length === 1 ? eligible[0].uid
+        : await ctx.choose('pickStack', { player: ctx.self, uids: eligible.map(s => s.uid), prompt: `《블래스트 진화》 — ${S.card(ctx.sourceCardId).nameKo}로 진화시킬 디지몬 선택` });
+      if (targetUid) S.digivolve(state, ctx.self, targetUid, ctx.sourceCardId, 0, 'hand');
+      break;
+    }
     case 'grantKeyword': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       let targetUid = instr.thisStack ? ctx.sourceStackUid : null;
@@ -450,6 +464,15 @@ export function compileToScript(text) {
   // (a filter describing OTHER cards, not this card performing the action).
   if (/[≪《]\s*세이브\s*[≫》](?!\s*가)/.test(t)) {
     script.push({ op: 'saveUnderTamer' });
+  }
+
+  // 16-26: ≪블래스트 진화≫ — by far the most common 【카운터】 body (confirmed
+  // ~75 of 85 카운터 segments via the full-DB audit). Any bare keyword lines
+  // that happen to trail it in the same segment (e.g. "…《블로커》") are the
+  // card's own SEPARATE standing abilities, already picked up independently
+  // by parseStaticGrants — ignored here, only the action itself matters.
+  if (/[≪《]\s*블(?:래|라)스트\s*진화\s*[≫》]/.test(t)) {
+    script.push({ op: 'blastEvolve' });
   }
 
   // 《시큐리티 어택 ±N》 keyword grant — positive is usually self; negative is
