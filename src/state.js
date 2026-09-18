@@ -253,6 +253,9 @@ export function parseWatcherTrigger(body) {
 
 export function isHandledWatcherBody(body) { return !!parseWatcherTrigger(body); }
 
+// "<desc>" descriptor -> predicate over a card (traits/name/기술/color/Lv), shared with effects.js conditions.
+export function cardDescPredicate(desc) { return evoTargetPredicate(desc); }
+
 // info: { owner, stack, cause }. `stack` may already be off the board (delete).
 export function emitGameEvent(state, kind, info) {
   const subjCard = info.stack ? card(info.stack.cardId) : null;
@@ -1965,6 +1968,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
     pl.hand.splice(idx, 1);
   }
   discardLinkCardsOnNewCard(state, p, stack); // 10-4-1: this stack is about to become a new card
+  stack.viaFusion = false;
   stack.sources.push(stack.cardId);
   stack.cardId = newCardId;
   if (cost > 0) spendMemory(state, cost);
@@ -2044,6 +2048,7 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   fused.sources = [...a.sources, a.cardId, ...b.sources, b.cardId];
   fused.suspended = false; // DNA digivolve results always enter unsuspended
   fused.attackEligibleTurn = state.turnNumber; // DNA/Jogress results can attack immediately
+  fused.viaFusion = true; // for "조그레스 진화하고 있었다면" conditions
   pl.battle.push(fused);
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} DNA/조그레스 진화: ${card(a.cardId).nameKo}+${card(b.cardId).nameKo} → ${card(newCardId).nameKo} (코스트${cost})`);

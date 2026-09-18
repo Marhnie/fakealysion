@@ -555,7 +555,7 @@ async function runOne(instr, ctx) {
 // simply left out of the script (the caller falls back to manual tools for
 // whatever isn't covered), so a partially-understood sentence never causes
 // an instruction to run with wrong/guessed parameters.
-export function compileToScript(text) {
+function compileInner(text) {
   const script = [];
   const t = text;
 
@@ -1003,8 +1003,101 @@ export function compileToScript(text) {
   return script;
 }
 
+// ---- leading conditions ("<조건>라면/다면, <효과>") ----
+// ~420 compiled effects print a condition first; the action patterns below match
+// the action clause alone, so those effects used to run UNCONDITIONALLY. The
+// condition is now parsed into a runtime predicate and wraps the compiled action;
+// a leading condition we can't evaluate makes the whole segment manual (safer
+// than silently applying it).
+const NUM_CMP = (n, cmp) => (v) => cmp === '이하' ? v <= n : v >= n;
+
+function parseConditionText(c) {
+  c = c.trim().replace(/[,\s]+$/, '');
+  let m;
+  const own = (ctx) => ctx.state.players[ctx.self];
+  const opp = (ctx) => ctx.state.players[ctx.opp];
+  const mem = (ctx) => (ctx.self === 'p1' ? ctx.state.memory : -ctx.state.memory);
+  const stackOf = (ctx) => own(ctx).battle.find(s => s.uid === ctx.sourceStackUid) || (own(ctx).raising?.uid === ctx.sourceStackUid ? own(ctx).raising : null);
+  const cat = (ctx, id) => ctx.S.card(id)?.category;
+  const digimonCount = (ctx, pl) => pl.battle.filter(s => cat(ctx, s.cardId) === 'digimon').length;
+  // Descriptor predicate resolved at run time (effects.js has no state import); an
+  // unparsable descriptor makes the condition false and says so in the log.
+  const descPred = (ctx, desc) => { const pr = ctx.S.cardDescPredicate(desc); if (!pr) ctx.S.log(ctx.state, `조건 "${desc}"을(를) 판정할 수 없어 효과를 건너뜀 (수동 확인)`); return pr; };
+  if ((m = c.match(/^(?:자신의\s*)?메모리가\s*(-?\d+)\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(mem(ctx)); }
+  if ((m = c.match(/^메모리가\s*상대\s*쪽의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
+  if ((m = c.match(/^상대의\s*디지몬이\s*(있다면|없다면)$/))) return (ctx) => (digimonCount(ctx, opp(ctx)) > 0) === (m[1] === '있다면');
+  if ((m = c.match(/^자신의\s*테이머가\s*(\d+)\s*명\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).battle.filter(s => cat(ctx, s.cardId) === 'tamer').length); }
+  if ((m = c.match(/^자신의\s*테이머가\s*(있다면|없다면)$/))) return (ctx) => (own(ctx).battle.some(s => cat(ctx, s.cardId) === 'tamer')) === (m[1] === '있다면');
+  // zone sizes: "자신/상대의 패/트래시/시큐리티가 N장 이하/이상(이라면|있다면)"
+  if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티)(?:가|에)?\s*(\d+)\s*장\s*(이하|이상)(?:이라면|\s*있다면)$/))) {
+    const f = NUM_CMP(Number(m[3]), m[4]); const who = m[1]; const zone = { 패: 'hand', 트래시: 'trash', 시큐리티: 'security' }[m[2]];
+    return (ctx) => f((who === '자신' ? own(ctx) : opp(ctx))[zone].length);
+  }
+  // board counts: "자신/상대의 디지몬/테이머가 N마리·명·장 이하/이상(이라면|있다면)"
+  if ((m = c.match(/^(자신|상대)의\s*(디지몬|테이머)(?:가|이)?\s*(\d+)\s*(?:마리|명|장)\s*(이하|이상)(?:이라면|\s*있다면)$/))) {
+    const f = NUM_CMP(Number(m[3]), m[4]); const who = m[1], kind = m[2] === '테이머' ? 'tamer' : 'digimon';
+    return (ctx) => f((who === '자신' ? own(ctx) : opp(ctx)).battle.filter(s => cat(ctx, s.cardId) === kind).length);
+  }
+  if ((m = c.match(/^상대의\s*(디지몬|테이머)(?:가|이)?\s*(있다면|없다면)$/))) {
+    const kind = m[1] === '테이머' ? 'tamer' : 'digimon';
+    return (ctx) => opp(ctx).battle.some(s => cat(ctx, s.cardId) === kind) === (m[2] === '있다면');
+  }
+  if ((m = c.match(/^자신의\s*디지몬이\s*없다면$/))) return (ctx) => !own(ctx).battle.some(s => cat(ctx, s.cardId) === 'digimon');
+  // presence with a descriptor: "<색/명칭/특징 조건> 자신의 디지몬/테이머가 있다면/없다면", "자신의 「A」/「B」가 있다면"
+  if ((m = c.match(/^(.*?)\s*자신의\s*(디지몬|테이머|디지몬\/테이머)(?:가|이)?\s*(있다면|없다면)$/)) && m[1].trim()) {
+    const desc = m[1].trim(), kinds = m[2] === '테이머' ? ['tamer'] : m[2] === '디지몬' ? ['digimon'] : ['digimon', 'tamer'], has = m[3] === '있다면';
+    return (ctx) => { const pr = descPred(ctx, desc); return !!pr && (own(ctx).battle.some(s => kinds.includes(cat(ctx, s.cardId)) && pr(ctx.S.card(s.cardId)))) === has; };
+  }
+  if ((m = c.match(/^자신의\s*((?:「[^」]+」\/?)+)(?:가|이)\s*(있다면|없다면)$/))) {
+    const l = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    return (ctx) => own(ctx).battle.some(s => l.includes(ctx.S.card(s.cardId).nameKo)) === (m[2] === '있다면');
+  }
+  if ((m = c.match(/^이\s*디지몬이\s*「([^」]+)」(?:이)?라면$/))) return (ctx) => { const st = stackOf(ctx); return !!st && ctx.S.card(st.cardId).nameKo === m[1]; };
+  if ((m = c.match(/^이\s*디지몬의\s*진화원이\s*(\d+)\s*장\s*(이하|이상)(?:이라면|\s*있다면)$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => { const st = stackOf(ctx); return !!st && f(st.sources.length); }; }
+  if (/^이\s*디지몬이\s*다색(?:이)?라면$/.test(c)) return (ctx) => { const st = stackOf(ctx); return !!st && (ctx.S.card(st.cardId).colors || []).length >= 2; };
+  if ((m = c.match(/^이\s*디지몬이\s*(\d+)\s*색\s*이상(?:이)?라면$/))) return (ctx) => { const st = stackOf(ctx); return !!st && (ctx.S.card(st.cardId).colors || []).length >= Number(m[1]); };
+  if ((m = c.match(/^서로의\s*시큐리티\s*합계가\s*(\d+)\s*장\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).security.length + opp(ctx).security.length); }
+  if ((m = c.match(/^이\s*디지몬의\s*진화원에\s*((?:「[^」]+」\/?)+)(?:이|가)\s*있다면$/))) {
+    const l = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    return (ctx) => { const st = stackOf(ctx); return !!st && st.sources.some(id => { const cd = ctx.S.card(id); return l.some(n => cd.nameKo === n || cd.nameKo.includes(n) || (cd.types || []).includes(n)); }); };
+  }
+  if (/^조그레스\s*진화\s*하고\s*있었다면$/.test(c)) return (ctx) => !!stackOf(ctx)?.viaFusion;
+  if (/^자신의\s*턴이라면$/.test(c)) return (ctx) => ctx.state.activePlayer === ctx.self;
+  if (/^상대의\s*턴이라면$/.test(c)) return (ctx) => ctx.state.activePlayer !== ctx.self;
+  if (/^이\s*디지몬이\s*레스트\s*상태라면$/.test(c)) return (ctx) => !!stackOf(ctx)?.suspended;
+  if ((m = c.match(/^이\s*디지몬(?:이|에게|에)\s*(.+?)(?:가진다면|포함한다면|기술되어\s*있다면)$/))) {
+    const kind = /가진다면$/.test(c) ? 'trait' : /포함한다면$/.test(c) ? 'name' : 'desc';
+    const body = m[1].trim();
+    if (/^《/.test(body)) { const kw = body.replace(/[《》≪≫]/g, '').replace(/(?:이|가)\s*$/, '').trim(); return (ctx) => { const st = stackOf(ctx); if (!st) return false; const cd = ctx.S.card(st.cardId); return `${cd.effectKo || ''}\n${cd.inheritedKo || ''}`.includes(`《${kw}`); }; }
+    const descText = kind === 'trait' ? body.replace(/\s*(?:를|을)\s*$/, '') + ' 가진' : kind === 'name' ? body.replace(/\s*(?:를|을)\s*$/, '') + ' 포함하는' : body.replace(/(?:이|가)\s*$/, '') + ' 기술되어 있는';
+    return (ctx) => { const st = stackOf(ctx); if (!st) return false; const pr = descPred(ctx, descText); return !!pr && pr(ctx.S.card(st.cardId)); };
+  }
+  if ((m = c.match(/^(?:(.+?)\s+)?자신의\s*디지몬이\s*있다면$/))) {
+    const desc = m[1] ? m[1].replace(/\s*(?:를|을)\s*$/, '').trim() + ' 가진' : null;
+    return (ctx) => { const pr = desc ? descPred(ctx, desc) : () => true; return !!pr && own(ctx).battle.some(s => cat(ctx, s.cardId) === 'digimon' && pr(ctx.S.card(s.cardId))); };
+  }
+  if ((m = c.match(/^자신의\s*「([^」]+)」(?:가|이)\s*(있다면|없다면)$/))) return (ctx) => (own(ctx).battle.some(s => ctx.S.card(s.cardId).nameKo === m[1])) === (m[2] === '있다면');
+  return null;
+}
+
+export function compileToScript(text) {
+  const inner = compileInner(text);
+  const trimmed = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
+  const cm = trimmed.match(/^([^,.。\n]{2,80}?(?:라면|다면)),\s*(.*)$/s);
+  if (!cm) return inner;
+  // Already condition-aware (dedicated op/condition) — leave it alone.
+  if (inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
+  if (!inner.length) return inner;
+  const test = parseConditionText(cm[1]);
+  if (!test) return []; // can't evaluate the condition → manual, never apply blindly
+  const rest = compileInner(cm[2]);
+  if (!rest.length) return [];
+  return [{ op: 'condition', if: { test }, then: rest, else: [] }];
+}
+
 async function evalCondition(cond, ctx) {
   if (!cond) return true;
+  if (cond.test) return !!cond.test(ctx);
   if (cond.memoryLE != null) {
     const val = ctx.self === 'p1' ? ctx.state.memory : -ctx.state.memory;
     return val <= cond.memoryLE;
