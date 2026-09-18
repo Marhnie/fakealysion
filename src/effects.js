@@ -35,6 +35,7 @@ function matchesFilter(S, cardId, filter) {
   if (filter.category && c.category !== filter.category) return false;
   if (filter.dpMax != null && (c.dp || 0) > filter.dpMax) return false;
   if (filter.dpMin != null && (c.dp || 0) < filter.dpMin) return false;
+  if (filter.dp != null && (c.dp || 0) !== filter.dp) return false;
   if (filter.name && c.nameKo !== filter.name) return false;
   if (filter.nameIncludes && !c.nameKo.includes(filter.nameIncludes)) return false;
   return true;
@@ -566,11 +567,19 @@ export function compileToScript(text) {
   // occurrences via the full-DB audit — deck-bottom alone is the larger of
   // the two).
   for (const [destWord, dest] of [['패로', 'hand'], ['덱\\s*아래로', 'deckBottom']]) {
-    const re = new RegExp(`(?:(레스트\\s*상태[의인]|액티브\\s*상태[의인])\\s*)?(?:Lv\\.(\\d+)\\s*(이하|이상)의?\\s*)?(?:DP\\s*(\\d+)\\s*(이하|이상)(?:의|인)?\\s*)?상대(?:의)?\\s*디지몬\\s*(전부|\\d+\\s*마리(?:까지)?)를?\\s*(?:대신\\s*)?${destWord}\\s*되돌린다\\.?\\s*\\(?\\s*그\\s*디지몬이\\s*(?:가진|갖는|가지는)\\s*진화원은?\\s*파기한다`);
+    // The "그 디지몬이 가진 진화원은 파기한다" tail is only ever REMINDER text
+    // — sources are always sent to trash when a Digimon leaves the battle
+    // area this way regardless of whether a given print restates it, so
+    // it's optional here rather than required (confirmed real prints of the
+    // identical ability both with and without it, e.g. BT15-052/EX10-020).
+    // Lv./DP filters can end in "이하"/"이상" (≤/≥) OR, with neither word at
+    // all, just a bare "Lv.N인" — an EXACT level match, not a threshold
+    // (confirmed real prints, e.g. "Lv.3인 상대의 디지몬" BT2-095).
+    const re = new RegExp(`(?:(레스트\\s*상태[의인]|액티브\\s*상태[의인])\\s*)?(?:Lv\\.(\\d+)\\s*(이하|이상)?(?:의|인)?\\s*)?(?:DP\\s*(\\d+)\\s*(이하|이상)?(?:의|인)?\\s*)?상대(?:의)?\\s*디지몬\\s*(전부|\\d+\\s*마리(?:까지)?)를?\\s*(?:대신\\s*)?${destWord}\\s*되돌린다`);
     if ((m = t.match(re))) {
       const filter = {};
-      if (m[2]) filter[m[3] === '이상' ? 'levelMin' : 'levelMax'] = Number(m[2]);
-      if (m[4]) filter[m[5] === '이상' ? 'dpMin' : 'dpMax'] = Number(m[4]);
+      if (m[2]) filter[m[3] === '이상' ? 'levelMin' : m[3] === '이하' ? 'levelMax' : 'level'] = Number(m[2]);
+      if (m[4]) filter[m[5] === '이상' ? 'dpMin' : m[5] === '이하' ? 'dpMax' : 'dp'] = Number(m[4]);
       const requireSuspended = m[1] ? m[1].startsWith('레스트') : null;
       if (m[6] === '전부') {
         script.push({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter, requireSuspended, dest });
