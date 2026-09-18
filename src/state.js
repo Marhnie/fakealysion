@@ -1364,12 +1364,13 @@ export function consumeEvoCostMod(state, p, targetCardId) {
   return 0;
 }
 
-export function trashEvoSources(state, p, uid, count) {
+export function trashEvoSources(state, p, uid, count, from = 'bottom') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return [];
   const n = count === 'all' ? stack.sources.length : Math.min(count, stack.sources.length);
-  const removed = stack.sources.splice(0, n); // sources[] is oldest-first; "from the bottom" = earliest pushed
+  // sources[] is oldest-first: "from the bottom" = earliest pushed, "from the top" = latest.
+  const removed = from === 'top' ? stack.sources.splice(stack.sources.length - n, n) : stack.sources.splice(0, n);
   pl.trash.push(...removed);
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
   for (const id of removed) applyOverflowIfAny(state, p, id);
@@ -1751,6 +1752,7 @@ export function retreat(state, p, uid, stages) {
   const trashed = [];
   for (let i = 0; i < stages; i++) {
     if (stack.sources.length === 0) break; // nothing left to peel
+    if (card(stack.cardId).level != null && card(stack.cardId).level <= 3) break; // 《퇴화》 can't peel below Lv.3
     trashed.push(stack.cardId);
     stack.cardId = stack.sources.pop();
   }

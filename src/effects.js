@@ -130,6 +130,10 @@ async function runOne(instr, ctx) {
     case 'retreat': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const pl = state.players[targetPlayer];
+      if (instr.all) {
+        for (const st of [...pl.battle]) S.retreat(state, targetPlayer, st.uid, instr.n);
+        break;
+      }
       const uids = pl.battle.map(s => s.uid).concat(pl.raising ? [pl.raising.uid] : []);
       const pick = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '퇴화시킬 디지몬 선택' });
       if (pick) S.retreat(state, targetPlayer, pick, instr.n);
@@ -436,9 +440,19 @@ async function runOne(instr, ctx) {
       break;
     case 'trashEvoSources': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.map(s => s.uid);
-      const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '진화원을 파기시킬 디지몬 선택' });
-      if (targetUid) S.trashEvoSources(state, targetPlayer, targetUid, instr.count ?? 'all');
+      if (instr.all) {
+        for (const st of [...state.players[targetPlayer].battle]) S.trashEvoSources(state, targetPlayer, st.uid, instr.count ?? 'all', instr.from);
+        break;
+      }
+      const picked = [];
+      for (let i = 0; i < (instr.stacks || 1); i++) {
+        const uids = state.players[targetPlayer].battle.map(s => s.uid).filter(u => !picked.includes(u));
+        if (!uids.length) break;
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '진화원을 파기시킬 디지몬 선택' });
+        if (!targetUid) break;
+        picked.push(targetUid);
+        S.trashEvoSources(state, targetPlayer, targetUid, instr.count ?? 'all', instr.from);
+      }
       break;
     }
     case 'memoryBorrowAndRepay':
@@ -514,8 +528,10 @@ export function compileToScript(text) {
   }
 
   // Retreat / de-digivolve.
-  if ((m = t.match(/상대(?:의)?\s*디지몬\s*1\s*마리(?:를)?\s*[≪《]?\s*퇴화\s*(\d+)\s*[≫》]?/))) {
-    script.push({ op: 'retreat', target: 'opponent', n: Number(m[1]) });
+  if ((m = t.match(/상대(?:의)?\s*디지몬\s*전부(?:를)?\s*[≪《]\s*퇴화\s*(\d+)\s*[≫》]/))) {
+    script.push({ op: 'retreat', target: 'opponent', n: Number(m[1]), all: true });
+  } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리(?:까지)?(?:를)?\s*[≪《]\s*퇴화\s*(\d+)\s*[≫》]/))) {
+    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'retreat', target: 'opponent', n: Number(m[2]) });
   } else if ((m = t.match(/자신(?:의)?\s*디지몬\s*1\s*마리를?\s*[≪《]?\s*퇴화\s*(\d+)\s*[≫》]?/))) {
     script.push({ op: 'retreat', target: 'self', n: Number(m[1]) });
   }
@@ -644,13 +660,15 @@ export function compileToScript(text) {
   // 《리커버리 +1《덱》》.
   if (/[≪《]\s*리커버리\s*\+1\s*[≪《]\s*덱\s*[≫》]\s*[≫》]/.test(t)) script.push({ op: 'recoverTop', who: 'self' });
 
-  // Trash evolution sources.
-  if (/상대(?:의)?\s*디지몬\s*전부(?:의)?\s*진화원을?\s*전부\s*파기/.test(t)) {
-    script.push({ op: 'trashEvoSources', target: 'opponent', all: true, count: 'all' });
-  } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*1\s*마리(?:의)?\s*진화원을?,?\s*(?:아래에서(?:부터)?|위에서(?:부터)?)?\s*(\d+)\s*장\s*파기/))) {
-    script.push({ op: 'trashEvoSources', target: 'opponent', count: Number(m[1]) });
-  } else if (/상대(?:의)?\s*디지몬\s*1\s*마리(?:의)?\s*진화원을?\s*전부\s*파기/.test(t)) {
-    script.push({ op: 'trashEvoSources', target: 'opponent', count: 'all' });
+  // Trash evolution sources: "상대 디지몬 N마리/전부의 진화원을 (아래에서부터|
+  // 위에서부터) N장(까지)/전부 파기한다".
+  if ((m = t.match(/상대(?:의)?\s*디지몬\s*(?:(\d+)\s*마리|(전부))(?:의)?\s*진화원을?,?\s*(아래에서(?:부터)?|위에서(?:부터)?)?\s*(?:(\d+)\s*장(?:까지)?|(전부))\s*파기/))) {
+    script.push({
+      op: 'trashEvoSources', target: 'opponent',
+      ...(m[2] ? { all: true } : { stacks: Number(m[1]) }),
+      count: m[5] ? 'all' : Number(m[4]),
+      from: m[3] && m[3].startsWith('위') ? 'top' : 'bottom',
+    });
   } else if ((m = t.match(/상대(?:의)?\s*디지몬의?\s*진화원을?\s*선택하여\s*(\d+)\s*장\s*파기한다/))) {
     // "1마리" isn't even stated here — the player picks WHICH opponent
     // Digimon (via trashEvoSources' own pickStack choose) implicitly.
