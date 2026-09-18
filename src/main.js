@@ -391,7 +391,7 @@ function cardChip(cardId, opts = {}) {
 // these ever appeared anywhere on the board before.
 const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
-  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', 빙장: '🧊빙장', 프래그먼트: '🧩프래그먼트', DP감소무효: '🚫DP감소무효',
+  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', 빙장: '🧊빙장', 트레이닝: '🏋트레이닝', 프래그먼트: '🧩프래그먼트', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
 };
 function activeKeywordBadges(stack) {
@@ -504,8 +504,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     },
   }, '🗑딜레이') : null;
 
+  // ≪트레이닝≫ — activated main-phase ability (also usable from the raising area).
+  const canTrain = (zoneKind === 'battle' || zoneKind === 'raising') && p === state.activePlayer && state.phase === 'main'
+    && S.hasKeyword(stack, '트레이닝') && !stack.suspended && state.players[p].deck.length > 0;
+  const trainBtn = canTrain ? h('button', {
+    className: 'delay-btn train-btn',
+    title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음',
+    onClick: (e) => { e.stopPropagation(); S.useTraining(state, p, stack.uid); render(); },
+  }, '🏋트레이닝') : null;
+  const extraBtns = [delayBtn, trainBtn].filter(Boolean);
+
   const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
-  if (!linkSlots.length) return delayBtn ? h('div', { className: 'stack-wrap' }, [chip, delayBtn]) : chip;
+  if (!linkSlots.length) return extraBtns.length ? h('div', { className: 'stack-wrap' }, [chip, ...extraBtns]) : chip;
   // Small overlay badge, separately droppable, so dragging a hand card onto
   // it links instead of digivolving — distinct from dropping on the card art.
   const badge = h('div', {
@@ -523,7 +533,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       dragData = null; render();
     },
   }, '🔗' + (stack.linkCards?.length ? stack.linkCards.length : ''));
-  return h('div', { className: 'stack-wrap' }, [chip, badge, delayBtn]);
+  return h('div', { className: 'stack-wrap' }, [chip, badge, ...extraBtns]);
 }
 
 function playFreshFromDrag(drag, p) {

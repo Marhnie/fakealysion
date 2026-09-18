@@ -542,6 +542,22 @@ export function absorbEvolveOption(state, p, evolvingStack, targetCardId) {
   return candidates.length ? { delta: Number(m[1]), candidates } : null;
 }
 
+// ≪트레이닝≫: "메인 중, 이 디지몬을 레스트시키는 것으로, 자신의 덱 위에서부터 1장을
+// 이 디지몬의 진화원 아래에 뒷면으로 놓는다. 이 효과는 육성 에어리어에서도 발휘할
+// 수 있다." — an activated main-phase action (UI button), not a trigger.
+export function useTraining(state, p, uid) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack || stack.suspended || !hasKeyword(stack, '트레이닝') || !pl.deck.length) return false;
+  restStack(state, p, uid);
+  if (!stack.suspended) return false; // rest was blocked
+  const id = pl.deck.shift();
+  stack.sources.unshift(id);
+  recomputeStackGrants(stack);
+  log(state, `${p} ${card(stack.cardId).nameKo} 《트레이닝》 — 덱 위 1장을 진화원 아래에 놓음`);
+  return true;
+}
+
 // ≪연계≫: "이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는
 // 것으로, 이 어택 동안 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고,
 // 《S 어택 +1》을 얻는다." — optional, so the UI offers it per attack.
@@ -797,7 +813,7 @@ export function grantColor(state, p, uid, color) {
 }
 
 // Bare 《키워드》 lines the engine has a real consumer for (static grants).
-const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌'];
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌', '트레이닝'];
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
 export function securityAttackBonus(stack) {
