@@ -1154,6 +1154,7 @@ function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
   S.queueTriggersForStack(state, p, dec.stack, 'attack');
+  S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
   const dp = S.effectiveDP(state, p, dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);

@@ -187,7 +187,7 @@ function tryAutoApplySegment(state, p, text, sourceCardId) {
 // them (~260 segments). Game events call emitGameEvent(); every ability whose
 // subject/event/condition matches queues its effect text as a normal pending
 // item (compiled + auto-run by the UI when understood, shown manually if not).
-const WATCH_EVENT_RE = /^(.*?)\s*(등장했을|진화했을|소멸했을|레스트했을|파기되었을)\s*때,?\s*(.*)$/s;
+const WATCH_EVENT_RE = /^(.*?)\s*(등장했을|진화했을|소멸했을|레스트했을|파기되었을|어택했을)\s*때,?\s*(.*)$/s;
 
 export function parseWatcherTrigger(body) {
   let b = body.trim().split('\n')[0].replace(/\s*〈룰〉.*$/s, '').trim();
@@ -196,7 +196,7 @@ export function parseWatcherTrigger(body) {
   if (lm) { limit = Number(lm[1]); b = lm[2]; }
   const m = b.match(WATCH_EVENT_RE);
   if (!m) return null;
-  const kindOf = { 등장했을: 'play', 진화했을: 'digivolve', 소멸했을: 'delete', 레스트했을: 'rest', 파기되었을: 'discard' };
+  const kindOf = { 등장했을: 'play', 진화했을: 'digivolve', 소멸했을: 'delete', 레스트했을: 'rest', 파기되었을: 'discard', 어택했을: 'attack' };
   const kind = kindOf[m[2]];
   let left = m[1].trim();
   // Alternatives ("A 또는 B" / "A 혹은 B") and 《keyword》-dependent events aren't modelled — skip rather than misapply.
@@ -246,6 +246,8 @@ export function parseWatcherTrigger(body) {
   const cc = effect.match(/^그\s*디지몬이\s*(.+?)\s*(?:가진다면|라면),\s*(.*)$/s);
   if (cc) { const pr = evoTargetPredicate(cc[1].replace(/\s*를?\s*가진$/, '').trim()); if (!pr) return null; condPred = pr; effect = cc[2].trim(); }
   if (!effect) return null;
+  // Attack-target redirects / attack-ending reactions live in findRedirectOptions & the attack flow.
+  if (kind === 'attack' && /어택\s*(?:의)?\s*대상을|어택\s*대상을|그\s*어택을|어택을\s*종료/.test(effect)) return null;
   return { limit, kind, causeTest, newCardPred, selfOnly, who, other, isTamer, subjPred, condPred, effect };
 }
 
