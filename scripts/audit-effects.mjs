@@ -68,6 +68,11 @@ function auditText(cardId, source, text) {
         continue;
       }
     }
+    // Handled live via isEvoCostLocked, checked from consumeEvoCostMod.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^상대는\s*지불하는\s*진화\s*코스트를?\s*마이너스할\s*수\s*없다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {

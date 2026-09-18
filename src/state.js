@@ -875,10 +875,36 @@ export function addEvoCostMod(state, p, delta, filter, expiresAfterTurn) {
   log(state, `${p} 다음 조건에 맞는 진화 코스트 ${delta}: ${JSON.stringify(filter)}`);
 }
 
+// "상대는 지불하는 진화 코스트를 마이너스할 수 없다." — printed on player A's
+// card, locking player B (A's opponent) out of evolution-cost reductions
+// while active. Same continuous 자신/상대/서로의 턴 family, but the ability
+// lives on the OPPONENT's board relative to the player being checked, so
+// tags are read from ITS controller's perspective (자신의 턴 = the locking
+// player's own turn).
+function isEvoCostLocked(state, p) {
+  const lockOwner = opponentOf(p);
+  const pl = state.players[lockOwner];
+  for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
+    for (const { id, own } of stackContributors(stack)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+        const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === lockOwner);
+        if (!active) continue;
+        if (/^상대는\s*지불하는\s*진화\s*코스트를?\s*마이너스할\s*수\s*없다\.?$/.test(seg.body.trim())) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Returns the best (most negative) still-valid, one-time cost delta for
 // evolving INTO `targetCardId`, and marks it consumed. Call this exactly
 // once per resolved evolution.
 export function consumeEvoCostMod(state, p, targetCardId) {
+  if (isEvoCostLocked(state, p)) return 0;
   const pl = state.players[p];
   const c = card(targetCardId);
   const mods = (pl.evoCostMods || []).filter(m => !m.usedUp && (m.expiresAfterTurn === 'permanent' || m.expiresAfterTurn >= state.turnNumber));
