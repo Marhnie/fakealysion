@@ -497,7 +497,7 @@ function parseStaticGrants(text) {
     const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫](?:\s*\([^()]*\))?$/);
     if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
     const label = bare[1];
-    if (['재밍', '블로커', '관통', '재기동', '속공'].includes(label)) { out.keywords[label] = true; continue; }
+    if (['재밍', '블로커', '관통', '재기동', '속공', '진격'].includes(label)) { out.keywords[label] = true; continue; }
     // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
     // beginner/starter-deck cards) are the same keyword.
     if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
@@ -640,7 +640,7 @@ export function recomputeStackGrants(stack) {
     dp += g.dp;
     secAtk += g.keywords['시큐리티어택'] || 0;
     linkCap += g.keywords['링크+'] || 0;
-    for (const k of ['재밍', '블로커', '관통', '재기동', '속공']) if (g.keywords[k]) flags[k] = true;
+    for (const k of ['재밍', '블로커', '관통', '재기동', '속공', '진격']) if (g.keywords[k]) flags[k] = true;
   }
   stack.inheritedDP = dp;
   stack.inheritedKeywords = {

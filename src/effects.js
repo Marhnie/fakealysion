@@ -687,7 +687,7 @@ export function compileToScript(text) {
   }
 
   // Blocker / Jamming / Piercing / Rush keyword grants.
-  for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/]]) {
+  for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/], ['진격', /[≪《]\s*진격\s*[≫》]/]]) {
     if (re.test(t) && /(얻는다|를\s*얻)/.test(t)) {
       const thisStack = /이\s*디지몬(?:은|이)/.test(t) && !/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
       const duration = /다음\s*상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : 'turn';
