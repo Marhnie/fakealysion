@@ -40,6 +40,9 @@ function queueTurnStartTriggers(state) {
   const pl = state.players[state.activePlayer];
   const stacks = [pl.raising, ...pl.battle].filter(Boolean);
   for (const s of stacks) S.queueTriggersForStack(state, state.activePlayer, s, 'turnStart');
+  const opp = S.opponentOf(state.activePlayer);
+  const opl = state.players[opp];
+  for (const s of [opl.raising, ...opl.battle].filter(Boolean)) S.queueTriggersForStack(state, opp, s, 'turnStartOpp');
 }
 
 export function beginGame(state, firstPlayer) {
@@ -93,6 +96,9 @@ export function nextPhase(state) {
     const pl = state.players[active];
     const stacks = [pl.raising, ...pl.battle].filter(Boolean);
     for (const s of stacks) S.queueTriggersForStack(state, active, s, 'mainPhaseStart');
+    const opp = S.opponentOf(active);
+    const opl = state.players[opp];
+    for (const s of [opl.raising, ...opl.battle].filter(Boolean)) S.queueTriggersForStack(state, opp, s, 'mainPhaseStartOpp');
     return;
   }
   if (state.phase === 'main') {
@@ -146,6 +152,13 @@ export function endTurn(state, viaMemoryCondition = false) {
   if (viaMemoryCondition && !S.isTurnAutoEnding(state)) {
     S.log(state, `${finishing} 턴 종료 처리 중 메모리가 되돌아와 턴 종료 취소 (6-6-4)`);
     return;
+  }
+  // 【자신의/상대의/서로의 턴 종료 시】 — ~196 printed segments that were never
+  // queued anywhere (only scheduled one-shot end-of-turn fns ran).
+  for (const pp of ['p1', 'p2']) {
+    const ppl = state.players[pp];
+    const kinds = pp === finishing ? ['turnEndOwn', 'turnEndBoth'] : ['turnEndOpp', 'turnEndBoth'];
+    for (const s of [ppl.raising, ...ppl.battle].filter(Boolean)) for (const k of kinds) S.queueTriggersForStack(state, pp, s, k);
   }
   const next = S.opponentOf(finishing);
   state.activePlayer = next;

@@ -137,8 +137,16 @@ const TRIGGER_TAGS = {
   digivolve: ['진화 시'],
   delete: ['소멸 시'],
   attack: ['어택 시', '공격 시'],
-  mainPhaseStart: ['메인 페이즈 시작 시', '메인 페이즈 개시 시'],
+  // "자신의/상대의" must be spelled out: a bare '메인 페이즈 개시 시' substring
+  // would also match 【상대의 메인 페이즈 개시 시】 and fire it on the wrong side.
+  mainPhaseStart: ['메인 페이즈 시작 시', '자신의 메인 페이즈 개시 시', '자신의 메인페이즈 개시시'],
+  mainPhaseStartOpp: ['상대의 메인 페이즈 개시 시'],
   turnStart: ['자신의 턴 시작 시', '자신의 턴 개시 시'],
+  turnStartOpp: ['상대의 턴 개시 시'],
+  // 【자신의/상대의/서로의 턴 종료 시】 — queued from engine.endTurn.
+  turnEndOwn: ['자신의 턴 종료 시'],
+  turnEndOpp: ['상대의 턴 종료 시'],
+  turnEndBoth: ['서로의 턴 종료 시'],
   security: ['시큐리티'],
   use: ['메인'],
   move: ['이동했을 때', '이동 시'],
