@@ -1001,6 +1001,24 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   return fused;
 }
 
+// 16-20: ≪세이브≫ ("you may place this card under one of your own Tamers"
+// instead of it going to the trash). By the time a 【소멸 시】 trigger for
+// this card resolves, deleteStack() has already pushed it into pl.trash —
+// so this just pulls it back out and restacks it under the chosen Tamer,
+// the same way an evolution source stacks under a Digimon (Tamer stacks
+// use the identical makeStack() shape, `sources` included).
+export function saveCardUnderTamer(state, p, cardId, tamerUid) {
+  const pl = state.players[p];
+  const tamerStack = pl.battle.find(s => s.uid === tamerUid && card(s.cardId).category === 'tamer');
+  if (!tamerStack) return false;
+  const idx = pl.trash.lastIndexOf(cardId);
+  if (idx === -1) return false;
+  pl.trash.splice(idx, 1);
+  tamerStack.sources.push(cardId);
+  log(state, `${p} ${card(cardId).nameKo} 《세이브》 — ${card(tamerStack.cardId).nameKo} 아래에 놓음`);
+  return true;
+}
+
 export function deleteStack(state, p, uid, toZone = 'trash') {
   const pl = state.players[p];
   let stack = null;

@@ -161,6 +161,19 @@ async function runOne(instr, ctx) {
       for (const s of state.players[targetPlayer].battle) S.modifyDP(state, targetPlayer, s.uid, instr.amount, instr.duration || 'turn');
       break;
     }
+    case 'saveUnderTamer': {
+      // 16-20: optional — no Tamer in play means it's simply unusable, not
+      // a choice to surface.
+      const tamerUids = state.players[ctx.self].battle.filter(s => S.card(s.cardId).category === 'tamer').map(s => s.uid);
+      if (!tamerUids.length) break;
+      const cardName = S.card(ctx.sourceCardId).nameKo;
+      const useIt = await ctx.choose('multipleChoice', { prompt: `${cardName}: 《세이브》(자신의 테이머 아래에 놓기) 사용?`, options: ['사용', '사용 안 함'] });
+      if (useIt !== 0) break;
+      const tamerUid = tamerUids.length === 1 ? tamerUids[0]
+        : await ctx.choose('pickStack', { player: ctx.self, uids: tamerUids, prompt: '세이브할 테이머 선택' });
+      if (tamerUid) S.saveCardUnderTamer(state, ctx.self, ctx.sourceCardId, tamerUid);
+      break;
+    }
     case 'grantKeyword': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       let targetUid = instr.thisStack ? ctx.sourceStackUid : null;
@@ -429,6 +442,14 @@ export function compileToScript(text) {
     for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'self', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration });
   } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
     for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'opponent', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration });
+  }
+
+  // 16-20: ≪세이브≫ as a standalone action ("you may place this card under
+  // one of your own Tamers") on a card's OWN 【소멸 시】. The negative
+  // lookahead excludes the very common "《세이브》가 기술되어 있는 ..." phrasing
+  // (a filter describing OTHER cards, not this card performing the action).
+  if (/[≪《]\s*세이브\s*[≫》](?!\s*가)/.test(t)) {
+    script.push({ op: 'saveUnderTamer' });
   }
 
   // 《시큐리티 어택 ±N》 keyword grant — positive is usually self; negative is
