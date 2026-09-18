@@ -2657,54 +2657,73 @@ export function declareAttack(state, attackerP, stackUid) {
 // if any). Jamming means the attacker is never deleted by a security
 // digimon. Stops early if the defender is emptied out mid-sequence (a
 // following check on an empty stack is what actually ends the game).
-export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
+// Incremental form of the security check so the UI can reveal each check as its
+// own visible step (see main.js doSecurityStep); resolveSecurityCheck below just
+// runs it to completion for callers that don't need the pacing.
+export function beginSecurityCheck(state, attackerP, attackerUid, defenderP) {
+  const apl = state.players[attackerP];
+  const attackerStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
+  return { state, attackerP, attackerUid, defenderP, total: 1 + (attackerStack ? securityAttackBonus(attackerStack) : 0), i: 0, results: [], done: false, gameOver: false };
+}
+
+export function stepSecurityCheck(ctl) {
+  if (ctl.done) return null;
+  const { state, attackerP, attackerUid, defenderP } = ctl;
   const apl = state.players[attackerP];
   const attackerStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
   const attackerDp = attackerStack ? effectiveDP(state, attackerP, attackerStack) : 0;
   const jamming = attackerStack ? hasKeyword(attackerStack, '재밍') : false;
-  const checks = 1 + (attackerStack ? securityAttackBonus(attackerStack) : 0);
   const pl = state.players[defenderP];
-  const results = [];
-  for (let i = 0; i < checks; i++) {
-    if (pl.security.length === 0) {
-      // 1-2-3-1: the win condition is "security was already 0 the moment
-      // this attack was established" — i.e. before the FIRST check of this
-      // attack. Running out of cards partway through this SAME attack's
-      // extra checks (from a 《시큐리티 어택 +N》 bonus) isn't that: per
-      // 1-3-2, being asked to do more checks than cards exist just means
-      // doing as many as possible, not an instant loss (13-1-2/1-3-2).
-      if (i === 0) {
-        state.winner = attackerP;
-        log(state, `${defenderP} 시큐리티 0에서 피격 — ${attackerP} 승리!`);
-        results.push({ empty: true });
-        return { checks: results, gameOver: true };
-      }
-      log(state, `${defenderP} 시큐리티가 ${i}장에서 바닥나 이 어택의 남은 체크(${checks - i}회분)는 진행 못함`);
-      break;
+  const i = ctl.i;
+  if (pl.security.length === 0) {
+    // 1-2-3-1: the win condition is "security was already 0 the moment
+    // this attack was established" — i.e. before the FIRST check of this
+    // attack. Running out of cards partway through this SAME attack's
+    // extra checks (from a 《시큐리티 어택 +N》 bonus) isn't that: per
+    // 1-3-2, being asked to do more checks than cards exist just means
+    // doing as many as possible, not an instant loss (13-1-2/1-3-2).
+    if (i === 0) {
+      state.winner = attackerP;
+      log(state, `${defenderP} 시큐리티 0에서 피격 — ${attackerP} 승리!`);
+      ctl.results.push({ empty: true });
+      ctl.done = true; ctl.gameOver = true;
+      return { empty: true };
     }
-    const id = pl.security.shift();
-    pl.trash.push(id);
-    const suppressSecurityEffect = attackerStack && hasKeyword(attackerStack, '옵션시큐리티효과무효') && card(id).category === 'option';
-    if (!suppressSecurityEffect) {
-      // A card's 【시큐리티】 text is very often printed in the SAME "not the
-      // active top card" box as its 진화원(evolution-source) effects
-      // (inheritedKo/sourceEffect) — real examples confirmed (ST1-12/13/14/
-      // 15). Scanning only effectKo silently missed all of these. There's
-      // no stack for a card being revealed straight from security, so pass
-      // stackUid=null.
-      queueTriggersFor(state, defenderP, id, 'security');
-      queueInheritedTriggersFor(state, defenderP, id, 'security', null);
-    } else {
-      log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
-    }
-    const secDp = (card(id).dp || 0) + activeSecurityDPBonus(state, defenderP);
-    let result;
-    if (attackerDp > secDp) result = 'attackerWins';
-    else if (attackerDp < secDp) result = jamming ? 'jammedSurvive' : 'defenderWins';
-    else result = jamming ? 'jammedSurvive' : 'tie';
-    log(state, `${defenderP} 시큐리티 체크(${i + 1}/${checks}): ${card(id).nameKo}(DP${secDp}) vs 공격측 DP${attackerDp}${jamming ? ' [재밍]' : ''} → ${result}`);
-    results.push({ empty: false, revealed: id, secDp, result });
-    if (result === 'defenderWins' || result === 'tie') break; // attacker died (unless saved) — remaining checks don't happen
+    log(state, `${defenderP} 시큐리티가 ${i}장에서 바닥나 이 어택의 남은 체크(${ctl.total - i}회분)는 진행 못함`);
+    ctl.done = true;
+    return null;
   }
-  return { checks: results, gameOver: false };
+  const id = pl.security.shift();
+  pl.trash.push(id);
+  const suppressSecurityEffect = attackerStack && hasKeyword(attackerStack, '옵션시큐리티효과무효') && card(id).category === 'option';
+  if (!suppressSecurityEffect) {
+    // A card's 【시큐리티】 text is very often printed in the SAME "not the
+    // active top card" box as its 진화원(evolution-source) effects
+    // (inheritedKo/sourceEffect) — real examples confirmed (ST1-12/13/14/
+    // 15). Scanning only effectKo silently missed all of these. There's
+    // no stack for a card being revealed straight from security, so pass
+    // stackUid=null.
+    queueTriggersFor(state, defenderP, id, 'security');
+    queueInheritedTriggersFor(state, defenderP, id, 'security', null);
+  } else {
+    log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
+  }
+  const secDp = (card(id).dp || 0) + activeSecurityDPBonus(state, defenderP);
+  let result;
+  if (attackerDp > secDp) result = 'attackerWins';
+  else if (attackerDp < secDp) result = jamming ? 'jammedSurvive' : 'defenderWins';
+  else result = jamming ? 'jammedSurvive' : 'tie';
+  log(state, `${defenderP} 시큐리티 체크(${i + 1}/${ctl.total}): ${card(id).nameKo}(DP${secDp}) vs 공격측 DP${attackerDp}${jamming ? ' [재밍]' : ''} → ${result}`);
+  const r = { empty: false, revealed: id, secDp, atkDp: attackerDp, result };
+  ctl.results.push(r);
+  ctl.i++;
+  // attacker died (unless saved) — remaining checks don't happen
+  if (result === 'defenderWins' || result === 'tie' || ctl.i >= ctl.total) ctl.done = true;
+  return r;
+}
+
+export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
+  const ctl = beginSecurityCheck(state, attackerP, attackerUid, defenderP);
+  while (!ctl.done) stepSecurityCheck(ctl);
+  return { checks: ctl.results, gameOver: ctl.gameOver };
 }

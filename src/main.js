@@ -1126,13 +1126,27 @@ function eligibleBlockers(p, collidingAttacker) {
 // unconditional player choice — that was letting an attacker survive with
 // no actual effect backing it up.
 function runSecurityCheck(pa) {
-  const res = S.resolveSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
-  pa.stage = 'result'; pa.res = res;
-  if (!res.gameOver) {
-    const last = res.checks[res.checks.length - 1];
-    if (last.result === 'defenderWins' || last.result === 'tie') {
-      S.deleteStack(state, pa.attacker, pa.uid, 'trash', 'battle');
+  pa.secCtl = S.beginSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
+  pa.res = { checks: pa.secCtl.results, gameOver: false };
+  pa.secDone = false;
+  pa.stage = 'result';
+  doSecurityStep(pa);
+}
+
+// One security check per visible step: reveal → its 【시큐리티】 effect is queued →
+// (pause) → next check. The attacker's loss is applied only after the last check.
+function doSecurityStep(pa) {
+  const ctl = pa.secCtl;
+  S.stepSecurityCheck(ctl);
+  pa.res.gameOver = ctl.gameOver;
+  if (ctl.done) {
+    if (!ctl.gameOver && ctl.results.length) {
+      const last = ctl.results[ctl.results.length - 1];
+      if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, pa.attacker, pa.uid, 'trash', 'battle');
     }
+    pa.secDone = true;
+  } else {
+    stepPause(pa, 'result', `시큐리티 체크 ${ctl.i}/${ctl.total} 완료 — 다음 체크로 넘어갑니다`, () => doSecurityStep(pa));
   }
 }
 
@@ -1144,8 +1158,12 @@ function resolveFinalTarget(pa) {
   if (pa.targetKind === 'player') {
     runSecurityCheck(pa);
   } else {
-    const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
-    pa.stage = 'digimonResult'; pa.battleRes = res;
+    const aSt = findStack({ player: pa.attacker, uid: pa.uid }), dSt = findStack({ player: pa.opp, uid: pa.targetUid });
+    pa.battlePreview = aSt && dSt ? { aCard: aSt.cardId, aDp: S.effectiveDP(state, pa.attacker, aSt), dCard: dSt.cardId, dDp: S.effectiveDP(state, pa.opp, dSt) } : null;
+    stepPause(pa, 'digimonResult', '배틀! 양쪽 DP를 비교해 결과를 확인합니다', () => {
+      const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
+      pa.stage = 'digimonResult'; pa.battleRes = res;
+    });
   }
 }
 
@@ -1244,7 +1262,7 @@ function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
   const sideClass = (wins, loses) => `vs-side${wins ? ' vs-winner' : ''}${loses ? ' vs-loser' : ''}`;
   return h('div', { className: 'vs-battle' }, [
     h('div', { className: sideClass(leftWins, leftLoses) }, [cardChip(leftCardId, {}), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
-    h('div', { className: 'vs-mid' }, [h('div', { className: 'vs-vs' }, 'VS'), h('div', { className: 'vs-result' }, RESULT_LABEL_KO[result] || result)]),
+    h('div', { className: 'vs-mid' }, [h('div', { className: 'vs-vs' }, 'VS'), h('div', { className: 'vs-result' }, RESULT_LABEL_KO[result] || result || '')]),
     h('div', { className: sideClass(rightWins, rightLoses) }, [cardChip(rightCardId, {}), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
   ]);
 }
@@ -1366,6 +1384,8 @@ function renderPendingAttack() {
       ]));
     });
     rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '넘기기'));
+  } else if (pa.stage === 'digimonResult' && pa.paused) {
+    if (pa.battlePreview) rows.push(renderVsBattle(pa.battlePreview.aCard, pa.battlePreview.aDp, pa.battlePreview.dCard, pa.battlePreview.dDp, null));
   } else if (pa.stage === 'digimonResult') {
     const res = pa.battleRes;
     rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result));
@@ -1421,11 +1441,13 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'effect-box' }, `${pa.opp} 시큐리티 0에서 피격 — 게임 종료!`));
     } else {
       res.checks.forEach((c, i) => {
-        rows.push(h('div', { className: 'zone-label' }, `시큐리티 체크 ${i + 1}/${res.checks.length}`));
-        rows.push(renderVsBattle(pa.attackerCardId, pa.dp, c.revealed, c.secDp, c.result));
+        rows.push(h('div', { className: 'zone-label' }, `시큐리티 체크 ${i + 1}/${pa.secCtl ? pa.secCtl.total : res.checks.length}`));
+        rows.push(renderVsBattle(pa.attackerCardId, c.atkDp != null ? c.atkDp : pa.dp, c.revealed, c.secDp, c.result));
       });
       const last = res.checks[res.checks.length - 1];
-      if (last.result === 'defenderWins' || last.result === 'tie') {
+      if (!pa.secDone) {
+        // still revealing — the step-info row above carries the "next" control
+      } else if (last.result === 'defenderWins' || last.result === 'tie') {
         // Already destroyed by runSecurityCheck — this is purely
         // informational. No "survive anyway" button: there's no tracked
         // keyword for it, every real instance is bespoke card text handled
