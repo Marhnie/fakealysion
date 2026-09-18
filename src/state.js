@@ -205,6 +205,16 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
   }
 }
 
+// "이 디지몬은 이 디지몬의 진화원에 있는 명칭에 「X」을 포함하는 카드의 효과
+// 전부를 얻는다." (always 【서로의 턴】, i.e. always active) — this Digimon
+// gains a matching source's OWN printed effect text wholesale, not just its
+// normal 4-3-3 inherited (진화원) text. Confirmed 14 occurrences, always
+// printed identically in both effectKo and inheritedKo of the same card.
+function fullEffectInheritTarget(effectKo) {
+  const m = (effectKo || '').match(/이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*카드의\s*효과\s*전부를\s*얻는다/);
+  return m ? m[1] : null;
+}
+
 // The one entry point that should be used for any real game event on a
 // Digimon stack — checks both the top card's own effect text AND every
 // evolution source's inherited effect text.
@@ -213,6 +223,14 @@ export function queueTriggersForStack(state, p, stack, eventKind) {
   queueTriggersFor(state, p, stack.cardId, eventKind, stack.uid);
   for (const sourceCardId of stack.sources) {
     queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
+  }
+  const nameIncludes = fullEffectInheritTarget(card(stack.cardId).effectKo);
+  if (nameIncludes) {
+    for (const sourceCardId of stack.sources) {
+      if (card(sourceCardId).nameKo.includes(nameIncludes)) {
+        queueTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
+      }
+    }
   }
 }
 
@@ -590,9 +608,16 @@ function parseStaticGrants(text) {
 // turnConditionalDP (live, re-evaluated every call since it depends on
 // whose turn it currently is).
 function stackContributors(stack) {
+  // "이 디지몬은 ... 명칭에 「X」을 포함하는 카드의 효과 전부를 얻는다." — a
+  // matching-name source contributes its OWN effectKo (own:true) instead of
+  // just its normal 4-3-3 inheritedKo, for every continuous-grant system
+  // that reads stackContributors (DP, keywords, evolve restrictions, etc.),
+  // not just the one-shot trigger pipeline queueTriggersForStack handles
+  // separately.
+  const fullInheritName = fullEffectInheritTarget(card(stack.cardId).effectKo);
   return [
     { id: stack.cardId, own: true },
-    ...stack.sources.map(id => ({ id, own: false })),
+    ...stack.sources.map(id => ({ id, own: fullInheritName != null && card(id).nameKo.includes(fullInheritName) })),
     ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
   ];
 }

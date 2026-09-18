@@ -83,6 +83,12 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via fullEffectInheritTarget, checked from
+    // stackContributors/queueTriggersForStack.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*명칭에\s*「[^」]+」\s*(?:을|를)?\s*포함하는\s*카드의\s*효과\s*전부를\s*얻는다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {
