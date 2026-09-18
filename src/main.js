@@ -1038,6 +1038,21 @@ function enterCounterTiming(pa) {
   }
 }
 
+// A defender-side "may redirect the attack's target to THIS Digimon"
+// reaction (e.g. BT20-033/BT20-036/EX7-046/EX8-050's "[턴에 1회] 상대의
+// 디지몬이 어택했을 때, 어택의 대상을 이 디지몬으로 변경할 수 있다.") —
+// resolved before Counter Timing since it decides WHICH digimon Counter/
+// Block even apply against.
+function enterRedirectTiming(pa) {
+  const options = S.findRedirectOptions(state, pa.opp);
+  if (options.length === 0) {
+    enterCounterTiming(pa);
+  } else {
+    pa.stage = 'redirectTiming';
+    pa.redirectOptions = options;
+  }
+}
+
 function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
@@ -1050,10 +1065,10 @@ function attackFlow(p, uid, directTarget) {
 
   if (directTarget === 'PLAYER') {
     pa.targetKind = 'player';
-    enterCounterTiming(pa);
+    enterRedirectTiming(pa);
   } else if (directTarget && digimonTargets.includes(directTarget) && !blockedFromDigimonTarget(p, dec.stack)) {
     pa.targetKind = 'digimon'; pa.targetUid = directTarget;
-    enterCounterTiming(pa);
+    enterRedirectTiming(pa);
   }
   render();
 }
@@ -1078,8 +1093,8 @@ function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
 // Short breadcrumb of the fixed attack sequence (11-1-3), current step
 // highlighted — lets the player see at a glance where they are instead of
 // parsing a paragraph each stage.
-const ATTACK_STEP_ORDER = ['targetChoice', 'counterTiming', 'blockCheck', 'digimonResult', 'result'];
-const ATTACK_STEP_LABEL = { targetChoice: '대상', counterTiming: '카운터', blockCheck: '블록', digimonResult: '결과', result: '결과' };
+const ATTACK_STEP_ORDER = ['targetChoice', 'redirectTiming', 'counterTiming', 'blockCheck', 'digimonResult', 'result'];
+const ATTACK_STEP_LABEL = { targetChoice: '대상', redirectTiming: '대상 변경', counterTiming: '카운터', blockCheck: '블록', digimonResult: '결과', result: '결과' };
 function renderAttackSteps(currentStage) {
   const seen = new Set();
   const steps = ATTACK_STEP_ORDER.filter(s => { const label = ATTACK_STEP_LABEL[s]; if (seen.has(label)) return false; seen.add(label); return true; });
@@ -1107,7 +1122,7 @@ function renderPendingAttack() {
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', {
         className: 'primary',
-        onClick: () => { pa.targetKind = 'player'; enterCounterTiming(pa); render(); },
+        onClick: () => { pa.targetKind = 'player'; enterRedirectTiming(pa); render(); },
       }, `${pa.opp} 본체 공격`),
     ]));
     if (blockedByDynamic) {
@@ -1117,12 +1132,29 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
         const st = state.players[pa.opp].battle.find(s => s.uid === uid);
         return cardChip(st.cardId, { onClick: () => {
-          pa.targetKind = 'digimon'; pa.targetUid = uid; enterCounterTiming(pa); render();
+          pa.targetKind = 'digimon'; pa.targetUid = uid; enterRedirectTiming(pa); render();
         } });
       })));
     } else {
       rows.push(h('div', { className: 'meta' }, '레스트 상태 디지몬이 없어서 직접 공격 불가'));
     }
+  } else if (pa.stage === 'redirectTiming') {
+    rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
+    pa.redirectOptions.forEach(opt => {
+      const st = state.players[pa.opp].battle.find(s => s.uid === opt.stackUid);
+      if (!st) return;
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, `${S.card(st.cardId).nameKo}(으)로 어택 대상 변경`),
+        h('button', {
+          onClick: () => {
+            pa.targetKind = 'digimon'; pa.targetUid = opt.stackUid;
+            if (opt.limit != null) S.markRedirectUsed(state, pa.opp, opt.stackUid, opt.cardId);
+            enterCounterTiming(pa); render();
+          },
+        }, '변경'),
+      ]));
+    });
+    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, '넘기기'));
   } else if (pa.stage === 'counterTiming') {
     rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {

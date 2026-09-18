@@ -248,6 +248,47 @@ export function findCounterOptions(state, p) {
   return options;
 }
 
+// "[턴에 N회] 상대의 디지몬이 어택했을 때, 어택의 대상을 이 디지몬으로 변경할
+// 수 있다." — another embedded "~했을 때" trigger nested inside a continuous
+// 상대의 턴 wrapper (always tagged from the ABILITY OWNER's perspective, so
+// "상대의 턴" here just means "whenever I'm not the active player", which is
+// unconditionally true for a defender reacting to an incoming attack).
+// Simplified to the unconditioned form only — several real prints add an
+// extra requirement (highest-DP attacker, a specific trait/name on this
+// stack) that would need per-card condition evaluation not attempted here.
+export function findRedirectOptions(state, p) {
+  const pl = state.players[p];
+  const options = [];
+  for (const stack of pl.battle) {
+    for (const { id, own } of stackContributors(stack)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+        const body = seg.body.trim();
+        const limitM = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+        const limit = limitM ? Number(limitM[1]) : null;
+        const rest = (limitM ? limitM[2] : body).trim();
+        if (!/^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택의?\s*대상을\s*이\s*디지몬으로\s*변경할\s*수\s*있다\.?$/.test(rest)) continue;
+        if (limit != null) {
+          const key = onceLimitKey(id, ['어택대상변경']);
+          if (turnUsesRemaining(stack, key, limit) <= 0) continue;
+        }
+        options.push({ cardId: id, stackUid: stack.uid, limit });
+      }
+    }
+  }
+  return options;
+}
+
+// Marks a redirect option as used this turn (for its [턴에 N회] cap, if any).
+export function markRedirectUsed(state, p, stackUid, cardId) {
+  const pl = state.players[p];
+  const stack = pl.battle.find(s => s.uid === stackUid);
+  if (stack) markTurnEffectUsed(stack, onceLimitKey(cardId, ['어택대상변경']));
+}
+
 export function resolvePending(state, uid) {
   const t = state.pending.find(x => x.uid === uid);
   if (t) t.resolved = true;
@@ -1174,6 +1215,45 @@ export function legalDigimonTargets(state, attackerP, attackerUid) {
     .map(s => s.uid);
 }
 
+// "[턴에 N회] 이 디지몬이 배틀에서 상대의 디지몬을 소멸시켰을 때, 상대의
+// 시큐리티를 위에서부터 N장 파기한다." — an embedded one-shot "~했을 때"
+// trigger nested inside a continuous 자신/상대/서로의 턴 wrapper (so it's
+// only live during that turn window), not a bracket-tagged trigger the
+// normal queueTriggersFor pipeline would ever see. Confirmed 19 occurrences
+// via the full-DB audit, always this exact shape.
+function parseBattleWinTrigger(text) {
+  const out = [];
+  if (!text) return out;
+  const { segments } = parseEffectSegments(text);
+  for (const seg of segments) {
+    if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+    const body = seg.body.trim();
+    const limitM = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+    const limit = limitM ? Number(limitM[1]) : null;
+    const rest = (limitM ? limitM[2] : body).trim();
+    const m = rest.match(/^이\s*디지몬이\s*배틀에서\s*상대(?:의)?\s*디지몬을\s*소멸시켰을\s*때,?\s*상대(?:의)?\s*시큐리티를\s*위에서부터\s*(\d+)\s*장\s*파기한다\.?$/);
+    if (m) out.push({ tag: seg.tags[0], limit, n: Number(m[1]) });
+  }
+  return out;
+}
+
+function runBattleWinTriggers(state, p, stack) {
+  const oppP = opponentOf(p);
+  for (const { id, own } of stackContributors(stack)) {
+    for (const g of parseBattleWinTrigger(own ? card(id).effectKo : card(id).inheritedKo)) {
+      const active = g.tag === '서로의 턴' || (g.tag === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      if (g.limit != null) {
+        const key = onceLimitKey(id, ['배틀승리시큐리티파기']);
+        if (turnUsesRemaining(stack, key, g.limit) <= 0) continue;
+        markTurnEffectUsed(stack, key);
+      }
+      for (let i = 0; i < g.n; i++) trashTopSecurityByEffect(state, oppP);
+      log(state, `${p} ${card(stack.cardId).nameKo} 배틀 승리 효과: ${oppP} 시큐리티 ${g.n}장 파기`);
+    }
+  }
+}
+
 export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid) {
   const defenderP = opponentOf(attackerP);
   const apl = state.players[attackerP], dpl = state.players[defenderP];
@@ -1188,6 +1268,7 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   else result = 'tie';
   log(state, `${attackerP} ${card(aStack.cardId).nameKo}(DP${aDp}) vs ${defenderP} ${card(dStack.cardId).nameKo}(DP${dDp}) → ${result}`);
   const destroyedOnlyOpponent = result === 'attackerWins';
+  if (result === 'attackerWins') runBattleWinTriggers(state, attackerP, aStack);
   if (result === 'defenderWins' || result === 'tie') deleteStack(state, attackerP, attackerUid);
   if (result === 'attackerWins' || result === 'tie') deleteStack(state, defenderP, defenderUid);
   const piercing = hasKeyword(aStack, '관통');
