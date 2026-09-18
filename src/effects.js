@@ -733,6 +733,17 @@ export function compileToScript(text) {
     for (let i = 0; i < Number(m[2] || 1); i++) script.push({ op: 'returnFromTrash', who: 'self', filter: { nameIncludes: m[1] } });
   }
 
+  // Same, filtered by color/level/category instead of name — "자신의
+  // 트래시에서 퍼플인 Lv.5 이하의 디지몬 카드 1장을 패로 되돌린다/되돌릴 수
+  // 있다" (the optional form is handled by ctx.choose returning null).
+  if ((m = t.match(/자신(?:의)?\s*트래시에서,?\s*(?:(레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)인\s*)?(?:Lv\.(\d+)\s*이하의\s*)?(디지몬|옵션)\s*카드\s*(\d+)\s*장(?:까지)?(?:를|을)?\s*패(?:로|에)\s*되돌(?:린다|릴\s*수\s*있다)/))) {
+    const TRASH_COLOR = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+    const filter = { category: m[3] === '옵션' ? 'option' : 'digimon' };
+    if (m[1]) filter.colors = [TRASH_COLOR[m[1]]];
+    if (m[2]) filter.levelMax = Number(m[2]);
+    for (let i = 0; i < Number(m[4]); i++) script.push({ op: 'returnFromTrash', who: 'self', filter });
+  }
+
   // Set a Digimon's base DP to an absolute value (distinct from a +/- delta).
   if ((m = t.match(/상대(?:의)?\s*디지몬\s*1\s*마리(?:의)?\s*원래\s*DP를\s*(\d+)(?:으로|로)\s*변경/))) {
     script.push({ op: 'setDP', target: 'opponent', value: Number(m[1]), duration: dpDuration });
