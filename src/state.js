@@ -1115,29 +1115,123 @@ function isPlayCostLocked(state) {
   return false;
 }
 
-// "이 디지몬이 특징 「X」를 가진 디지몬 카드로 진화할 때, 지불하는 코스트
-// -N." — a CONTINUOUS evolution-cost discount conditioned on the TARGET
-// card's trait, unlike the one-shot addEvoCostMod/consumeEvoCostMod pair
-// above (which models a temporary discount an effect grants once, then
-// consumes). Checked directly at cost-calculation time instead.
+const COLOR_WORD = '레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트';
+
+// Parses the "which card is being evolved INTO" descriptor of a continuous
+// evolve-cost discount ("특징으로 「A」/「B」를 가진 디지몬 카드로", "명칭에
+// 「X」를 포함하거나 특징 「Y」를 가진 카드로", "블랙인 카드로", "Lv.6의 ..."
+// etc.) into a predicate over the target card, or null if any part isn't
+// understood (so an unparsed ability just doesn't apply, never misapplies).
+// OR-alternatives split on 거나/또는; constraints within one alternative AND.
+function evoTargetPredicate(desc) {
+  desc = desc.trim();
+  if (!desc) return () => true;
+  if (/트래시의|뒷면|이\s*턴|다음에/.test(desc)) return null;
+  desc = desc.replace(/」\s*(?:또는|이나)\s*「/g, '」/「');
+  const clauses = desc.split(/(?:거나|카드나|카드\s*또는)\s*|\s*또는\s*(?=특징|명칭)/).map(x => x.trim()).filter(Boolean);
+  const quoted = (str) => [...str.matchAll(/「([^」]+)」/g)].map(m => m[1]);
+  const preds = [];
+  for (let c of clauses) {
+    c = c.replace(/^패의\s*/, '').replace(/\s*(?:으로|로)\s*$/, '');
+    const cons = [];
+    let m;
+    if ((m = c.match(/특징(?:으로|에|은)?\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*(가진|가지|포함하는|포함하|갖는)?/))) {
+      const list = quoted(m[1]), incl = /포함/.test(m[2] || '');
+      cons.push(t => (t.types || []).some(ty => list.some(x => incl ? ty.includes(x) : ty === x)));
+    }
+    if ((m = c.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) {
+      const list = quoted(m[1]);
+      cons.push(t => list.some(x => t.nameKo.includes(x)));
+    }
+    if ((m = c.match(/((?:「[^」]+」\/?)+)\s*(?:이|가)\s*기술되어/))) {
+      const list = quoted(m[1]);
+      cons.push(t => list.some(x => t.nameKo.includes(x)));
+    }
+    const stripped = c.replace(/특징(?:으로|에|은)?\s*(?:「[^」]+」\/?)+/g, '').replace(/명칭에\s*(?:「[^」]+」\/?)+/g, '');
+    if ((m = stripped.match(new RegExp(String.raw`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의|을\s*포함하는|를\s*포함하는)`)))) {
+      const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]);
+      cons.push(t => (t.colors || []).some(x => cols.includes(x)));
+    }
+    if ((m = stripped.match(/Lv\.(\d+)/))) { const lv = Number(m[1]); cons.push(t => t.level === lv); }
+    if (/다색|2색/.test(stripped)) cons.push(t => (t.colors || []).length >= 2);
+    if (!cons.length && (m = c.match(/^((?:「[^」]+」\/?)+)$/))) {
+      const list = quoted(m[1]);
+      cons.push(t => list.includes(t.nameKo));
+    }
+    if (!cons.length) return null;
+    preds.push(t => cons.every(f => f(t)));
+  }
+  return preds.length ? (t => preds.some(f => f(t))) : null;
+}
+
+const EVO_DISCOUNT_RE = new RegExp(String.raw`^(레스트\s*상태인\s*)?(이\s*디지몬(?:\s*또는\s*자신의\s*테이머)?|자신의\s*디지몬)(?:이|가)\s*(.*?)\s*진화할\s*때에?,?\s*(?:(${COLOR_WORD})인\s*자신의\s*테이머가\s*있다면,?\s*)?지불하는\s*(?:진화\s*)?코스트\s*(?:를\s*)?([+-]\s*\d+)\s*(?:한다)?\.?$`, 's');
+
+// True when `body` is a continuous evolve-cost discount/penalty that
+// continuousEvoCostDiscount can actually evaluate (used by the coverage
+// audit so it mirrors the real parser instead of a hand-copied regex).
+export function isHandledEvoDiscountBody(body) {
+  let b = body.trim().split('\n')[0].trim();
+  const lm = b.match(/^\[턴\s*에?\s*\d+\s*회\]\s*(.*)$/s);
+  if (lm) b = lm[1];
+  if (/^진화원을\s*갖지\s*않은\s*상대(?:의)?\s*디지몬이\s*진화할\s*때,?\s*지불하는\s*진화\s*코스트\s*\+\d+\.?$/.test(b)) return true;
+  const m = b.match(EVO_DISCOUNT_RE);
+  return !!m && !!evoTargetPredicate(m[3].replace(/\s*(?:으로|로)\s*$/, ''));
+}
+
+// "이 디지몬이 [특징 「X」를 가진 디지몬 카드]로 진화할 때, 지불하는 (진화)
+// 코스트 -N." family (~50 real cards) — a CONTINUOUS evolution-cost discount,
+// unlike the one-shot addEvoCostMod/consumeEvoCostMod pair above. Checked at
+// the real evolve moment (called once from main.js), so "[턴에 N회]" limits
+// are enforced here via the shared turnEffectUses counter. Also covers the
+// mirror-image opponent penalty "진화원을 갖지 않은 상대의 디지몬이 진화할
+// 때, 지불하는 진화 코스트 +N." (read from the ability owner's board).
 export function continuousEvoCostDiscount(state, p, stack, targetCardId) {
   const tgt = card(targetCardId);
   let total = 0;
-  for (const { id, own } of stackContributors(stack)) {
-    const text = own ? card(id).effectKo : card(id).inheritedKo;
-    if (!text) continue;
-    const { segments } = parseEffectSegments(text);
-    for (const seg of segments) {
-      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
-      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
-      if (!active) continue;
-      const body = seg.body.trim().replace(/^\[턴\s*\d+\s*회\]\s*/, '');
-      const m = body.match(/^이\s*디지몬이\s*특징\s*「([^」]+)」(?:\/「([^」]+)」)?\s*(?:을|를)?\s*가진\s*디지몬\s*카드로\s*진화할\s*때,?\s*지불하는\s*코스트\s*(-\d+)\.?$/);
-      if (!m) continue;
-      const traits = [m[1], m[2]].filter(Boolean);
-      if (traits.some(tr => (tgt.types || []).some(t => t.includes(tr)))) total += Number(m[3]);
+  const scan = (owner, ownStack, forOpponentPenalty) => {
+    for (const { id, own } of stackContributors(ownStack)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+        const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === owner);
+        if (!active) continue;
+        // Some prints append a trailing "〈룰〉…" rules line to the same segment.
+        let body = seg.body.trim().split('\n')[0].trim();
+        let limit = null;
+        const lm = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+        if (lm) { limit = Number(lm[1]); body = lm[2]; }
+        let delta = null;
+        if (forOpponentPenalty) {
+          const pm = body.match(/^진화원을\s*갖지\s*않은\s*상대(?:의)?\s*디지몬이\s*진화할\s*때,?\s*지불하는\s*진화\s*코스트\s*(\+\d+)\.?$/);
+          if (pm && stack.sources.length === 0) delta = Number(pm[1]);
+        } else {
+          const m = body.match(EVO_DISCOUNT_RE);
+          if (!m) continue;
+          if (m[1] && !ownStack.suspended) continue;
+          const pred = evoTargetPredicate(m[3].replace(/\s*(?:으로|로)\s*$/, ''));
+          if (!pred || !pred(tgt)) continue;
+          if (m[4]) {
+            const col = KOR_COLOR_NAME[m[4]];
+            if (!state.players[owner].battle.some(s => card(s.cardId).category === 'tamer' && (card(s.cardId).colors || []).includes(col))) continue;
+          }
+          delta = Number(m[5].replace(/\s+/g, ''));
+        }
+        if (delta == null) continue;
+        if (limit != null) {
+          const key = onceLimitKey(id, seg.tags);
+          if (turnUsesRemaining(ownStack, key, limit) <= 0) continue;
+          markTurnEffectUsed(ownStack, key);
+        }
+        total += delta;
+      }
     }
-  }
+  };
+  scan(p, stack, false);
+  const opp = opponentOf(p);
+  const oppPl = state.players[opp];
+  for (const s of [oppPl.raising, ...oppPl.battle].filter(Boolean)) scan(opp, s, true);
   return total;
 }
 
