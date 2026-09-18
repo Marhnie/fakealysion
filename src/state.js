@@ -325,6 +325,36 @@ function isAttackTargetImmune(state, p, stack) {
   return false;
 }
 
+// Qualifier phrase of "어택의 대상을 <…> 자신의 디지몬 N마리로 변경": 레스트 상태인 /
+// 특징 「X」를 가진 / 명칭에 「X」를 포함하는 / 「X」이 기술되어 있는. Returns a
+// stack predicate, or null when anything is left unparsed (OR-combinations,
+// unknown wording) so an unrecognised variant is never misapplied.
+function redirectCandidatePredicate(q) {
+  q = q.trim();
+  const preds = [];
+  let m;
+  if (/거나|또는/.test(q.replace(/「[^」]*」/g, '「」').replace(/」\s*(?:또는)\s*「/g, ''))) return null;
+  if (/레스트\s*상태인/.test(q)) { preds.push(st => st.suspended); q = q.replace(/레스트\s*상태인/, ''); }
+  if ((m = q.match(/특징(?:으로|에|은)?\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*(가진|가지고|포함하는)/))) {
+    const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    const incl = m[2] === '포함하는';
+    preds.push(st => (card(st.cardId).types || []).some(ty => list.some(x => incl ? ty.includes(x) : ty === x)));
+    q = q.replace(m[0], '');
+  }
+  if ((m = q.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) {
+    const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    preds.push(st => list.some(x => card(st.cardId).nameKo.includes(x)));
+    q = q.replace(m[0], '');
+  }
+  if ((m = q.match(/((?:「[^」]+」\/?)+)\s*(?:이|가)\s*기술되어\s*있는/))) {
+    const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    preds.push(st => list.some(x => card(st.cardId).nameKo.includes(x)));
+    q = q.replace(m[0], '');
+  }
+  if (q.replace(/[\s,]/g, '') || !preds.length) return null; // leftover text = something we don't understand
+  return st => preds.every(f => f(st));
+}
+
 export function findRedirectOptions(state, p, attackerP, attackerUid) {
   if (attackerP != null) {
     const apl = state.players[attackerP];
@@ -341,15 +371,25 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
       for (const seg of segments) {
         if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
         const body = seg.body.trim();
-        const limitM = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+        const limitM = body.match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]\s*(.*)$/s);
         const limit = limitM ? Number(limitM[1]) : null;
         const rest = (limitM ? limitM[2] : body).trim();
-        if (!/^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택의?\s*대상을\s*이\s*디지몬으로\s*변경할\s*수\s*있다\.?$/.test(rest)) continue;
+        let targets;
+        if (/^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택의?\s*대상을\s*이\s*디지몬으로\s*변경할\s*수\s*있다\.?$/.test(rest)) {
+          targets = [stack.uid];
+        } else {
+          // "…어택의 대상을 [레스트 상태인] [특징/명칭 조건의] 자신의 디지몬 N마리로 변경(할 수 있다|한다)"
+          const am = rest.match(/^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택\s*(?:의)?\s*대상을\s*(.*?)\s*자신(?:의)?\s*디지몬\s*\d+\s*마리로\s*변경(?:할\s*수\s*있다|한다)\.?$/);
+          const pred = am ? redirectCandidatePredicate(am[1]) : null;
+          if (!pred) continue;
+          targets = pl.battle.filter(s => card(s.cardId).category === 'digimon' && pred(s)).map(s => s.uid);
+          if (!targets.length) continue;
+        }
         if (limit != null) {
           const key = onceLimitKey(id, ['어택대상변경']);
           if (turnUsesRemaining(stack, key, limit) <= 0) continue;
         }
-        options.push({ cardId: id, stackUid: stack.uid, limit });
+        for (const t of targets) options.push({ cardId: id, stackUid: stack.uid, targetUid: t, limit });
       }
     }
   }
@@ -1246,7 +1286,7 @@ const EVO_DISCOUNT_RE = new RegExp(String.raw`^(레스트\s*상태인\s*)?(이\s
 // audit so it mirrors the real parser instead of a hand-copied regex).
 export function isHandledEvoDiscountBody(body) {
   let b = body.trim().split('\n')[0].trim();
-  const lm = b.match(/^\[턴\s*에?\s*\d+\s*회\]\s*(.*)$/s);
+  const lm = b.match(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*(.*)$/s);
   if (lm) b = lm[1];
   if (/^진화원을\s*갖지\s*않은\s*상대(?:의)?\s*디지몬이\s*진화할\s*때,?\s*지불하는\s*진화\s*코스트\s*\+\d+\.?$/.test(b)) return true;
   const m = b.match(EVO_DISCOUNT_RE);
@@ -1275,7 +1315,7 @@ export function continuousEvoCostDiscount(state, p, stack, targetCardId) {
         // Some prints append a trailing "〈룰〉…" rules line to the same segment.
         let body = seg.body.trim().split('\n')[0].trim();
         let limit = null;
-        const lm = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+        const lm = body.match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]\s*(.*)$/s);
         if (lm) { limit = Number(lm[1]); body = lm[2]; }
         let delta = null;
         if (forOpponentPenalty) {
@@ -1366,7 +1406,7 @@ export function traitPlayCostDiscount(state, p, targetCardId) {
         if (seg.tags.length !== 1 || seg.tags[0] !== '자신의 턴') continue;
         if (state.activePlayer !== p) continue;
         if (seg.zoneMarker === '육성' && !inRaising) continue;
-        const limitM = seg.body.trim().match(/^\[턴\s*(\d+)\s*회\]\s*(.+)$/s);
+        const limitM = seg.body.trim().match(/^[\[〔]턴\s*(\d+)\s*회[\]〕]\s*(.+)$/s);
         if (!limitM) continue;
         const m = limitM[2].match(/^특징\s*「([^」]+)」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*지불하는\s*코스트\s*(-\d+)\s*할\s*수\s*있다\.?$/);
         if (!m) continue;
@@ -2043,7 +2083,7 @@ function parseBattleWinTrigger(text) {
   for (const seg of segments) {
     if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
     const body = seg.body.trim();
-    const limitM = body.match(/^\[턴\s*에?\s*(\d+)\s*회\]\s*(.*)$/s);
+    const limitM = body.match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]\s*(.*)$/s);
     const limit = limitM ? Number(limitM[1]) : null;
     const rest = (limitM ? limitM[2] : body).trim();
     const m = rest.match(/^이\s*디지몬이\s*배틀에서\s*상대(?:의)?\s*디지몬을\s*소멸시켰을\s*때,?\s*상대(?:의)?\s*시큐리티를\s*위에서부터\s*(\d+)\s*장\s*파기한다\.?$/);

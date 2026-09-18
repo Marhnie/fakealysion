@@ -72,7 +72,7 @@ function auditText(cardId, source, text) {
       continue;
     }
     // Handled live via traitPlayCostDiscount, checked at fresh-play-cost time.
-    if (seg.tags.length === 1 && seg.tags[0] === '자신의 턴' && /^\[턴\s*\d+\s*회\]\s*특징\s*「[^」]+」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*지불하는\s*코스트\s*-\d+\s*할\s*수\s*있다\.?$/.test(seg.body.trim())) {
+    if (seg.tags.length === 1 && seg.tags[0] === '자신의 턴' && /^[\[〔]턴\s*\d+\s*회[\]〕]\s*특징\s*「[^」]+」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*지불하는\s*코스트\s*-\d+\s*할\s*수\s*있다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }
@@ -105,7 +105,7 @@ function auditText(cardId, source, text) {
       // Handled live via runBattleWinTriggers (resolveDigimonBattle) and
       // findRedirectOptions (attack flow) — embedded "~했을 때" triggers
       // nested inside a continuous turn-tag wrapper, not bracket-tagged.
-      const bodyNoLimit = seg.body.trim().replace(/^\[턴\s*에?\s*\d+\s*회\]\s*/, '');
+      const bodyNoLimit = seg.body.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
       if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && (
         /^이\s*디지몬이\s*배틀에서\s*상대(?:의)?\s*디지몬을\s*소멸시켰을\s*때,?\s*상대(?:의)?\s*시큐리티를\s*위에서부터\s*\d+\s*장\s*파기한다\.?$/.test(bodyNoLimit)
         || /^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택의?\s*대상을\s*이\s*디지몬으로\s*변경할\s*수\s*있다\.?$/.test(bodyNoLimit)

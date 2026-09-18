@@ -763,7 +763,7 @@ function scriptFor(trigger) {
 // MetalGarurumon's "【어택 시】[턴에 1회] 이 디지몬을 액티브로 한다." should
 // only re-activate it once per turn, not every time it attacks.
 function parseOnceLimit(text) {
-  const m = text.match(/^\[턴\s*에?\s*(\d+)\s*회\]/);
+  const m = text.match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
   return m ? Number(m[1]) : null;
 }
 
@@ -1262,13 +1262,15 @@ function renderPendingAttack() {
     }
     if (pa.redirectOptions.length) rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
     pa.redirectOptions.forEach(opt => {
-      const st = state.players[pa.opp].battle.find(s => s.uid === opt.stackUid);
+      const tUid = opt.targetUid || opt.stackUid;
+      const st = state.players[pa.opp].battle.find(s => s.uid === tUid);
       if (!st) return;
+      const srcSt = state.players[pa.opp].battle.find(s => s.uid === opt.stackUid);
       rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, `${S.card(st.cardId).nameKo}(으)로 어택 대상 변경`),
+        h('span', {}, `${S.card(st.cardId).nameKo}(으)로 어택 대상 변경` + (tUid !== opt.stackUid && srcSt ? ` (${S.card(opt.cardId).nameKo})` : '')),
         h('button', {
           onClick: () => {
-            pa.targetKind = 'digimon'; pa.targetUid = opt.stackUid;
+            pa.targetKind = 'digimon'; pa.targetUid = tUid;
             if (opt.limit != null) S.markRedirectUsed(state, pa.opp, opt.stackUid, opt.cardId);
             enterCounterTiming(pa); render();
           },
