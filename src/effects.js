@@ -58,7 +58,7 @@ async function runOne(instr, ctx) {
       S.trashTopOfDeck(state, who, instr.n);
       break;
     case 'gainMemory':
-      S.grantMemory(state, who, instr.n);
+      S.grantMemory(state, who, instr.n, ctx.sourceCardId);
       break;
     case 'addSecurity': {
       let cardId = instr.cardId;
@@ -367,7 +367,7 @@ async function runOne(instr, ctx) {
       break;
     }
     case 'memoryBorrowAndRepay':
-      S.grantMemory(state, ctx.self, instr.n);
+      S.grantMemory(state, ctx.self, instr.n, ctx.sourceCardId);
       S.scheduleEndOfTurn(state, () => S.grantMemory(state, ctx.self, -instr.n));
       break;
     case 'setMemoryIfLE': {

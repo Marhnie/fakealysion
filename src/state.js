@@ -153,12 +153,12 @@ const TRIGGER_TAGS = {
 // segment's text is ANYTHING more than one of these (extra clauses, choice
 // wording), it is deliberately left for manual/pending resolution instead —
 // better to surface it than silently apply half an effect.
-function tryAutoApplySegment(state, p, text) {
+function tryAutoApplySegment(state, p, text, sourceCardId) {
   const opp = opponentOf(p);
   const t = text.replace(/[≪《》≫]/g, '').trim();
   let m;
   if ((m = t.match(/^(\d+)\s*드로우(?:한다)?[.。]?$/))) { drawCards(state, p, Number(m[1])); return true; }
-  if ((m = t.match(/^메모리(?:를|을)?\s*\+\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, Number(m[1])); return true; }
+  if ((m = t.match(/^메모리(?:를|을)?\s*\+\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, Number(m[1]), sourceCardId); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*-\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, -Number(m[1])); return true; }
   if ((m = t.match(/^(?:자신의\s*)?덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다|할\s*수\s*있다)?[.。]?$/))) { trashTopOfDeck(state, p, Number(m[1])); return true; }
   if ((m = t.match(/^상대(?:의)?\s*덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다|할\s*수\s*있다)?[.。]?$/))) { trashTopOfDeck(state, opp, Number(m[1])); return true; }
@@ -175,7 +175,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   for (const seg of segments) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
-    const applied = tryAutoApplySegment(state, p, seg.body);
+    const applied = tryAutoApplySegment(state, p, seg.body, cardId);
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${seg.body}`);
     } else {
@@ -196,7 +196,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
   for (const seg of segments) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
-    const applied = tryAutoApplySegment(state, p, seg.body);
+    const applied = tryAutoApplySegment(state, p, seg.body, sourceCardId);
     if (applied) {
       log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
     } else {
@@ -412,9 +412,43 @@ export function spendMemory(state, amount) {
   return state.memory;
 }
 
+// "상대는/서로는 테이머의 효과 이외로 메모리를 플러스할 수 없다." — checked
+// against BOTH boards since "상대는" restricts the OTHER player (ability
+// read from ITS controller's perspective, like isEvoCostLocked) while
+// "서로는" restricts everyone including the controller's own side.
+function isMemoryGainLocked(state, p) {
+  for (const ownerP of ['p1', 'p2']) {
+    const pl = state.players[ownerP];
+    for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
+      for (const { id, own } of stackContributors(stack)) {
+        const text = own ? card(id).effectKo : card(id).inheritedKo;
+        if (!text) continue;
+        const { segments } = parseEffectSegments(text);
+        for (const seg of segments) {
+          if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+          const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === ownerP);
+          if (!active) continue;
+          const body = seg.body.trim();
+          const restrictsOpponent = /^상대는\s*테이머의?\s*효과\s*이외로\s*메모리를\s*플러스할\s*수\s*없다\.?$/.test(body) && p === opponentOf(ownerP);
+          const restrictsEveryone = /^서로는\s*테이머의?\s*효과\s*이외로\s*메모리를\s*플러스할\s*수\s*없다\.?$/.test(body);
+          if (restrictsOpponent || restrictsEveryone) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // Direct memory grant (e.g. a card's "gain 1 memory"), respecting the same
 // sign convention: grants to `p` move the gauge toward p's own side.
-export function grantMemory(state, p, amount) {
+// `sourceCardId`, when given, exempts Tamer-sourced grants from the
+// "테이머의 효과 이외로 메모리를 플러스할 수 없다." lock; omit it for
+// system-level/manual-tool calls that aren't a specific card's own effect.
+export function grantMemory(state, p, amount, sourceCardId) {
+  if (amount > 0 && sourceCardId != null && card(sourceCardId).category !== 'tamer' && isMemoryGainLocked(state, p)) {
+    log(state, `${p} 메모리 증가가 효과로 봉쇄됨 (테이머 효과 아님): ${card(sourceCardId).nameKo}`);
+    return state.memory;
+  }
   const delta = p === 'p1' ? amount : -amount;
   state.memory += delta;
   state.memory = Math.max(-10, Math.min(10, state.memory));

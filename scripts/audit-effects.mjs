@@ -73,6 +73,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via isMemoryGainLocked, checked from grantMemory.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^(?:상대|서로)는\s*테이머의?\s*효과\s*이외로\s*메모리를\s*플러스할\s*수\s*없다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {
