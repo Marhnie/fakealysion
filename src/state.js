@@ -348,6 +348,29 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
   return options;
 }
 
+// ≪연계≫: "이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는
+// 것으로, 이 어택 동안 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고,
+// 《S 어택 +1》을 얻는다." — optional, so the UI offers it per attack.
+export function chainOptions(state, p, attackerUid) {
+  const pl = state.players[p];
+  const a = pl.battle.find(s => s.uid === attackerUid);
+  if (!a || !hasKeyword(a, '연계')) return [];
+  return pl.battle.filter(s => s !== a && !s.suspended && card(s.cardId).category === 'digimon').map(s => s.uid);
+}
+
+export function useChain(state, p, attackerUid, otherUid) {
+  const pl = state.players[p];
+  const a = pl.battle.find(s => s.uid === attackerUid);
+  const o = pl.battle.find(s => s.uid === otherUid);
+  if (!a || !o || o.suspended || !hasKeyword(a, '연계')) return false;
+  const dp = effectiveDP(state, p, o);
+  restStack(state, p, otherUid);
+  modifyDP(state, p, attackerUid, dp, 'turn');
+  grantKeyword(state, p, attackerUid, '시큐리티어택', 1, 'turn');
+  log(state, `${p} ${card(a.cardId).nameKo} 《연계》 — ${card(o.cardId).nameKo} 레스트, DP+${dp}, S 어택 +1`);
+  return true;
+}
+
 // ≪돌진≫: "이 디지몬이 어택했을 때, 어택의 대상을 가장 DP가 높은 액티브 상태인
 // 상대의 디지몬 1마리로 변경할 수 있다." Returns the uid to redirect to (first
 // on a DP tie), or null if the attacker lacks the keyword / no legal target /
@@ -580,8 +603,8 @@ export function grantColor(state, p, uid, color) {
 }
 
 // Bare 《키워드》 lines the engine has a real consumer for (static grants).
-const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진'];
-const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진']);
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계'];
+const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;

@@ -391,7 +391,7 @@ function cardChip(cardId, opts = {}) {
 // these ever appeared anywhere on the board before.
 const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
-  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', DP감소무효: '🚫DP감소무효',
+  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
 };
 function activeKeywordBadges(stack) {
@@ -1126,7 +1126,8 @@ function enterCounterTiming(pa) {
 function enterRedirectTiming(pa) {
   const options = S.findRedirectOptions(state, pa.opp, pa.attacker, pa.uid);
   pa.chargeTarget = S.chargeRedirectTarget(state, pa.attacker, pa.uid);
-  if (options.length === 0 && !pa.chargeTarget) {
+  const chainAvail = !pa.chainUsed && S.chainOptions(state, pa.attacker, pa.uid).length > 0;
+  if (options.length === 0 && !pa.chargeTarget && !chainAvail) {
     enterCounterTiming(pa);
   } else {
     pa.stage = 'redirectTiming';
@@ -1198,6 +1199,18 @@ function renderPendingAttack() {
     renderAttackSteps(pa.stage),
   ];
 
+  // ≪연계≫ — optional, offered until the battle actually resolves.
+  if (attackerStackNow && pa.stage !== 'digimonResult' && pa.stage !== 'result' && !pa.chainUsed) {
+    const chainUids = S.chainOptions(state, pa.attacker, pa.uid);
+    if (chainUids.length) {
+      rows.push(h('div', { className: 'zone-label' }, '《연계》 — 다른 디지몬 1마리를 레스트시켜 DP 합산 + S 어택 +1:'));
+      rows.push(h('div', { className: 'stack-list' }, chainUids.map(uid => {
+        const st = state.players[pa.attacker].battle.find(x => x.uid === uid);
+        return cardChip(st.cardId, { onClick: () => { if (S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; pa.dp = S.effectiveDP(state, pa.attacker, attackerStackNow); } render(); } });
+      })));
+    }
+  }
+
   if (pa.stage === 'targetChoice') {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
     const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
@@ -1247,7 +1260,7 @@ function renderPendingAttack() {
         }, '변경'),
       ]));
     });
-    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, '넘기기'));
+    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, pa.redirectOptions.length || pa.chargeTarget ? '넘기기' : '진행 (카운터 단계로)'));
   } else if (pa.stage === 'counterTiming') {
     rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {
