@@ -1044,7 +1044,7 @@ function enterCounterTiming(pa) {
 // resolved before Counter Timing since it decides WHICH digimon Counter/
 // Block even apply against.
 function enterRedirectTiming(pa) {
-  const options = S.findRedirectOptions(state, pa.opp);
+  const options = S.findRedirectOptions(state, pa.opp, pa.attacker, pa.uid);
   if (options.length === 0) {
     enterCounterTiming(pa);
   } else {

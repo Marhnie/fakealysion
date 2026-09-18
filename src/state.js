@@ -274,7 +274,30 @@ export function findCounterOptions(state, p) {
 // Simplified to the unconditioned form only — several real prints add an
 // extra requirement (highest-DP attacker, a specific trait/name on this
 // stack) that would need per-card condition evaluation not attempted here.
-export function findRedirectOptions(state, p) {
+// "이 디지몬의 (어택의) 대상은 변경되지 않는다." — the inverse of
+// findRedirectOptions: makes an ATTACKING stack immune to target-redirect
+// effects. Same continuous 자신/상대/서로의 턴 family.
+function isAttackTargetImmune(state, p, stack) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      if (/^이\s*디지몬의?\s*어택(?:의)?\s*대상은\s*변경되지\s*않는다\.?$/.test(seg.body.trim())) return true;
+    }
+  }
+  return false;
+}
+
+export function findRedirectOptions(state, p, attackerP, attackerUid) {
+  if (attackerP != null) {
+    const apl = state.players[attackerP];
+    const aStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
+    if (aStack && isAttackTargetImmune(state, attackerP, aStack)) return [];
+  }
   const pl = state.players[p];
   const options = [];
   for (const stack of pl.battle) {
