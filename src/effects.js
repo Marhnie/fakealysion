@@ -35,6 +35,8 @@ function matchesFilter(S, cardId, filter) {
   if (filter.traitAny && !filter.traitAny.some(t => (c.types || []).includes(t))) return false;
   if (filter.traitIncludes && !filter.traitIncludes.some(t => (c.types || []).some(ty => ty.includes(t)))) return false;
   if (filter.nameAny && !filter.nameAny.some(n => c.nameKo.includes(n))) return false;
+  if (filter.keywordText && !`${c.effectKo || ''}
+${c.inheritedKo || ''}`.includes(`《${filter.keywordText}`)) return false;
   if (filter.category && c.category !== filter.category) return false;
   if (filter.dpMax != null && (c.dp || 0) > filter.dpMax) return false;
   if (filter.dpMin != null && (c.dp || 0) < filter.dpMin) return false;
@@ -66,6 +68,7 @@ function parseCardFilter(phrase) {
     const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
     if (m[2] === '포함하는') f.traitIncludes = list; else f.traitAny = list;
   }
+  if ((m = phrase.match(/《([^》]+)》(?:이|가)\s*기술되어\s*있는/))) f.keywordText = m[1];
   if ((m = phrase.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) f.nameAny = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
   const rest = phrase.replace(/특징(?:으로|에|은)?\s*(?:「[^」]+」\/?)+/g, '').replace(/명칭에\s*(?:「[^」]+」\/?)+/g, '');
   if ((m = rest.match(/((?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:\/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트))*)(?:인|의)/))) f.colors = m[1].split('/').map(x => FILTER_COLOR[x]);
@@ -378,6 +381,25 @@ async function runOne(instr, ctx) {
       if (ctx.startAttack) ctx.startAttack(who, uid);
       break;
     }
+    case 'placeUnderTamer': {
+      const pl = state.players[who];
+      const tamers = pl.battle.filter(x => S.card(x.cardId).category === 'tamer');
+      if (!tamers.length) { S.log(state, `${who} 자신의 테이머가 없어 카드를 놓을 수 없음`); break; }
+      const tUid = tamers.length === 1 ? tamers[0].uid : await ctx.choose('pickStack', { player: who, uids: tamers.map(x => x.uid), prompt: '카드를 아래에 놓을 테이머 선택' });
+      const tamer = tamers.find(x => x.uid === tUid);
+      if (!tamer) break;
+      for (let i = 0; i < instr.n; i++) {
+        let zone = null, eligible = [];
+        for (const z of instr.zones) { const e = pl[z].map((id, k) => k).filter(k => matchesFilter(S, pl[z][k], instr.filter)); if (e.length) { zone = z; eligible = e; break; } }
+        if (!zone) break;
+        const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone, eligibleIdxs: eligible, prompt: `${zone === 'trash' ? '트래시' : '패'}에서 테이머 아래에 놓을 카드 선택` });
+        if (idx == null) break;
+        const [id] = pl[zone].splice(idx, 1);
+        tamer.sources.push(id);
+        S.log(state, `${who} ${S.card(id).nameKo}을(를) ${S.card(tamer.cardId).nameKo} 아래에 놓음`);
+      }
+      break;
+    }
     case 'shuffleSecurity': {
       const sec = state.players[who].security;
       for (let i = sec.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [sec[i], sec[j]] = [sec[j], sec[i]]; }
@@ -649,6 +671,11 @@ function compileInner(text) {
   // "이 디지몬/자신의 디지몬 N마리로 (상대의 디지몬에게) 어택할 수 있다" — an effect-granted immediate attack.
   if ((m = t.match(/(이\s*디지몬|자신(?:의)?\s*디지몬\s*\d+\s*마리)(?:으로|로)\s*(?:상대(?:의)?\s*디지몬에게\s*)?어택할\s*수\s*있다/)) && !/(?:동안|때)[^.]*어택할\s*수\s*있다/.test(t.replace(/\([^()]*\)/g, ''))) {
     script.push({ op: 'attackNow', who: 'self', thisStack: /^이/.test(m[1]) });
+  }
+  // "자신의 패/트래시에서 <조건> 카드 N장을 자신의 테이머 아래에 놓는다/놓을 수 있다"
+  if ((m = t.match(/자신(?:의)?\s*(패\s*\/\s*트래시|패\s*또는\s*트래시|패|트래시)에서,?\s*(.*?)\s*(\d+)\s*장(?:을)?\s*자신(?:의)?\s*테이머\s*아래에\s*(?:원하는\s*순서대로\s*)?놓(?:는다|을\s*수\s*있다)/s))) {
+    const zones = /트래시/.test(m[1]) && /패/.test(m[1]) ? ['hand', 'trash'] : /트래시/.test(m[1]) ? ['trash'] : ['hand'];
+    script.push({ op: 'placeUnderTamer', who: 'self', zones, filter: parseCardFilter(m[2]) || {}, n: Number(m[3]) });
   }
   if (/자신(?:의)?\s*시큐리티를\s*셔플한다/.test(t)) script.push({ op: 'shuffleSecurity', who: 'self' });
   if (/자신(?:의)?\s*시큐리티를\s*전부\s*확인한다/.test(t)) script.push({ op: 'lookSecurity', who: 'self' });
