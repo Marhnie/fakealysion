@@ -41,7 +41,7 @@ function auditText(cardId, source, text) {
     totalSegments++;
     // Handled live via effectiveDP's turnConditionalDP (state.js), not the
     // trigger/script pipeline — mirror that here so it isn't double-flagged.
-    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^(?:레스트\s*상태인\s*)?이\s*디지몬을\s*DP\s*[+-]\s*\d+\.?$/.test(seg.body.trim())) {
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^(?:레스트\s*상태인\s*|(?:「[^」]+」|[《≪][^》≫]+[》≫])(?:이|가)\s*기술되어\s*있는\s*)?이\s*디지몬을\s*DP\s*[+-]\s*\d+\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }

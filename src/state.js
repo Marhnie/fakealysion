@@ -544,17 +544,27 @@ function parseTurnConditionalDP(text) {
     // occurrences, always under 【서로의 턴】, via the full-card-DB audit).
     m = body.match(/^레스트\s*상태인\s*이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
     if (m) { out.push({ tag, amount: (m[1] === '-' ? -1 : 1) * Number(m[2]), requireSuspended: true }); continue; }
+    // "「X」이 기술되어 있는 이 디지몬을 DP ±N." / "《X》가 기술되어 있는 …" —
+    // conditioned on the CURRENT top card's own printed text containing that
+    // literal name/keyword token somewhere (checked against stack.cardId's
+    // effectKo in turnConditionalDP, not necessarily this same text — "이
+    // 디지몬" always means the current top card, regardless of whether this
+    // grant is being read from its own effectKo or a source's inheritedKo).
+    m = body.match(/^(?:「([^」]+)」|[《≪]([^》≫]+)[》≫])(?:이|가)\s*기술되어\s*있는\s*이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
+    if (m) { out.push({ tag, amount: (m[3] === '-' ? -1 : 1) * Number(m[4]), requireToken: m[1] || m[2] }); continue; }
   }
   return out;
 }
 
 function turnConditionalDP(state, p, stack) {
   let total = 0;
+  const ownText = card(stack.cardId).effectKo || '';
   for (const { id, own } of stackContributors(stack)) {
     const grants = parseTurnConditionalDP(own ? card(id).effectKo : card(id).inheritedKo);
     for (const g of grants) {
       const active = (g.tag === '서로의 턴' || (g.tag === '자신의 턴') === (state.activePlayer === p))
-        && (!g.requireSuspended || stack.suspended);
+        && (!g.requireSuspended || stack.suspended)
+        && (!g.requireToken || ownText.includes(g.requireToken));
       if (active) total += g.amount;
     }
   }
