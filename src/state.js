@@ -1087,6 +1087,38 @@ export function continuousEvoCostDiscount(state, p, stack, targetCardId) {
   return total;
 }
 
+// "자신의 패에서 특징 「X」를 가진 디지몬 카드가 등장할 때, 이 테이머를
+// 레스트시키는 것으로, 지불하는 코스트 -N." (ST20-12/ST20-13/ST21-12/
+// ST21-13, all 자신의 턴) — an embedded "~할 때" trigger nested inside a
+// continuous turn wrapper, paid for by resting the Tamer itself. Optional
+// in principle, but since the discount is strictly beneficial and this
+// engine's play flow isn't set up for a mid-play choice, auto-applies to
+// the first eligible (non-suspended, trait-matching) Tamer found — mutates
+// state by resting it as a side effect of computing the discount.
+export function tamerPlayCostDiscount(state, p, targetCardId) {
+  const tgt = card(targetCardId);
+  const pl = state.players[p];
+  for (const stack of pl.battle) {
+    if (stack.suspended || card(stack.cardId).category !== 'tamer') continue;
+    for (const { id, own } of stackContributors(stack)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || seg.tags[0] !== '자신의 턴') continue;
+        if (state.activePlayer !== p) continue;
+        const m = seg.body.trim().match(/^자신(?:의)?\s*패에서\s*특징\s*「([^」]+)」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*이\s*테이머를\s*레스트시키는\s*것으로,?\s*지불하는\s*코스트\s*(-\d+)\.?$/);
+        if (!m) continue;
+        if (!(tgt.types || []).some(t => t.includes(m[1]))) continue;
+        restStack(state, p, stack.uid);
+        log(state, `${p} ${card(stack.cardId).nameKo} 레스트 — ${tgt.nameKo} 등장 코스트 ${m[2]}`);
+        return Number(m[2]);
+      }
+    }
+  }
+  return 0;
+}
+
 // Returns the best (most negative) still-valid, one-time cost delta for
 // evolving INTO `targetCardId`, and marks it consumed. Call this exactly
 // once per resolved evolution.

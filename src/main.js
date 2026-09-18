@@ -482,7 +482,8 @@ function playFreshFromDrag(drag, p) {
   if (category === 'option') {
     S.useOptionCard(state, drag.player, drag.idx);
   } else {
-    const cost = S.card(drag.cardId).cost || 0;
+    const discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) : 0;
+    const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (cost > 0) S.spendMemory(state, cost);
     S.playDigimonFresh(state, drag.player, drag.idx);
   }
