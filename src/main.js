@@ -663,8 +663,22 @@ async function ctxChoose(kind, payload) {
   });
 }
 
+// "이 카드의 【메인】 효과를 발휘한다." — near-universal boilerplate printed as
+// EVERY Option card's inheritedKo (its "when revealed by a security check"
+// text): reroute into compiling that same card's own 【메인】 segment
+// (effectKo) instead of trying to pattern-match this sentence itself.
+// Confirmed via a full-DB audit: 168 of 175 occurrences of this exact
+// sentence are on Option cards' inheritedKo, always paired with a plain
+// 【메인】-tagged effectKo to re-run.
 function scriptFor(trigger) {
-  return Effects.lookupCardSpecific(trigger.cardId, trigger.tags) || Effects.compileToScript(trigger.text);
+  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags);
+  if (specific) return specific;
+  if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
+    const { segments } = S.parseEffectSegments(S.card(trigger.cardId).effectKo || '');
+    const mainSeg = segments.find(seg => seg.tags.includes('메인'));
+    if (mainSeg) return Effects.compileToScript(mainSeg.body);
+  }
+  return Effects.compileToScript(trigger.text);
 }
 
 // "[턴에 N회]"/"[턴 N회]" printed at the start of a segment's body caps how
