@@ -402,7 +402,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       // line on the target — a failure here means NO printed condition
       // justifies this evolution, so the drop must be rejected outright
       // rather than silently let through for cost 0.
-      const check = E.canEvolveAny(stack.cardId, drag.cardId, stack.extraColors || []);
+      const check = E.canEvolveAny(stack.cardId, drag.cardId, stack.extraColors || [], S.evolveTargetRestriction(state, p, stack));
       if (!check.ok) {
         S.log(state, `${p} 진화 조건 불일치로 거부: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} (${check.reason})`);
         dragData = null; render();

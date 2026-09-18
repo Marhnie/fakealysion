@@ -45,6 +45,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via S.evolveTargetRestriction, checked from canEvolveAny.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은\s*(?:(?:레드|블루|옐로우|그린|블랙|퍼플|화이트)인\s*디지몬으로만|명칭에\s*「[^」]+」\s*(?:을|를)?\s*포함하는\s*디지몬으로만|「[^」]+」(?:으로만|로만))\s*진화할\s*수\s*있다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {

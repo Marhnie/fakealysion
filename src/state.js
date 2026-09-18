@@ -571,6 +571,33 @@ function turnConditionalDP(state, p, stack) {
   return total;
 }
 
+const KOR_COLOR_NAME = { 레드: 'red', 블루: 'blue', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+
+// "이 디지몬은 (X색)인/「X」으로만 진화할 수 있다." — same continuous-condition
+// family as parseTurnConditionalDP, restricting what this stack is allowed
+// to evolve into rather than its DP. Returns the first active restriction
+// found ({colors:[...]} or {nameExact}/{nameIncludes}), or null.
+export function evolveTargetRestriction(state, p, stack) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      const body = seg.body.trim();
+      let m = body.match(/^이\s*디지몬은\s*(레드|블루|옐로우|그린|블랙|퍼플|화이트)인\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
+      if (m) return { colors: [KOR_COLOR_NAME[m[1]]] };
+      m = body.match(/^이\s*디지몬은\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
+      if (m) return { nameIncludes: m[1] };
+      m = body.match(/^이\s*디지몬은\s*「([^」]+)」(?:으로만|로만)\s*진화할\s*수\s*있다\.?$/);
+      if (m) return { nameExact: m[1] };
+    }
+  }
+  return null;
+}
+
 export function effectiveDP(state, p, stack) {
   return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack);
 }

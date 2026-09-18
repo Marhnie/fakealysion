@@ -196,7 +196,7 @@ async function runOne(instr, ctx) {
       // same check the drag-drop digivolve path uses. Only stacks that
       // actually satisfy some printed condition are offered as choices.
       const pl = state.players[ctx.self];
-      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, s.extraColors || []).ok);
+      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, s.extraColors || [], S.evolveTargetRestriction(state, ctx.self, s)).ok);
       if (!eligible.length) break;
       const targetUid = eligible.length === 1 ? eligible[0].uid
         : await ctx.choose('pickStack', { player: ctx.self, uids: eligible.map(s => s.uid), prompt: `《블래스트 진화》 — ${S.card(ctx.sourceCardId).nameKo}로 진화시킬 디지몬 선택` });

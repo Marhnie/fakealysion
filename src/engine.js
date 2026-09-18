@@ -223,8 +223,23 @@ function parseEvoConditions(targetCardId) {
 // canNormalEvolve, a failed result here means the drop should be BLOCKED,
 // not silently allowed for free — there's no condition left that could
 // justify it.
-export function canEvolveAny(sourceCardId, targetCardId, extraColors = []) {
+export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restriction = null) {
   const src = S.card(sourceCardId);
+  const tgt = S.card(targetCardId);
+  // A continuous "이 디지몬은 (X색)/「X」으로만 진화할 수 있다." restriction on
+  // the SOURCE stack (see S.evolveTargetRestriction) — checked against the
+  // TARGET card, independent of whichever printed condition below it uses.
+  if (restriction) {
+    if (restriction.colors && !restriction.colors.some(c => (tgt.colors || []).includes(c))) {
+      return { ok: false, reason: `진화 제한: ${restriction.colors.join('/')} 인 디지몬으로만 진화 가능` };
+    }
+    if (restriction.nameExact && tgt.nameKo !== restriction.nameExact) {
+      return { ok: false, reason: `진화 제한: 「${restriction.nameExact}」로만 진화 가능` };
+    }
+    if (restriction.nameIncludes && !tgt.nameKo.includes(restriction.nameIncludes)) {
+      return { ok: false, reason: `진화 제한: 명칭에 「${restriction.nameIncludes}」를 포함하는 디지몬으로만 진화 가능` };
+    }
+  }
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
   const srcColors = [...(src.colors || []), ...extraColors];
