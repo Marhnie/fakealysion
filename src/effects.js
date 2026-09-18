@@ -35,6 +35,7 @@ function matchesFilter(S, cardId, filter) {
   if (filter.traitAny && !filter.traitAny.some(t => (c.types || []).includes(t))) return false;
   if (filter.traitIncludes && !filter.traitIncludes.some(t => (c.types || []).some(ty => ty.includes(t)))) return false;
   if (filter.nameAny && !filter.nameAny.some(n => c.nameKo.includes(n))) return false;
+  if (filter.exactAny && !filter.exactAny.includes(c.nameKo)) return false;
   if (filter.keywordText && !`${c.effectKo || ''}
 ${c.inheritedKo || ''}`.includes(`《${filter.keywordText}`)) return false;
   if (filter.category && c.category !== filter.category) return false;
@@ -372,6 +373,40 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'evolveEffect': {
+      if (!ctx.E || !ctx.E.canEvolveAny) break;
+      const pl = state.players[who];
+      const evoOk = (stack, id) => instr.ignoreCond || ctx.E.canEvolveAny(stack.cardId, id, stack.extraColors || [], S.evolveTargetRestriction(state, who, stack)).ok;
+      const cardsFor = (stack) => (instr.zone === 'trash' ? pl.trash : pl.hand).map((id, i) => i).filter(i => {
+        const id = (instr.zone === 'trash' ? pl.trash : pl.hand)[i];
+        return matchesFilter(S, id, instr.cardFilter) && evoOk(stack, id);
+      });
+      // candidate source stacks
+      let stacks;
+      if (instr.subject.thisStack) stacks = pl.battle.filter(x => x.uid === ctx.sourceStackUid);
+      else {
+        const pr = instr.subject.desc ? S.cardDescPredicate(instr.subject.desc + ' 가진') : null;
+        stacks = pl.battle.filter(x => S.card(x.cardId).category === 'digimon'
+          && !(instr.subject.other && x.uid === ctx.sourceStackUid)
+          && (!instr.subject.name || S.card(x.cardId).nameKo === instr.subject.name)
+          && (!instr.subject.desc || (pr && pr(S.card(x.cardId)))));
+      }
+      stacks = stacks.filter(x => cardsFor(x).length);
+      if (!stacks.length) { S.log(state, `${who} 진화시킬 수 있는 조합이 없음`); break; }
+      const uid = stacks.length === 1 && instr.subject.thisStack ? stacks[0].uid : await ctx.choose('pickStack', { player: who, uids: stacks.map(x => x.uid), prompt: '진화시킬 디지몬 선택' });
+      const src = stacks.find(x => x.uid === uid);
+      if (!src) break;
+      const zoneArr = instr.zone === 'trash' ? pl.trash : pl.hand;
+      const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone: instr.zone, eligibleIdxs: cardsFor(src), prompt: `${instr.zone === 'trash' ? '트래시' : '패'}에서 진화할 카드 선택` });
+      if (idx == null) break;
+      const cardId = zoneArr[idx];
+      const chk = ctx.E.canEvolveAny(src.cardId, cardId, src.extraColors || [], null);
+      const printed = chk.ok ? chk.cost : (S.card(cardId).evoNormal?.cost ?? 0);
+      const cost = instr.cost.mode === 'free' ? 0 : instr.cost.mode === 'fixed' ? instr.cost.n : instr.cost.mode === 'discount' ? Math.max(0, printed - instr.cost.n) : printed;
+      if (instr.zone === 'trash') zoneArr.splice(idx, 1);
+      S.digivolve(state, who, src.uid, cardId, cost, instr.zone === 'trash' ? 'trash' : 'hand');
+      break;
+    }
     case 'destroySum': {
       // Pick opponent Digimon one at a time while the running DP/cost total stays within the limit.
       let left = instr.limit; const chosen = [];
@@ -644,6 +679,42 @@ async function runOne(instr, ctx) {
 // simply left out of the script (the caller falls back to manual tools for
 // whatever isn't covered), so a partially-understood sentence never causes
 // an instruction to run with wrong/guessed parameters.
+// ---- effect-driven evolution ("…로 (조건 무시/코스트 없이/코스트 -N) 진화시킬 수 있다") ----
+// 154 printed effects. Parsed field by field; anything unrecognised (materials placed under a
+// Tamer, "원하는 순서대로", 겹쳐진 카드 costs, "…있을 때," gates, exclusions) → null → manual.
+function parseEvolveEffect(text) {
+  let b = text.replace(/\([^()]*\)/g, '').replace(/〈룰〉.*$/s, '').trim();
+  b = b.replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
+  const sm = b.replace(/Lv\./g, 'Lv').match(/^([^.。]*?(?:진화시킬\s*수\s*있다|진화시킨다|진화할\s*수\s*있다))/);
+  if (!sm) return null;
+  const sent = sm[1].replace(//g, '.');
+  if (/조그레스|디지크로스|원하는\s*순서|겹쳐|것으로|(?:있을|없을|한)\s*때|이외의|이외|서로\s*다른|선택한|그랬다면/.test(sent)) return null;
+  let cost = { mode: 'normal' }, m;
+  if (/코스트를\s*지불하지\s*않고/.test(sent)) cost = { mode: 'free' };
+  else if ((m = sent.match(/지불하는\s*진화\s*코스트\s*-(\d+)/))) cost = { mode: 'discount', n: Number(m[1]) };
+  else if ((m = sent.match(/(?:진화\s*)?코스트\s*(\d+)\s*(?:을\s*지불하여|으로|를\s*지불하여)|(\d+)\s*코스트\s*지불하여/))) cost = { mode: 'fixed', n: Number(m[1] ?? m[2]) };
+  const ignoreCond = /진화\s*조건을\s*무시/.test(sent), ignoreLevel = /Lv\.을\s*무시/.test(sent);
+  // zone + card descriptor: "<zone>의 <desc>(으)로"
+  const zm = sent.match(/(패|트래시)의\s*(.+?)\s*(?:으로|로)\s*(?:(?:진화\s*조건을\s*무시하고|Lv\.을\s*무시하고|코스트를\s*지불하지\s*않고|지불하는\s*진화\s*코스트\s*-\d+\s*하여|진화\s*코스트\s*\d+\s*(?:을\s*지불하여|으로)|\d+\s*코스트\s*지불하여|코스트를\s*지불하여|진화\s*코스트를\s*지불하여)\s*)*(?:진화시킬|진화할|진화시킨다)/);
+  if (!zm) return null;
+  const zone = zm[1] === '패' ? 'hand' : 'trash';
+  const subjText = sent.slice(0, zm.index).replace(/[,\s]+$/, '').replace(/(?:을|를|은|는)$/, '').replace(/\s*자신의$/, '').replace(/(?:을|를|은|는)$/, '').trim();
+  let cardFilter;
+  const desc = zm[2].trim().replace(/\s*\d+\s*장$/, '');
+  const qn = desc.match(/^((?:「[^」]+」\/?)+)$/);
+  if (qn) cardFilter = { exactAny: [...qn[1].matchAll(/「([^」]+)」/g)].map(x => x[1]), category: 'digimon' };
+  else { cardFilter = parseCardFilter(desc); if (!cardFilter) return null; cardFilter = { ...cardFilter, category: 'digimon' }; }
+  // subject
+  let subject;
+  if (/^이\s*디지몬/.test(subjText) && !/자신/.test(subjText)) subject = { thisStack: true };
+  else {
+    const sm2 = subjText.match(/^(다른\s*)?(.*?)\s*자신(?:의)?\s*(?:(디지몬)|「([^」]+)」)\s*(?:\d+\s*마리)?$/);
+    if (!sm2) return null;
+    subject = { thisStack: false, other: !!sm2[1], desc: sm2[2].trim() || null, name: sm2[4] || null };
+  }
+  return { subject, zone, cardFilter, cost, ignoreCond, ignoreLevel };
+}
+
 function compileInner(text) {
   const script = [];
   const t = text;
@@ -657,6 +728,11 @@ function compileInner(text) {
   // (state.js's parseDelayEffect) — this segment contributes NOTHING to
   // the normal trigger/use pipeline.
   if (/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(t.trim())) return script;
+
+  {
+    const ev = parseEvolveEffect(t);
+    if (ev) script.push({ op: 'evolveEffect', who: 'self', ...ev });
+  }
 
   // 《디지버스트 N》(이 디지몬의 진화원을 N장 골라 파기하는 것으로 이하의 효과를 발휘한다) ·<효과>
   {
