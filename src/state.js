@@ -705,8 +705,7 @@ export function addToSecurity(state, p, cardId, position = 'top') {
 export function trashTopSecurityByEffect(state, p) {
   const pl = state.players[p];
   const id = pl.security.shift();
-  if (id) log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`);
-  pl.trash.push(id);
+  if (id) { log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`); pl.trash.push(id); }
   return id;
 }
 
