@@ -440,6 +440,7 @@ async function runOne(instr, ctx) {
         if (c.op === 'removeSecurity') return state.players[c.who === 'opponent' ? ctx.opp : ctx.self].security.length >= 1;
         if (c.op === 'restStack') return !!st && !st.suspended;
         if (c.op === 'destroy') return !!st;
+        if (c.op === 'trashEvoSources' && c.thisStack) return !!st && st.sources.length >= c.count;
         return true;
       });
       if (!canPay) { S.log(state, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); break; }
@@ -584,6 +585,16 @@ async function runOne(instr, ctx) {
       break;
     case 'trashEvoSources': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      if (instr.thisStack) {
+        const own = state.players[targetPlayer];
+        const st = own.battle.find(x => x.uid === ctx.sourceStackUid) || (own.raising?.uid === ctx.sourceStackUid ? own.raising : null);
+        if (!st) break;
+        const n = Math.min(instr.count, st.sources.length);
+        const idxs = instr.digiburst ? S.digiburstPickSources(st, n) : null;
+        const removed = S.trashEvoSources(state, targetPlayer, st.uid, n, 'bottom', idxs);
+        if (instr.digiburst) for (const id of removed) S.queueDigiburstTrashed(state, targetPlayer, id, st.uid);
+        break;
+      }
       if (instr.all) {
         for (const st of [...state.players[targetPlayer].battle]) S.trashEvoSources(state, targetPlayer, st.uid, instr.count ?? 'all', instr.from);
         break;
@@ -646,6 +657,16 @@ function compileInner(text) {
   // (state.js's parseDelayEffect) — this segment contributes NOTHING to
   // the normal trigger/use pipeline.
   if (/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(t.trim())) return script;
+
+  // 《디지버스트 N》(이 디지몬의 진화원을 N장 골라 파기하는 것으로 이하의 효과를 발휘한다) ·<효과>
+  {
+    const db = t.trim().match(/^[≪《]\s*디지버스트\s*(\d+)\s*[≫》]\s*(?:\([^()]*\))?\s*\n?\s*·?\s*(.+)$/s);
+    if (db) {
+      const bullet = compileToScript(db[2].trim());
+      if (!bullet.length) return script;
+      return [{ op: 'costGroup', cost: [{ op: 'trashEvoSources', target: 'self', thisStack: true, count: Number(db[1]), digiburst: true }], then: bullet }];
+    }
+  }
 
   // Simple unconditional actions (also handled as instant auto-apply in
   // state.js for whole-segment matches, but included here too so they still
@@ -946,7 +967,7 @@ function compileInner(text) {
   // "이 카드를 패에 추가한다." — a card revealed via security check (or an
   // Option card, after resolving) returns to hand instead of trashing.
   // Second most common 시큐리티 pattern (53 of 178).
-  if (/이\s*카드를\s*패에\s*추가한다/.test(t)) {
+  if (/이\s*카드를\s*패(?:에\s*추가|로\s*되돌린)한다|이\s*카드를\s*패로\s*되돌린다/.test(t)) {
     script.push({ op: 'addSelfToHand' });
   }
 

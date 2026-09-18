@@ -519,7 +519,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음',
     onClick: (e) => { e.stopPropagation(); S.useTraining(state, p, stack.uid); render(); },
   }, '🏋트레이닝') : null;
-  const extraBtns = [delayBtn, trainBtn].filter(Boolean);
+  // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
+  const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
+  const mainBtns = mainAbilities.length ? h('div', { className: 'main-btns' }, mainAbilities.map((ab, i) => h('button', {
+    className: 'delay-btn main-btn',
+    title: `【메인】 ${ab.text.replace(/\n/g, ' ')}`,
+    onClick: (e) => {
+      e.stopPropagation();
+      state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
+      render();
+    },
+  }, mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인'))) : null;
+  const extraBtns = [delayBtn, trainBtn, mainBtns].filter(Boolean);
 
   const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
   if (!linkSlots.length) return extraBtns.length ? h('div', { className: 'stack-wrap' }, [chip, ...extraBtns]) : chip;

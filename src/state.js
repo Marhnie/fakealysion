@@ -561,6 +561,28 @@ export function useTraining(state, p, uid) {
   return true;
 }
 
+// Activated 【메인】 abilities printed on Digimon/Tamer cards (161 segments; only Option cards'
+// 【메인】 was ever reachable from the UI). Lists what this stack can activate right now, with
+// [턴 N회] caps and "[육성]/[배틀]" zone markers respected; the UI button just queues the
+// segment as a normal pending effect (costs, confirms, and limits then run as usual).
+export function activatableMainAbilities(state, p, stack, zoneKind) {
+  if (p !== state.activePlayer || state.phase !== 'main') return [];
+  if (!['digimon', 'tamer'].includes(card(stack.cardId).category)) return [];
+  const out = [];
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    for (const seg of parseEffectSegments(text).segments) {
+      if (!seg.tags.includes('메인') || seg.tags.length !== 1 || isDelaySegment(seg.body)) continue;
+      if (seg.zoneMarker && !((seg.zoneMarker.includes('육성') && zoneKind === 'raising') || (seg.zoneMarker.includes('배틀') && zoneKind === 'battle'))) continue;
+      const lm = seg.body.trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
+      if (lm && turnUsesRemaining(stack, onceLimitKey(id, seg.tags), Number(lm[1])) <= 0) continue;
+      out.push({ cardId: id, tags: seg.tags, text: seg.body.trim() });
+    }
+  }
+  return out;
+}
+
 // ≪연계≫: "이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는
 // 것으로, 이 어택 동안 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고,
 // 《S 어택 +1》을 얻는다." — optional, so the UI offers it per attack.
@@ -1643,13 +1665,35 @@ export function consumeEvoCostMod(state, p, targetCardId) {
   return 0;
 }
 
-export function trashEvoSources(state, p, uid, count, from = 'bottom') {
+// 《디지버스트》: after the sources are paid, each trashed card's own "이 디지몬이 발휘한
+// 《디지버스트》로 이 카드가 파기되었을 때, <효과>" (BT4-008 etc.) queues its effect.
+export function queueDigiburstTrashed(state, p, cardId, stackUid) {
+  const c = card(cardId);
+  for (const f of ['inheritedKo', 'effectKo']) {
+    if (!c[f]) continue;
+    for (const seg of parseEffectSegments(c[f]).segments) {
+      const m = seg.body.trim().match(/^이\s*디지몬이\s*발휘한\s*《디지버스트》로\s*이\s*카드가\s*파기되었을\s*때,?\s*(.+)$/s);
+      if (m) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: m[1].trim(), resolved: false });
+    }
+  }
+}
+
+// Which sources a 《디지버스트》 should trash: those carrying a digiburst-trashed payoff first, then oldest.
+export function digiburstPickSources(stack, n) {
+  const has = (id) => /발휘한\s*《디지버스트》로\s*이\s*카드가\s*파기되었을\s*때/.test(`${card(id).inheritedKo || ''}${card(id).effectKo || ''}`);
+  const order = stack.sources.map((id, i) => ({ id, i, pri: has(id) ? 0 : 1 })).sort((a, b) => a.pri - b.pri || a.i - b.i).slice(0, n);
+  return order.map(x => x.i);
+}
+
+export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx = null) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return [];
   const n = count === 'all' ? stack.sources.length : Math.min(count, stack.sources.length);
   // sources[] is oldest-first: "from the bottom" = earliest pushed, "from the top" = latest.
-  const removed = from === 'top' ? stack.sources.splice(stack.sources.length - n, n) : stack.sources.splice(0, n);
+  let removed;
+  if (pickIdx) { removed = []; for (const i of [...pickIdx].sort((a, b) => b - a)) removed.unshift(...stack.sources.splice(i, 1)); }
+  else removed = from === 'top' ? stack.sources.splice(stack.sources.length - n, n) : stack.sources.splice(0, n);
   pl.trash.push(...removed);
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
   for (const id of removed) applyOverflowIfAny(state, p, id);

@@ -279,3 +279,7 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 .pile-chip.clickable:hover { border-color: var(--holo-accent); }
 
 .step-info { border-left: 3px solid var(--holo-accent); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+.main-btns { position:absolute; top:-8px; left:50%; transform:translateX(-50%); display:flex; gap:3px; z-index:2; }
+.main-btn { position: static !important; transform:none !important; border-color: var(--holo-accent); background: rgba(6,20,30,0.92); color:#bfe6ff; }
+.main-btn:hover { background: var(--holo-accent); color:#001018; }
