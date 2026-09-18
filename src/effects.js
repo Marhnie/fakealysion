@@ -1082,6 +1082,15 @@ function compileInner(text) {
     for (let i = 0; i < Number(m[4]); i++) script.push({ op: 'returnFromTrash', who: 'self', filter });
   }
 
+  // Any other descriptor ("「X」/「Y」", "특징 「X」를 가진 Lv.N의 디지몬 카드", "명칭에 「X」를 포함하는 옵션 카드").
+  if (!script.some(o => o.op === 'returnFromTrash') && (m = t.match(/자신(?:의)?\s*트래시에서,?\s*(.*?)\s*(\d+)\s*장(?:까지)?(?:을|를)?\s*패(?:로|에)\s*되돌(?:린다|릴\s*수\s*있다)/s)) && !/이외|서로\s*다른|마다/.test(m[1])) {
+    const qn = m[1].trim().match(/^((?:「[^」]+」\s*(?:과|와|\/)?\s*)+)$/);
+    let filter = null;
+    if (qn) filter = { exactAny: [...qn[1].matchAll(/「([^」]+)」/g)].map(x => x[1]) };
+    else { const desc = m[1].trim().replace(/사용\s*코스트[^,]*?(?:의|인)\s*/, ''); filter = parseCardFilter(desc.replace(/Lv\.(\d+)의\s/, 'Lv.$1 ')); }
+    if (filter) for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'returnFromTrash', who: 'self', filter });
+  }
+
   // Set a Digimon's base DP to an absolute value (distinct from a +/- delta).
   if ((m = t.match(/상대(?:의)?\s*디지몬\s*1\s*마리(?:의)?\s*원래\s*DP를\s*(\d+)(?:으로|로)\s*변경/))) {
     script.push({ op: 'setDP', target: 'opponent', value: Number(m[1]), duration: dpDuration });
