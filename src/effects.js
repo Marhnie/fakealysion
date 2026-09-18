@@ -608,6 +608,10 @@ export function compileToScript(text) {
     script.push({ op: 'trashEvoSources', target: 'opponent', count: Number(m[1]) });
   } else if (/상대(?:의)?\s*디지몬\s*1\s*마리(?:의)?\s*진화원을?\s*전부\s*파기/.test(t)) {
     script.push({ op: 'trashEvoSources', target: 'opponent', count: 'all' });
+  } else if ((m = t.match(/상대(?:의)?\s*디지몬의?\s*진화원을?\s*선택하여\s*(\d+)\s*장\s*파기한다/))) {
+    // "1마리" isn't even stated here — the player picks WHICH opponent
+    // Digimon (via trashEvoSources' own pickStack choose) implicitly.
+    script.push({ op: 'trashEvoSources', target: 'opponent', count: Number(m[1]) });
   }
 
   // Direct (non-check) security trash — removeSecurity was a defined op with
