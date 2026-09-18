@@ -871,11 +871,28 @@ let pendingRunner = null; // uid of the effect currently resolving — effects r
 let runningPendingUid = null;
 function autoRunMandatoryPending() {
   if (pendingRunner) return;
-  const next = state.pending.find(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
-  if (!next) return;
-  autoRunAttempted.add(next.uid);
-  runningPendingUid = next.uid;
-  pendingRunner = runPendingScript(next, { delay: true }).catch(() => {}).finally(() => {
+  // 4-3-2 simultaneous triggers: the TURN player resolves their waiting effects first (choosing the
+  // order when there are several); only when none are left does the non-turn player's queue start.
+  const waiting = state.pending.filter(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
+  if (!waiting.length) return;
+  const mine = waiting.filter(t => t.player === state.activePlayer);
+  const pool = mine.length ? mine : waiting;
+  pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
+  pendingRunner = (async () => {
+    let next = pool[0];
+    if (pool.length > 1) {
+      const uid = await ctxChoose('pickPendingOrder', {
+        player: pool[0].player,
+        items: pool.map(t => ({ uid: t.uid, label: `${S.card(t.cardId).nameKo} 【${t.tags.join('】【')}】 ${t.text.replace(/\([^()]*\)/g, '').slice(0, 60)}` })),
+        prompt: `${pool[0].player}: 동시에 발동 대기 중인 효과 ${pool.length}개 — 먼저 처리할 효과를 선택하세요 (룰 4-3-2${mine.length ? ', 턴 플레이어 우선' : ''})`,
+      });
+      next = pool.find(t => t.uid === uid) || pool[0];
+    }
+    if (next.resolved) return;
+    autoRunAttempted.add(next.uid);
+    runningPendingUid = next.uid;
+    await runPendingScript(next, { delay: true });
+  })().catch(() => {}).finally(() => {
     pendingRunner = null; runningPendingUid = null;
     render(); // chains into the next queued effect
   });
@@ -908,7 +925,12 @@ function renderUiChoice() {
   const { kind, payload, resolve } = uc;
   const rows = [h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')];
 
-  if (kind === 'confirmEffect') {
+  if (kind === 'pickPendingOrder') {
+    payload.items.forEach((it, i) => rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `${i + 1}. ${it.label}`),
+      h('button', { className: 'primary', onClick: () => resolve(it.uid) }, '먼저 처리'),
+    ])));
+  } else if (kind === 'confirmEffect') {
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', { className: 'primary', onClick: () => resolve(true) }, '발동한다'),
       h('button', { onClick: () => resolve(false) }, '발동하지 않는다'),
