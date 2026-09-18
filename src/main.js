@@ -1069,7 +1069,7 @@ function runSecurityCheck(pa) {
   if (!res.gameOver) {
     const last = res.checks[res.checks.length - 1];
     if (last.result === 'defenderWins' || last.result === 'tie') {
-      S.deleteStack(state, pa.attacker, pa.uid);
+      S.deleteStack(state, pa.attacker, pa.uid, 'trash', 'battle');
     }
   }
 }

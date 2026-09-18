@@ -180,13 +180,26 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
     if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
-    const applied = tryAutoApplySegment(state, p, seg.body, cardId);
+    const body = resolveBattleCondition(state, seg.body);
+    if (body == null) continue;
+    const applied = tryAutoApplySegment(state, p, body, cardId);
     if (applied) {
-      log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${seg.body}`);
+      log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: seg.body, resolved: false });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false });
     }
   }
+}
+
+
+// "(이 디지몬이) 배틀 이외로 소멸하고 있었다면, ..." — only fires when the
+// deletion wasn't a battle loss; resolved at queue time from the cause
+// deleteStack recorded, since the pending item runs later without it.
+// Returns the effect body to queue, or null to skip.
+function resolveBattleCondition(state, body) {
+  const m = body.trim().match(/^(?:이\s*디지몬이\s*)?배틀\s*이외로\s*소멸하고\s*있었다면,?\s*(.+)$/s);
+  if (!m) return body;
+  return state._deleteCause === 'battle' ? null : m[1];
 }
 
 function isDelaySegment(body) {
@@ -206,11 +219,13 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
     if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
-    const applied = tryAutoApplySegment(state, p, seg.body, sourceCardId);
+    const body = resolveBattleCondition(state, seg.body);
+    if (body == null) continue;
+    const applied = tryAutoApplySegment(state, p, body, sourceCardId);
     if (applied) {
-      log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
+      log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: seg.body, resolved: false, inherited: true });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true });
     }
   }
 }
@@ -1608,7 +1623,7 @@ function trySurviveBySacrifice(state, p, stack) {
   return false;
 }
 
-export function deleteStack(state, p, uid, toZone = 'trash') {
+export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   const pl = state.players[p];
   const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (peek && trySurviveBySacrifice(state, p, peek)) return null;
@@ -1628,7 +1643,8 @@ export function deleteStack(state, p, uid, toZone = 'trash') {
   // stacked underneath a card — Link Cards are neither (4-9-1/4-9-4), so
   // they're excluded here even though they're trashed alongside the stack.
   for (const id of [...stack.sources, stack.cardId]) applyOverflowIfAny(state, p, id);
-  queueTriggersForStack(state, p, stack, 'delete');
+  state._deleteCause = cause;
+  try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; }
   return all;
 }
 
@@ -1807,11 +1823,11 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   if (result === 'attackerWins') runBattleWinTriggers(state, attackerP, aStack);
   if (result === 'defenderWins' || result === 'tie') {
     if (hasBattleImmunity(state, aStack)) log(state, `${attackerP} ${card(aStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
-    else deleteStack(state, attackerP, attackerUid);
+    else deleteStack(state, attackerP, attackerUid, 'trash', 'battle');
   }
   if (result === 'attackerWins' || result === 'tie') {
     if (hasBattleImmunity(state, dStack)) log(state, `${defenderP} ${card(dStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
-    else deleteStack(state, defenderP, defenderUid);
+    else deleteStack(state, defenderP, defenderUid, 'trash', 'battle');
   }
   const piercing = hasKeyword(aStack, '관통');
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };

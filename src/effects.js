@@ -544,6 +544,12 @@ export function compileToScript(text) {
     for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'unsuspend', target: m[1] === '상대' ? 'opponent' : 'self' });
   }
 
+  // "상대는 스스로의/본인의 패를 N장 파기한다." — the opponent discards
+  // (and chooses) from their own hand.
+  if ((m = t.match(/상대는\s*(?:스스로의|본인의)\s*패(?:를)?\s*(\d+)\s*장(?:을)?\s*파기한다/))) {
+    script.push({ op: 'trashHand', who: 'opponent', n: Number(m[1]) });
+  }
+
   // Rest ("레스트시킨다"). "(다음\s*)?상대(?:의)?\s*액티브\s*페이즈에서는[,]?\s*
   // 그\s*디지몬은\s*액티브가\s*되지\s*않는다" tacked on afterward is extremely
   // common (confirmed a dozen+ cards via the audit, e.g. BT7-053/BT10-056/
