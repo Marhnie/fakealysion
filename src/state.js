@@ -1304,6 +1304,34 @@ export function placeThisInBattle(state, p, cardId) {
   return stack;
 }
 
+// "이 카드를 시큐리티 아래에 앞면으로 놓는다." — an Option card overriding its
+// normal post-use trash destination to instead sit at the bottom of its own
+// security stack (EX8-068/069/071, BT21-095, ST21-15, EX9-072, BT22-100,
+// BT24-090). Face-up vs face-down isn't modeled — this engine has no
+// information-hiding between players, so it's plain equivalent to a normal
+// bottom-of-security placement.
+export function placeThisAtSecurityBottom(state, p, cardId) {
+  const pl = state.players[p];
+  const idx = pl.trash.lastIndexOf(cardId);
+  if (idx !== -1) pl.trash.splice(idx, 1);
+  pl.security.push(cardId);
+  log(state, `${p} ${card(cardId).nameKo}을(를) 시큐리티 맨 밑에 놓음`);
+}
+
+// "자신의 시큐리티를 아래에서부터 N장 패에 추가한다." — moves cards off the
+// BOTTOM of the caller's own security into their hand (distinct from
+// trashTopSecurityByEffect/trashBottomSecurityByEffect, which trash rather
+// than add to hand). Stops early if security runs out.
+export function securityBottomToHand(state, p, n) {
+  const pl = state.players[p];
+  for (let i = 0; i < n; i++) {
+    const id = pl.security.pop();
+    if (!id) break;
+    pl.hand.push(id);
+    log(state, `${p} 시큐리티 맨 밑 카드를 패에 추가: ${card(id).nameKo}`);
+  }
+}
+
 // 16-17: ≪딜레이≫ — "while this card sits in the battle area, you may
 // discard it to activate the effect(s) listed below it (bullet lines
 // starting with '·')"; not usable the turn it was placed. Printed as its

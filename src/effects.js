@@ -392,6 +392,12 @@ async function runOne(instr, ctx) {
     case 'addSelfToHand':
       S.addSelfToHand(state, ctx.self, ctx.sourceCardId);
       break;
+    case 'placeThisAtSecurityBottom':
+      S.placeThisAtSecurityBottom(state, ctx.self, ctx.sourceCardId);
+      break;
+    case 'securityBottomToHand':
+      S.securityBottomToHand(state, ctx.self, instr.n);
+      break;
     case 'noop':
       S.log(state, `(확인) ${instr.note}`);
       break;
@@ -694,6 +700,17 @@ export function compileToScript(text) {
   // Second most common 시큐리티 pattern (53 of 178).
   if (/이\s*카드를\s*패에\s*추가한다/.test(t)) {
     script.push({ op: 'addSelfToHand' });
+  }
+
+  // "자신의 시큐리티를 아래에서부터 N장 패에 추가한다. 그 후, 이 카드를
+  // 시큐리티 아래에 앞면으로 놓는다." — MUST push in this order: taking the
+  // bottom card(s) to hand has to happen before this card relocates itself
+  // to the bottom, or it would immediately pop itself back off.
+  if ((m = t.match(/자신(?:의)?\s*시큐리티를?\s*아래에서부터\s*(\d+)\s*장(?:을)?\s*패에\s*추가/))) {
+    script.push({ op: 'securityBottomToHand', n: Number(m[1]) });
+  }
+  if (/이\s*카드를\s*시큐리티\s*아래에\s*앞면으로\s*놓는다/.test(t)) {
+    script.push({ op: 'placeThisAtSecurityBottom' });
   }
 
   // Return a named/trait-matching card from own trash to hand.
