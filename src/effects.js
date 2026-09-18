@@ -30,8 +30,11 @@ function matchesFilter(S, cardId, filter) {
   if (filter.levelMax != null && (c.level || 0) > filter.levelMax) return false;
   if (filter.levelMin != null && (c.level || 0) < filter.levelMin) return false;
   if (filter.colors && !(c.colors || []).some(col => filter.colors.includes(col))) return false;
-  if (filter.trait && !(c.traits || []).includes(filter.trait)) return false;
-  if (filter.traitAny && !filter.traitAny.some(t => (c.traits || []).includes(t))) return false;
+  // Cards store their 특징 in `types` (there is no `traits` field).
+  if (filter.trait && !(c.types || []).includes(filter.trait)) return false;
+  if (filter.traitAny && !filter.traitAny.some(t => (c.types || []).includes(t))) return false;
+  if (filter.traitIncludes && !filter.traitIncludes.some(t => (c.types || []).some(ty => ty.includes(t)))) return false;
+  if (filter.nameAny && !filter.nameAny.some(n => c.nameKo.includes(n))) return false;
   if (filter.category && c.category !== filter.category) return false;
   if (filter.dpMax != null && (c.dp || 0) > filter.dpMax) return false;
   if (filter.dpMin != null && (c.dp || 0) < filter.dpMin) return false;
@@ -41,6 +44,36 @@ function matchesFilter(S, cardId, filter) {
   if (filter.name && c.nameKo !== filter.name) return false;
   if (filter.nameIncludes && !c.nameKo.includes(filter.nameIncludes)) return false;
   return true;
+}
+
+
+const FILTER_COLOR = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+
+// Parses a card-noun phrase like "특징으로 「X」를 가진 퍼플인 Lv.4 이하의 디지몬
+// 카드" into a matchesFilter filter. Returns null when the phrase contains an
+// OR-combination it can't faithfully express (better to over-allow like before
+// than to silently forbid legal picks).
+function parseCardFilter(phrase) {
+  if (!phrase) return null;
+  const flat = phrase.replace(/「[^」]*」/g, '「」').replace(/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:\/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트))*(?:인|의)/g, 'C');
+  if (/또는|거나/.test(flat) || /(?<!」)\/|\/(?!「)/.test(flat)) return null;
+  const f = {};
+  let m;
+  if (/테이머\s*카드/.test(phrase)) f.category = 'tamer';
+  else if (/옵션\s*카드/.test(phrase)) f.category = 'option';
+  else if (/디지몬/.test(phrase)) f.category = 'digimon';
+  if ((m = phrase.match(/특징(?:으로|에|은)?\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*(가진|가지|갖는|포함하는)/))) {
+    const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    if (m[2] === '포함하는') f.traitIncludes = list; else f.traitAny = list;
+  }
+  if ((m = phrase.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) f.nameAny = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+  const rest = phrase.replace(/특징(?:으로|에|은)?\s*(?:「[^」]+」\/?)+/g, '').replace(/명칭에\s*(?:「[^」]+」\/?)+/g, '');
+  if ((m = rest.match(/((?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:\/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트))*)(?:인|의)/))) f.colors = m[1].split('/').map(x => FILTER_COLOR[x]);
+  if ((m = rest.match(/Lv\.(\d+)\s*이하/))) f.levelMax = Number(m[1]);
+  else if ((m = rest.match(/Lv\.(\d+)\s*이상/))) f.levelMin = Number(m[1]);
+  else if ((m = rest.match(/Lv\.(\d+)/))) f.level = Number(m[1]);
+  if ((m = rest.match(/(?:등장\s*)?코스트\s*(\d+)\s*이하/))) f.costMax = Number(m[1]);
+  return Object.keys(f).length ? f : null;
 }
 
 export async function runScript(script, ctx) {
@@ -141,15 +174,13 @@ async function runOne(instr, ctx) {
       break;
     }
     case 'playFree': {
-      const zone = instr.zone === 'trash' ? 'trash' : 'hand';
       const pl = state.players[who];
-      const eligibleIdxs = pl[zone].map((id, i) => i).filter(i => matchesFilter(S, pl[zone][i], instr.filter));
+      const okIdx = (z) => pl[z].map((id, i) => i).filter(i => matchesFilter(S, pl[z][i], instr.filter) && S.card(pl[z][i]).category !== 'option');
+      const zone = instr.zone === 'trash' ? 'trash' : instr.zone === 'any' ? (okIdx('hand').length ? 'hand' : 'trash') : 'hand';
+      const eligibleIdxs = okIdx(zone);
       const chosenIdx = await ctx.choose('pickFromZoneIndex', { player: who, zone, eligibleIdxs, prompt: instr.prompt || `${zone === 'trash' ? '트래시' : '핸드'}에서 무료로 등장시킬 카드 선택` });
       if (chosenIdx == null) break;
-      const [cardId] = pl[zone].splice(chosenIdx, 1);
-      const stack = { uid: 'u' + Math.random().toString(36).slice(2), cardId, sources: [], suspended: false, playedTurn: state.turnNumber };
-      pl.battle.push(stack);
-      S.log(state, `${who} ${S.card(cardId).nameKo} 코스트 없이 등장 (효과)`);
+      S.playFreeFromZone(state, who, zone, chosenIdx, { rested: !!instr.rested });
       break;
     }
     case 'unsuspend': {
@@ -559,8 +590,9 @@ export function compileToScript(text) {
 
   // Play a card without paying cost, from hand or trash.
   if (/코스트를?\s*(?:지불하지\s*않고|支払わ)|코스트\s*없이/.test(t) && /등장/.test(t)) {
-    const zone = /트래시/.test(t) ? 'trash' : 'hand';
-    script.push({ op: 'playFree', who: 'self', zone });
+    const zone = /트래시/.test(t) ? (/패/.test(t) ? 'any' : 'trash') : 'hand';
+    const pm = t.match(/(?:패|트래시)(?:\s*(?:또는|\/)\s*(?:패|트래시))?에서,?\s*(.*?)\s*(?:\d+\s*장)[을를]?\s*(?:색\s*조건을\s*무시하고\s*)?(?:레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고/s);
+    script.push({ op: 'playFree', who: 'self', zone, filter: pm ? parseCardFilter(pm[1]) : null, rested: /레스트\s*상태로/.test(t) });
   }
 
   // Unsuspend ("액티브로 한다"). "이 디지몬" = the source card itself (no

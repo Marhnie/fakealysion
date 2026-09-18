@@ -1498,6 +1498,23 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   return stack;
 }
 
+// Effect-driven "등장시킨다" (free play from hand/trash): must go through
+// makeStack like every other stack — the old inline literal in effects.js
+// lacked tempDP/keywords/extraColors (crashing later grants), never applied the
+// card's own static keywords, and never queued its 【등장 시】 effects.
+export function playFreeFromZone(state, p, zone, index, opts = {}) {
+  const pl = state.players[p];
+  const [id] = pl[zone].splice(index, 1);
+  if (!id) return null;
+  const stack = makeStack(id, state.turnNumber);
+  if (opts.rested) stack.suspended = true;
+  recomputeStackGrants(stack);
+  pl.battle.push(stack);
+  log(state, `${p} ${card(id).nameKo} 코스트 없이 등장 (효과)`);
+  queueTriggersForStack(state, p, stack, 'play');
+  return stack;
+}
+
 // Using an Option card (9-1) is a distinct action from playing/evolving a
 // Digimon. Per 9-1-4/9-1-5, while its first 【메인】 effect is resolving the
 // card belongs to no zone; if it still belongs to no zone once that effect
