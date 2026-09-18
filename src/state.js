@@ -15,6 +15,14 @@ export async function loadData() {
   ]);
   CARDS = await cardsRes.json();
   DECKS = await decksRes.json();
+  // Upstream data error: a few cards list their OWN level as the required source level
+  // (ST1-10 페닉스몬 "Lv.6" → nothing could ever evolve into it). A normal evolution source
+  // is exactly one level below, so repair those entries.
+  for (const c of Object.values(CARDS)) {
+    if (c.category === 'digimon' && c.evoNormal && typeof c.evoNormal.level === 'number' && c.level > 3 && c.evoNormal.level >= c.level) {
+      c.evoNormal = { ...c.evoNormal, level: c.level - 1, conditionText: `Lv.${c.level - 1}` };
+    }
+  }
 }
 
 export function card(id) {
