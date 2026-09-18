@@ -478,14 +478,21 @@ export function compileToScript(text) {
     script.push({ op: 'blastEvolve' });
   }
 
-  // 《시큐리티 어택 ±N》 keyword grant — positive is usually self; negative is
-  // usually a debuff placed on an opponent's Digimon.
-  if ((m = t.match(/[≪《]\s*시큐리티\s*어택\s*([+-]\d+)\s*[≫》]/))) {
+  // 《시큐리티 어택 ±N》/《S 어택 ±N》 keyword grant — positive is usually self;
+  // negative is usually a debuff placed on an opponent's Digimon. "디지몬
+  // N마리에게" without a restated "상대(의)" also means the opponent's side
+  // here — confirmed against real cards (EX6-023/EX6-024) that print the
+  // identical 손오공몬/사고몬 ability both ways, the fuller print restating
+  // "상대의 디지몬" and the terser one dropping it (the duration clause
+  // "상대의 턴 종료까지" already consumed the one "상대" in the sentence).
+  if ((m = t.match(/[≪《]\s*(?:시큐리티\s*어택|S\s*어택)\s*([+-]\d+)\s*[≫》]/))) {
     const value = Number(m[1]);
-    const target = value < 0 && /상대(?:의)?\s*디지몬\s*1\s*마리에게?\s*[≪《]/.test(t) ? 'opponent' : 'self';
+    const target = value < 0 && /디지몬\s*\d+\s*마리에게/.test(t) ? 'opponent' : 'self';
     const thisStack = target === 'self' && /이\s*디지몬은/.test(t) && !/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
-    const duration = /다음\s*상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : (/자신의\s*턴\s*(?:동안|중)/.test(t) || !/이\s*턴\s*동안/.test(t) ? 'permanent' : 'turn');
-    script.push({ op: 'grantKeyword', target, thisStack, keyword: '시큐리티어택', value, duration });
+    const duration = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : (/자신의\s*턴\s*(?:동안|중)/.test(t) || !/이\s*턴\s*동안/.test(t) ? 'permanent' : 'turn');
+    const countM = t.match(/디지몬\s*(\d+)\s*마리에게/);
+    const count = thisStack ? 1 : (countM ? Number(countM[1]) : 1);
+    for (let i = 0; i < count; i++) script.push({ op: 'grantKeyword', target, thisStack, keyword: '시큐리티어택', value, duration });
   }
 
   // 《리커버리 +1《덱》》.
