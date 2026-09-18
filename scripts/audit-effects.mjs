@@ -71,6 +71,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via traitPlayCostDiscount, checked at fresh-play-cost time.
+    if (seg.tags.length === 1 && seg.tags[0] === '자신의 턴' && /^\[턴\s*\d+\s*회\]\s*특징\s*「[^」]+」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*지불하는\s*코스트\s*-\d+\s*할\s*수\s*있다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via parseDelayEffect/discardForDelay — a NEW interactive
     // "discard this placed card from the battle area to run its listed
     // effect" mechanic (16-17 ≪딜레이≫), routed through a dedicated UI

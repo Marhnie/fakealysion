@@ -1077,7 +1077,7 @@ function isEvoCostLocked(state, p) {
 // isEvoCostLocked's opponent-only form. Scans BOTH players' boards since
 // either side's copy of this ability locks everyone equally.
 function isPlayCostLocked(state) {
-  for (const owner of ['A', 'B']) {
+  for (const owner of ['p1', 'p2']) {
     const pl = state.players[owner];
     for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
       for (const { id, own } of stackContributors(stack)) {
@@ -1148,6 +1148,45 @@ export function tamerPlayCostDiscount(state, p, targetCardId) {
         if (!(tgt.types || []).some(t => t.includes(m[1]))) continue;
         restStack(state, p, stack.uid);
         log(state, `${p} ${card(stack.cardId).nameKo} 레스트 — ${tgt.nameKo} 등장 코스트 ${m[2]}`);
+        return Number(m[2]);
+      }
+    }
+  }
+  return 0;
+}
+
+// "[턴 N회] 특징 「X」를 가진 디지몬 카드가 등장할 때, 지불하는 코스트 -N
+// 할 수 있다." (BT22-079/080, BT23-073, all inheritedKo, printed with a
+// "[육성]" zone marker — only active while the source card is physically
+// sitting in the Breeding Area). Unlike tamerPlayCostDiscount, there's no
+// activation cost at all (no resting), just a once-per-turn cap tracked via
+// the same turnEffectUses mechanism the UI's parseOnceLimit uses elsewhere.
+// Trait matched EXACTLY (not .includes(), unlike the sibling functions
+// above) — "이터" is a substring of the unrelated real trait "리버레이터",
+// so a loose substring match here would misfire on it.
+export function traitPlayCostDiscount(state, p, targetCardId) {
+  if (isPlayCostLocked(state)) return 0;
+  const tgt = card(targetCardId);
+  const pl = state.players[p];
+  for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
+    const inRaising = stack === pl.raising;
+    for (const { id, own } of stackContributors(stack)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || seg.tags[0] !== '자신의 턴') continue;
+        if (state.activePlayer !== p) continue;
+        if (seg.zoneMarker === '육성' && !inRaising) continue;
+        const limitM = seg.body.trim().match(/^\[턴\s*(\d+)\s*회\]\s*(.+)$/s);
+        if (!limitM) continue;
+        const m = limitM[2].match(/^특징\s*「([^」]+)」\s*(?:을|를)?\s*가진\s*디지몬\s*카드가\s*등장할\s*때,?\s*지불하는\s*코스트\s*(-\d+)\s*할\s*수\s*있다\.?$/);
+        if (!m) continue;
+        if (!(tgt.types || []).includes(m[1])) continue;
+        const key = onceLimitKey(id, seg.tags);
+        if (turnUsesRemaining(stack, key, Number(limitM[1])) <= 0) continue;
+        markTurnEffectUsed(stack, key);
+        log(state, `${p} ${card(id).nameKo} 특징 할인 — ${tgt.nameKo} 등장 코스트 ${m[2]}`);
         return Number(m[2]);
       }
     }
