@@ -108,7 +108,7 @@ function auditText(cardId, source, text) {
       const bodyNoLimit = seg.body.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
       if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && (
         /^이\s*디지몬이\s*배틀에서\s*상대(?:의)?\s*디지몬을\s*소멸시켰을\s*때,?\s*상대(?:의)?\s*시큐리티를\s*위에서부터\s*\d+\s*장\s*파기한다\.?$/.test(bodyNoLimit)
-        || /^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택의?\s*대상을\s*이\s*디지몬으로\s*변경할\s*수\s*있다\.?$/.test(bodyNoLimit)
+        || S.isHandledRedirectBody(seg.body)
       )) {
         turnConditionalHandled++;
         continue;
