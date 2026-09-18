@@ -61,6 +61,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via continuousEvoCostDiscount, checked at digivolve-cost time.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^(?:\[턴\s*\d+\s*회\]\s*)?이\s*디지몬이\s*특징\s*「[^」]+」(?:\/「[^」]+」)?\s*(?:을|를)?\s*가진\s*디지몬\s*카드로\s*진화할\s*때,?\s*지불하는\s*코스트\s*-\d+\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via S.canAttackAnyActive, checked from legalDigimonTargets.
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;

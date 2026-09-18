@@ -1061,6 +1061,32 @@ function isEvoCostLocked(state, p) {
   return false;
 }
 
+// "이 디지몬이 특징 「X」를 가진 디지몬 카드로 진화할 때, 지불하는 코스트
+// -N." — a CONTINUOUS evolution-cost discount conditioned on the TARGET
+// card's trait, unlike the one-shot addEvoCostMod/consumeEvoCostMod pair
+// above (which models a temporary discount an effect grants once, then
+// consumes). Checked directly at cost-calculation time instead.
+export function continuousEvoCostDiscount(state, p, stack, targetCardId) {
+  const tgt = card(targetCardId);
+  let total = 0;
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      const body = seg.body.trim().replace(/^\[턴\s*\d+\s*회\]\s*/, '');
+      const m = body.match(/^이\s*디지몬이\s*특징\s*「([^」]+)」(?:\/「([^」]+)」)?\s*(?:을|를)?\s*가진\s*디지몬\s*카드로\s*진화할\s*때,?\s*지불하는\s*코스트\s*(-\d+)\.?$/);
+      if (!m) continue;
+      const traits = [m[1], m[2]].filter(Boolean);
+      if (traits.some(tr => (tgt.types || []).some(t => t.includes(tr)))) total += Number(m[3]);
+    }
+  }
+  return total;
+}
+
 // Returns the best (most negative) still-valid, one-time cost delta for
 // evolving INTO `targetCardId`, and marks it consumed. Call this exactly
 // once per resolved evolution.

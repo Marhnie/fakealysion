@@ -415,7 +415,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
         dragData = null; render();
         return;
       }
-      const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId);
+      const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
       const cost = Math.max(0, check.cost + evoModDelta);
       S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
       E.checkAutoEndTurn(state);
