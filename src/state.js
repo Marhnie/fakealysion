@@ -1513,6 +1513,27 @@ export function saveCardUnderTamer(state, p, cardId, tamerUid) {
   return true;
 }
 
+// "상대의 턴 종료까지 자신의 디지몬 N마리는 배틀에서 소멸하지 않는다." —
+// unlike trySurviveBySacrifice (any destruction cause), this is BATTLE-loss
+// specific (checked directly in resolveDigimonBattle, not deleteStack, so it
+// never blocks an effect-based 소멸). turnNumber increments once per single
+// player-turn (see engine.js endTurn), so a grant made during MY turn T
+// needs to survive through the rest of turn T AND all of the opponent's
+// following turn T+1 — i.e. valid while turnNumber <= T+1, exactly mirroring
+// the existing cannotAttackUntil field's plain-number-comparison pattern
+// (no separate cleanup needed — it just naturally stops matching).
+export function grantBattleImmunity(state, p, uid) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return;
+  stack.battleImmuneUntilTurn = state.turnNumber + 1;
+  log(state, `${p} ${card(stack.cardId).nameKo} 상대 턴 종료까지 배틀 소멸 면역`);
+}
+
+function hasBattleImmunity(state, stack) {
+  return stack.battleImmuneUntilTurn != null && state.turnNumber <= stack.battleImmuneUntilTurn;
+}
+
 // "이 디지몬이 소멸할 때, 명칭에 「X」을 포함하는 다른 디지몬 1마리를
 // 소멸시키는 것으로, 소멸하지 않는다." — a barrier paid for by sacrificing
 // another same-name-family Digimon on the SAME board, instead of an
@@ -1741,8 +1762,14 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   log(state, `${attackerP} ${card(aStack.cardId).nameKo}(DP${aDp}) vs ${defenderP} ${card(dStack.cardId).nameKo}(DP${dDp}) → ${result}`);
   const destroyedOnlyOpponent = result === 'attackerWins';
   if (result === 'attackerWins') runBattleWinTriggers(state, attackerP, aStack);
-  if (result === 'defenderWins' || result === 'tie') deleteStack(state, attackerP, attackerUid);
-  if (result === 'attackerWins' || result === 'tie') deleteStack(state, defenderP, defenderUid);
+  if (result === 'defenderWins' || result === 'tie') {
+    if (hasBattleImmunity(state, aStack)) log(state, `${attackerP} ${card(aStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
+    else deleteStack(state, attackerP, attackerUid);
+  }
+  if (result === 'attackerWins' || result === 'tie') {
+    if (hasBattleImmunity(state, dStack)) log(state, `${defenderP} ${card(dStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
+    else deleteStack(state, defenderP, defenderUid);
+  }
   const piercing = hasKeyword(aStack, '관통');
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }

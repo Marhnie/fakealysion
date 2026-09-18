@@ -231,6 +231,13 @@ async function runOne(instr, ctx) {
       if (targetUid) S.grantKeyword(state, targetPlayer, targetUid, instr.keyword, instr.value, instr.duration || 'turn');
       break;
     }
+    case 'grantBattleImmunity': {
+      const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      const uids = [...(state.players[targetPlayer].raising ? [state.players[targetPlayer].raising.uid] : []), ...state.players[targetPlayer].battle.map(s => s.uid)];
+      const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '배틀에서 소멸하지 않을 디지몬 선택' });
+      if (targetUid) S.grantBattleImmunity(state, targetPlayer, targetUid);
+      break;
+    }
     case 'returnFromTrash': {
       const pl = state.players[who];
       const eligibleIdxs = pl.trash.map((id, i) => i).filter(i => matchesFilter(S, pl.trash[i], instr.filter));
@@ -700,6 +707,14 @@ export function compileToScript(text) {
   // Second most common 시큐리티 pattern (53 of 178).
   if (/이\s*카드를\s*패에\s*추가한다/.test(t)) {
     script.push({ op: 'addSelfToHand' });
+  }
+
+  // "상대의 턴 종료까지 자신의 디지몬 N마리는 배틀에서 소멸하지 않는다."
+  // (BT16-018/BT19-023/BT20-022, all 등장 시|진화 시, always N=1) —
+  // temporary battle-only destruction immunity on a chosen own Digimon,
+  // checked in resolveDigimonBattle (S.grantBattleImmunity).
+  if ((m = t.match(/상대(?:의)?\s*턴\s*종료까지\s*자신(?:의)?\s*디지몬\s*(\d+)\s*마리는\s*배틀에서\s*소멸하지\s*않는다/))) {
+    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'grantBattleImmunity', target: 'self' });
   }
 
   // "자신의 시큐리티를 아래에서부터 N장 패에 추가한다. 그 후, 이 카드를
