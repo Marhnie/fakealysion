@@ -71,6 +71,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via dpDestroyCapBoost, checked from the 'destroy' op.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+\d+\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via S.canAttackAnyActive, checked from legalDigimonTargets.
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;

@@ -103,7 +103,14 @@ async function runOne(instr, ctx) {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const pl = state.players[targetPlayer];
       let uids = pl.battle.map(s => s.uid);
-      if (instr.filter) uids = pl.battle.filter(s => matchesFilter(S, s.cardId, instr.filter)).map(s => s.uid);
+      // "자신이 발휘하는 DP 소멸 효과의 상한+N." raises the ceiling on the
+      // ACTIVATING player's own dpMax-filtered destroy effects.
+      let filter = instr.filter;
+      if (filter?.dpMax != null) {
+        const boost = S.dpDestroyCapBoost(state, ctx.self);
+        if (boost) filter = { ...filter, dpMax: filter.dpMax + boost };
+      }
+      if (filter) uids = pl.battle.filter(s => matchesFilter(S, s.cardId, filter)).map(s => s.uid);
       if (instr.mode === 'thisStack') {
         S.deleteStack(state, targetPlayer, ctx.sourceStackUid);
       } else if (instr.mode === 'all') {
