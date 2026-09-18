@@ -34,6 +34,7 @@ function matchesFilter(S, cardId, filter) {
   if (filter.traitAny && !filter.traitAny.some(t => (c.traits || []).includes(t))) return false;
   if (filter.category && c.category !== filter.category) return false;
   if (filter.dpMax != null && (c.dp || 0) > filter.dpMax) return false;
+  if (filter.dpMin != null && (c.dp || 0) < filter.dpMin) return false;
   if (filter.name && c.nameKo !== filter.name) return false;
   if (filter.nameIncludes && !c.nameKo.includes(filter.nameIncludes)) return false;
   return true;
@@ -264,11 +265,8 @@ async function runOne(instr, ctx) {
       break;
     case 'returnToHandStripSources': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.map(s => s.uid);
-      const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '핸드로 되돌릴 디지몬 선택' });
-      if (targetUid) {
+      const bounce = (stack) => {
         const pl = state.players[targetPlayer];
-        const stack = pl.battle.find(s => s.uid === targetUid);
         pl.battle.splice(pl.battle.indexOf(stack), 1);
         const linkIds = (stack.linkCards || []).map(l => l.cardId);
         pl.hand.push(stack.cardId);
@@ -276,6 +274,25 @@ async function runOne(instr, ctx) {
         S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 핸드로, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
         // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — exclude linkIds.
         for (const id of [...stack.sources, stack.cardId]) S.applyOverflowIfAny(state, targetPlayer, id);
+      };
+      const matching = () => state.players[targetPlayer].battle.filter(s =>
+        (!instr.filter || matchesFilter(S, s.cardId, instr.filter))
+        && (instr.requireSuspended == null || s.suspended === instr.requireSuspended));
+      if (instr.all) {
+        // Snapshot uids up front — bounce() mutates pl.battle as it goes.
+        for (const uid of matching().map(s => s.uid)) {
+          const stack = state.players[targetPlayer].battle.find(s => s.uid === uid);
+          if (stack) bounce(stack);
+        }
+        break;
+      }
+      for (let i = 0; i < (instr.n || 1); i++) {
+        const uids = matching().map(s => s.uid);
+        if (!uids.length) break;
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '핸드로 되돌릴 디지몬 선택' });
+        if (!targetUid) break;
+        const stack = state.players[targetPlayer].battle.find(s => s.uid === targetUid);
+        if (stack) bounce(stack);
       }
       break;
     }
@@ -541,8 +558,20 @@ export function compileToScript(text) {
   }
 
   // Bounce an opponent Digimon to hand and discard its evolution sources.
-  if (/상대(?:의)?\s*디지몬\s*1\s*마리를?\s*패로\s*되돌린다\.?\s*그\s*디지몬이\s*가지는?\s*진화원은?\s*파기한다/.test(t)) {
-    script.push({ op: 'returnToHandStripSources', target: 'opponent' });
+  // "가진"/"갖는"/"가지는" are all real conjugations actually printed
+  // ("가지는?" alone, the original pattern, only ever matched "가지" or
+  // "가지는" — never "가진", by far the most common form).
+  if ((m = t.match(/(?:(레스트\s*상태[의인]|액티브\s*상태[의인])\s*)?(?:Lv\.(\d+)\s*(이하|이상)의?\s*)?(?:DP\s*(\d+)\s*(이하|이상)(?:의|인)?\s*)?상대\s*디지몬\s*(전부|\d+\s*마리(?:까지)?)를?\s*(?:대신\s*)?패로\s*되돌린다\.?\s*그\s*디지몬이\s*(?:가진|갖는|가지는)\s*진화원은?\s*파기한다/))) {
+    const filter = {};
+    if (m[2]) filter[m[3] === '이상' ? 'levelMin' : 'levelMax'] = Number(m[2]);
+    if (m[4]) filter[m[5] === '이상' ? 'dpMin' : 'dpMax'] = Number(m[4]);
+    const requireSuspended = m[1] ? m[1].startsWith('레스트') : null;
+    if (m[6] === '전부') {
+      script.push({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter, requireSuspended });
+    } else {
+      const n = Number(m[6].match(/\d+/)[0]);
+      script.push({ op: 'returnToHandStripSources', target: 'opponent', n, filter, requireSuspended });
+    }
   }
 
   // Option cards that stay on the field after resolving ("그 후 이 카드를
