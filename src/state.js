@@ -348,6 +348,18 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
   return options;
 }
 
+// ≪흡수진화 -N≫ printed on the card being evolved INTO: "자신의 디지몬이 패의
+// 이 카드로 진화할 때, 자신의 디지몬 1마리를 레스트시키는 것으로, 지불하는 진화
+// 코스트를 -N 한다." Returns { delta, candidates } (uids of other active
+// Digimon that could pay the rest cost); the UI asks before applying.
+export function absorbEvolveOption(state, p, evolvingStack, targetCardId) {
+  const m = (card(targetCardId).effectKo || '').match(/[《≪]\s*흡수진화\s*(-\d+)\s*[》≫]/);
+  if (!m) return null;
+  const candidates = state.players[p].battle
+    .filter(s => s !== evolvingStack && !s.suspended && card(s.cardId).category === 'digimon').map(s => s.uid);
+  return candidates.length ? { delta: Number(m[1]), candidates } : null;
+}
+
 // ≪연계≫: "이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는
 // 것으로, 이 어택 동안 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고,
 // 《S 어택 +1》을 얻는다." — optional, so the UI offers it per attack.
@@ -603,7 +615,7 @@ export function grantColor(state, p, uid, color) {
 }
 
 // Bare 《키워드》 lines the engine has a real consumer for (static grants).
-const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계'];
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌'];
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
 export function securityAttackBonus(stack) {
@@ -705,14 +717,26 @@ function parseStaticGrants(text) {
     // what the keyword does) — that trailing "(...)" must still count as a
     // bare grant, not get rejected as "extra prose" the way a genuine
     // triggered-effect clause would.
-    const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫](?:\s*\([^()]*\))?$/);
-    if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
-    const label = bare[1].replace(/\s+/g, '') === '아머퍼지' ? '아머퍼지' : bare[1];
-    if (KEYWORD_FLAGS.includes(label)) { out.keywords[label] = true; continue; }
-    // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
-    // beginner/starter-deck cards) are the same keyword.
-    if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
-    if ((m = label.match(/^링크\+(\d+)$/))) { out.keywords['링크+'] = (out.keywords['링크+'] || 0) + Number(m[1]); continue; } // 4-9-5: raises the 1-per-Digimon Link Card cap
+    // A line may hold SEVERAL bare keyword tokens ("《S 어택 +1》《블로커》",
+    // "《충돌》《관통》《프래그먼트《3》》(설명)") — 172 real lines; the old
+    // single-token pattern silently dropped every one of them. One nested
+    // bracket level is allowed inside a token.
+    const tokRe = /^\s*[《≪]\s*((?:[^》≫《≪]|[《≪][^》≫]*[》≫])+?)\s*[》≫](?:\s*\([^()]*\))?/;
+    const labels = [];
+    let rest = t, tm;
+    while ((tm = rest.match(tokRe))) { labels.push(tm[1].trim()); rest = rest.slice(tm[0].length); }
+    // A keyword line with extra prose is a triggered effect, not a bare grant — leave it.
+    // (빙장 alone is tolerated followed by its 〈룰〉 note.)
+    if (!labels.length || (rest.trim() && !(labels.length === 1 && labels[0] === '빙장'))) continue;
+    for (const rawLabel of labels) {
+      const label = rawLabel.replace(/\s+/g, '') === '아머퍼지' ? '아머퍼지' : rawLabel;
+      if ((m = label.match(/^프래그먼트\s*[《≪]\s*(\d+)\s*[》≫]$/))) { out.keywords['프래그먼트'] = Math.max(out.keywords['프래그먼트'] || 0, Number(m[1])); continue; }
+      if (KEYWORD_FLAGS.includes(label)) { out.keywords[label] = true; continue; }
+      // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
+      // beginner/starter-deck cards) are the same keyword.
+      if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
+      if ((m = label.match(/^링크\+(\d+)$/))) { out.keywords['링크+'] = (out.keywords['링크+'] || 0) + Number(m[1]); continue; } // 4-9-5: raises the 1-per-Digimon Link Card cap
+    }
     // other bare keyword tokens (e.g. 《돌진》) intentionally left unmapped for now —
     // no existing engine flag consumes them; surfaced via the effect box only.
   }
@@ -864,6 +888,7 @@ export function recomputeStackGrants(stack) {
     secAtk += g.keywords['시큐리티어택'] || 0;
     linkCap += g.keywords['링크+'] || 0;
     for (const k of KEYWORD_FLAGS) if (g.keywords[k]) flags[k] = true;
+    if (g.keywords['프래그먼트']) flags['프래그먼트'] = Math.max(flags['프래그먼트'] || 0, g.keywords['프래그먼트']);
   }
   stack.inheritedDP = dp;
   stack.inheritedKeywords = {
@@ -1779,6 +1804,15 @@ function trySurviveByKeyword(state, p, stack, cause) {
     recomputeStackGrants(stack);
     return true;
   }
+  const frag = Number(stack.inheritedKeywords?.['프래그먼트'] || 0) || Number(stack.keywords?.['프래그먼트'] || 0);
+  if (frag > 0 && stack.sources.length > 0) {
+    // "진화원을 선택하여 N장 파기" — auto-picks the most recently stacked sources.
+    const removed = stack.sources.splice(Math.max(0, stack.sources.length - frag), frag);
+    pl.trash.push(...removed);
+    log(state, `${p} ${card(stack.cardId).nameKo} 《프래그먼트 ${frag}》 — 진화원 ${removed.length}장 파기하여 소멸하지 않음`);
+    recomputeStackGrants(stack);
+    return true;
+  }
   if (hasKeyword(stack, '방벽') && cause === 'battle' && pl.security.length > 0) {
     trashTopSecurityByEffect(state, p);
     log(state, `${p} ${card(stack.cardId).nameKo} 《방벽》 — 시큐리티 1장 파기하여 소멸하지 않음`);
@@ -2017,7 +2051,9 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   const dStack = dpl.battle.find(s => s.uid === defenderUid);
   if (!aStack || !dStack) return null;
   const attackerCardId = aStack.cardId, defenderCardId = dStack.cardId;
-  const aDp = effectiveDP(state, attackerP, aStack), dDp = effectiveDP(state, defenderP, dStack);
+  let aDp = effectiveDP(state, attackerP, aStack), dDp = effectiveDP(state, defenderP, dStack);
+  // ≪빙장≫: vs. a non-security Digimon, compare evolution-source COUNT instead of DP.
+  if (hasKeyword(aStack, '빙장') || hasKeyword(dStack, '빙장')) { aDp = aStack.sources.length; dDp = dStack.sources.length; }
   let result;
   if (aDp > dDp) result = 'attackerWins';
   else if (aDp < dDp) result = 'defenderWins';

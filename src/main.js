@@ -391,7 +391,7 @@ function cardChip(cardId, opts = {}) {
 // these ever appeared anywhere on the board before.
 const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
-  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', DP감소무효: '🚫DP감소무효',
+  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', 빙장: '🧊빙장', 프래그먼트: '🧩프래그먼트', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
 };
 function activeKeywordBadges(stack) {
@@ -453,7 +453,12 @@ function renderStack(p, stack, zoneKind, opts = {}) {
         dragData = null; render();
         return;
       }
-      const evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
+      let evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
+      const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
+      if (absorb && window.confirm(`《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
+        S.restStack(state, p, absorb.candidates[0]);
+        evoModDelta += absorb.delta;
+      }
       const cost = Math.max(0, check.cost + evoModDelta);
       S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
       E.checkAutoEndTurn(state);
