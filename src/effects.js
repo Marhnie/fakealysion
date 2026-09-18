@@ -564,6 +564,17 @@ export function compileToScript(text) {
     script.push({ op: 'trashEvoSources', target: 'opponent', count: 'all' });
   }
 
+  // Direct (non-check) security trash — removeSecurity was a defined op with
+  // no compiler pattern ever producing it (confirmed via the audit: every
+  // real occurrence of this exact sentence, however commonly printed, fell
+  // through uncompiled). "양 측의"(both)/"자신의"/"상대의" all appear.
+  if ((m = t.match(/(양\s*측|자신|상대)(?:의)?\s*시큐리티를?\s*(위|아래)에서부터\s*(\d+)\s*장\s*파기한다/))) {
+    const position = m[2] === '아래' ? 'bottom' : 'top';
+    const n = Number(m[3]);
+    const whos = /^양\s*측$/.test(m[1]) ? ['self', 'opponent'] : m[1] === '상대' ? ['opponent'] : ['self'];
+    for (const who of whos) for (let i = 0; i < n; i++) script.push({ op: 'removeSecurity', who, position });
+  }
+
   // Borrow memory now, pay it back at end of turn (net-zero temporary boost).
   if ((m = t.match(/메모리(?:를|을)?\s*\+(\d+)\s*한다\.\s*이\s*턴\s*종료\s*시,?\s*메모리(?:를|을)?\s*-\d+\s*한다/))) {
     script.push({ op: 'memoryBorrowAndRepay', n: Number(m[1]) });
