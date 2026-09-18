@@ -710,6 +710,7 @@ export function evolveTargetRestriction(state, p, stack) {
       const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
       if (!active) continue;
       const body = seg.body.trim();
+      if (/^이\s*디지몬은\s*진화할\s*수\s*없다\.?$/.test(body)) return { cannotEvolve: true };
       let m = body.match(/^이\s*디지몬은\s*(레드|블루|옐로우|그린|블랙|퍼플|화이트)인\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
       if (m) return { colors: [KOR_COLOR_NAME[m[1]]] };
       m = body.match(/^이\s*디지몬은\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);

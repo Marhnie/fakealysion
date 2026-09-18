@@ -239,6 +239,7 @@ export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restr
   // the SOURCE stack (see S.evolveTargetRestriction) — checked against the
   // TARGET card, independent of whichever printed condition below it uses.
   if (restriction) {
+    if (restriction.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
     if (restriction.colors && !restriction.colors.some(c => (tgt.colors || []).includes(c))) {
       return { ok: false, reason: `진화 제한: ${restriction.colors.join('/')} 인 디지몬으로만 진화 가능` };
     }
