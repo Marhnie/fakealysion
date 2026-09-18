@@ -602,6 +602,27 @@ export function effectiveDP(state, p, stack) {
   return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack);
 }
 
+// "이 디지몬은 액티브 상태의 상대 디지몬에게도 어택할 수 있다." (no "no
+// evolution sources" qualifier, unlike the printed 무진화원액티브공격
+// keyword) — same continuous-condition family, usually printed under
+// 【자신의 턴】 rather than as a one-shot trigger.
+export function canAttackAnyActive(state, p, stack) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      if (/이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다/.test(seg.body) && !/진화원을?\s*갖지\s*않는/.test(seg.body)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Recompute a stack's standing DP/keywords from THREE sources: the current
 // top card's own printed bare lines (e.g. a Digimon that just innately has
 // "《블로커》" on its own text — confirmed extremely common, ST1-06 etc. —
@@ -1143,8 +1164,13 @@ export function legalDigimonTargets(state, attackerP, attackerUid) {
   const apl = state.players[attackerP];
   const aStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
   const canHitActiveNoSource = aStack && hasKeyword(aStack, '무진화원액티브공격');
+  // Unconditional variant — no "no evolution sources" restriction at all
+  // (e.g. "이 디지몬은 액티브 상태의 상대 디지몬에게도 어택할 수 있다."),
+  // either as a one-shot triggered grant (액티브공격 keyword) or the more
+  // common continuous 자신의 턴-conditioned form (canAttackAnyActive).
+  const canHitActiveAny = aStack && (hasKeyword(aStack, '액티브공격') || canAttackAnyActive(state, attackerP, aStack));
   return state.players[opp].battle
-    .filter(s => s.suspended || (canHitActiveNoSource && s.sources.length === 0))
+    .filter(s => s.suspended || canHitActiveAny || (canHitActiveNoSource && s.sources.length === 0))
     .map(s => s.uid);
 }
 

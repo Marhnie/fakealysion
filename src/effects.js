@@ -645,6 +645,11 @@ export function compileToScript(text) {
   // RESTED opposing Digimon).
   if (/이\s*디지몬은\s*진화원을?\s*갖지\s*않는\s*액티브\s*상태의\s*상대\s*디지몬에게도\s*어택할\s*수\s*있다/.test(t)) {
     script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '무진화원액티브공격', duration: 'permanent' });
+  } else if (/이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다/.test(t)) {
+    // Same targeting extension with NO "no evolution sources" restriction
+    // at all — the unqualified (and, via the audit, more common) variant.
+    const duration = /이\s*턴\s*동안/.test(t) ? 'turn' : 'permanent';
+    script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '액티브공격', duration });
   }
   if (/메모리가\s*상대측\s*1\s*이상일\s*때,?\s*이\s*디지몬은\s*어택할\s*수\s*있다/.test(t)) {
     script.push({ op: 'noop', note: '이 엔진은 메모리 위치로 어택을 제한하지 않아서 조건이 항상 충족됨(데이터 원문 표현 확인 필요)' });
