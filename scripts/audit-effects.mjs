@@ -71,6 +71,16 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via parseDelayEffect/discardForDelay — a NEW interactive
+    // "discard this placed card from the battle area to run its listed
+    // effect" mechanic (16-17 ≪딜레이≫), routed through a dedicated UI
+    // button rather than the normal queueTriggersFor('use') pipeline (which
+    // would incorrectly let it fire immediately on use instead of only
+    // later, from the battle area, after the placement turn).
+    if (seg.tags.includes('메인') && /^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via dpDestroyCapBoost, checked from the 'destroy' op.
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+\d+\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;

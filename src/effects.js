@@ -459,6 +459,16 @@ export function compileToScript(text) {
   const script = [];
   const t = text;
 
+  // 16-17 ≪딜레이≫: NOT an immediate effect of using/triggering this card —
+  // it's an activatable ability of the card WHILE IT SITS IN THE BATTLE
+  // AREA (discard it, from a later turn, to run the bullet effect below).
+  // Without this guard, the bullet text's own action (e.g. "메모리를 +2
+  // 한다.") would get pattern-matched here as if it fired immediately on
+  // use, double-counting it on top of the dedicated discardForDelay flow
+  // (state.js's parseDelayEffect) — this segment contributes NOTHING to
+  // the normal trigger/use pipeline.
+  if (/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(t.trim())) return script;
+
   // Simple unconditional actions (also handled as instant auto-apply in
   // state.js for whole-segment matches, but included here too so they still
   // fire correctly when part of a larger multi-clause sentence).

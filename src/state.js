@@ -157,6 +157,10 @@ function tryAutoApplySegment(state, p, text, sourceCardId) {
   const opp = opponentOf(p);
   const t = text.replace(/[≪《》≫]/g, '').trim();
   let m;
+  // 16-17 ≪딜레이≫: this segment isn't an immediate effect of using the card —
+  // it's only usable later via discardForDelay (see compileToScript's matching
+  // guard). Absorb it silently so it doesn't queue as an unresolvable pending item.
+  if (/^딜레이\s*\([^()]*\)/.test(t)) return true;
   if ((m = t.match(/^(\d+)\s*드로우(?:한다)?[.。]?$/))) { drawCards(state, p, Number(m[1])); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*\+\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, Number(m[1]), sourceCardId); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*-\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, -Number(m[1])); return true; }
@@ -175,6 +179,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   for (const seg of segments) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
+    if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
     const applied = tryAutoApplySegment(state, p, seg.body, cardId);
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${seg.body}`);
@@ -182,6 +187,10 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
       state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: seg.body, resolved: false });
     }
   }
+}
+
+function isDelaySegment(body) {
+  return /^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(body.trim());
 }
 
 // A Digimon gets the inherited (진화원) effects of EVERY card in its
@@ -196,6 +205,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
   for (const seg of segments) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
+    if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
     const applied = tryAutoApplySegment(state, p, seg.body, sourceCardId);
     if (applied) {
       log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
@@ -517,6 +527,7 @@ export function isTurnAutoEnding(state) {
 function makeStack(cardId, turnNumber) {
   return {
     uid: nextUid(), cardId, sources: [], suspended: false, attackEligibleTurn: turnNumber + 1,
+    placedTurn: turnNumber, // for ≪딜레이≫ (16-17-3: not usable the turn this card entered the battle area)
     tempDP: 0, // temporary DP modifier, cleared at cleanup (see clearTemporaryModifiers)
     keywords: {}, // { [keywordName]: 'permanent' | turnNumber-it-expires-after }
     attacksThisTurn: 0, // for [턴에 N회] "become active again" style re-attack effects
@@ -1254,6 +1265,37 @@ export function placeThisInBattle(state, p, cardId) {
   pl.battle.push(stack);
   log(state, `${p} ${card(cardId).nameKo}을(를) 배틀 에어리어에 놓음`);
   return stack;
+}
+
+// 16-17: ≪딜레이≫ — "while this card sits in the battle area, you may
+// discard it to activate the effect(s) listed below it (bullet lines
+// starting with '·')"; not usable the turn it was placed. Printed as its
+// own separate 【메인】 segment on the SAME card that placeThisInBattle put
+// there, distinct from that card's ordinary immediate-use 【메인】 effect —
+// finding it here (rather than through the normal queueTriggersFor('use')
+// path, which would incorrectly let it fire immediately on use) is what
+// keeps the two apart.
+export function parseDelayEffect(effectKo) {
+  if (!effectKo) return null;
+  const { segments } = parseEffectSegments(effectKo);
+  for (const seg of segments) {
+    if (!seg.tags.includes('메인')) continue;
+    const m = seg.body.match(/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)\s*\n\s*(·.+)$/s);
+    if (m) return m[1].replace(/^·\s*/, '').trim();
+  }
+  return null;
+}
+
+// Discards a battle-area stack (no evolution sources expected on these —
+// they're placed Option cards) and returns the effect text to run.
+export function discardForDelay(state, p, uid) {
+  const pl = state.players[p];
+  const idx = pl.battle.findIndex(s => s.uid === uid);
+  if (idx === -1) return null;
+  const [stack] = pl.battle.splice(idx, 1);
+  pl.trash.push(...stack.sources, stack.cardId);
+  log(state, `${p} ${card(stack.cardId).nameKo} 딜레이 효과 발동 (파기)`);
+  return stack.cardId;
 }
 
 // Same trash -> hand pull as saveCardUnderTamer/placeThisInBattle: a card

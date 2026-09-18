@@ -480,8 +480,27 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       })),
   });
 
+  // 16-17 ≪딜레이≫: this placed card can be discarded (from turns after the
+  // one it was placed on) to run its listed bullet effect. Rerouted through
+  // state.pending instead of running it directly here, reusing the exact
+  // same auto-run/manual-resolve/delay-banner machinery every other
+  // triggered effect already goes through — no separate async plumbing
+  // needed in this onClick.
+  const delayBody = zoneKind === 'battle' ? S.parseDelayEffect(S.card(stack.cardId).effectKo) : null;
+  const canDelay = delayBody && p === state.activePlayer && state.phase === 'main' && state.turnNumber > stack.placedTurn;
+  const delayBtn = canDelay ? h('button', {
+    className: 'delay-btn',
+    title: `《딜레이》 발동: ${delayBody}`,
+    onClick: (e) => {
+      e.stopPropagation();
+      const cardId = S.discardForDelay(state, p, stack.uid);
+      if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: delayBody, resolved: false });
+      render();
+    },
+  }, '🗑딜레이') : null;
+
   const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
-  if (!linkSlots.length) return chip;
+  if (!linkSlots.length) return delayBtn ? h('div', { className: 'stack-wrap' }, [chip, delayBtn]) : chip;
   // Small overlay badge, separately droppable, so dragging a hand card onto
   // it links instead of digivolving — distinct from dropping on the card art.
   const badge = h('div', {
@@ -499,7 +518,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       dragData = null; render();
     },
   }, '🔗' + (stack.linkCards?.length ? stack.linkCards.length : ''));
-  return h('div', { className: 'stack-wrap' }, [chip, badge]);
+  return h('div', { className: 'stack-wrap' }, [chip, badge, delayBtn]);
 }
 
 function playFreshFromDrag(drag, p) {

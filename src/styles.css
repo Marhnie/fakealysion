@@ -267,5 +267,11 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
   font-size: 11px; display: flex; align-items: center; justify-content: center; z-index: 2;
 }
 .link-badge.drop-hover { background: var(--holo-accent); color: #06101e; }
+.delay-btn {
+  position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; padding: 1px 6px; border-radius: 8px; z-index: 2;
+  background: rgba(30,6,6,0.92); border: 1px solid var(--danger); color: #ffbcbc; cursor: pointer;
+}
+.delay-btn:hover { background: var(--danger); color: #fff; }
 .pile-chip.clickable { cursor: pointer; }
 .pile-chip.clickable:hover { border-color: var(--holo-accent); }
