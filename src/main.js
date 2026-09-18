@@ -835,6 +835,13 @@ async function runPendingScript(trigger, opts = {}) {
   }
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
   await Effects.runScript(script, ctx);
+  // Sentences the compiler can't express are handed to the player instead of silently vanishing.
+  if (!trigger.manualOnly) {
+    const dropped = Effects.droppedSentences(trigger.text);
+    if (dropped.length) {
+      state.pending.push({ uid: 'rem' + Math.random().toString(36).slice(2), player: trigger.player, cardId: trigger.cardId, stackUid: trigger.stackUid, tags: trigger.tags, text: dropped.join(' '), resolved: false, manualOnly: true, note: '자동 처리되지 않은 나머지 효과 — 직접 처리하세요' });
+    }
+  }
   S.resolvePending(state, trigger.uid);
   render();
 }
@@ -852,7 +859,7 @@ let pendingRunner = null; // uid of the effect currently resolving — effects r
 let runningPendingUid = null;
 function autoRunMandatoryPending() {
   if (pendingRunner) return;
-  const next = state.pending.find(t => !t.resolved && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
+  const next = state.pending.find(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
   if (!next) return;
   autoRunAttempted.add(next.uid);
   runningPendingUid = next.uid;
@@ -866,10 +873,11 @@ function renderPendingEffects() {
   if (!state.pending.length) return null;
   const rows = state.pending.map(t => {
     const c = S.card(t.cardId);
-    const script = scriptFor(t);
+    const script = t.manualOnly ? [] : scriptFor(t);
     return h('div', { className: `effect-box${script.length && t.uid === runningPendingUid ? ' effect-firing' : ''}`, style: `margin-bottom:6px;${script.length && t.uid !== runningPendingUid ? 'opacity:.6;' : ''}` }, [
       h('div', { className: 'effect-firing-title' }, `⚡ ${c.nameKo} 【${t.tags.join('】【')}】 발동`),
       h('div', {}, t.text),
+      t.note ? h('div', { className: 'meta' }, '⚠ ' + t.note) : null,
       h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
         script.length
           ? h('span', { className: 'meta' }, t.uid === runningPendingUid ? '▶ 처리 중…' : t.resolved ? '완료' : `⏳ 대기 중 (순서 ${state.pending.filter(x => !x.resolved && scriptFor(x).length).indexOf(t) + 1})`)

@@ -204,7 +204,7 @@ async function runOne(instr, ctx) {
       const eligibleIdxs = okIdx(zone);
       const chosenIdx = await ctx.choose('pickFromZoneIndex', { player: who, zone, eligibleIdxs, prompt: instr.prompt || `${zone === 'trash' ? '트래시' : '핸드'}에서 무료로 등장시킬 카드 선택` });
       if (chosenIdx == null) break;
-      S.playFreeFromZone(state, who, zone, chosenIdx, { rested: !!instr.rested });
+      S.playFreeFromZone(state, who, zone, chosenIdx, { rested: !!instr.rested, noTriggers: !!instr.noTriggers });
       break;
     }
     case 'unsuspend': {
@@ -369,6 +369,23 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'shuffleSecurity': {
+      const sec = state.players[who].security;
+      for (let i = sec.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [sec[i], sec[j]] = [sec[j], sec[i]]; }
+      S.log(state, `${who} 시큐리티를 셔플`);
+      break;
+    }
+    case 'lookSecurity':
+      S.log(state, `${who} 시큐리티 확인: ${state.players[who].security.map(id => S.card(id).nameKo).join(', ') || '(없음)'}`);
+      break;
+    case 'skipUnsuspend': {
+      const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      const uids = state.players[targetPlayer].battle.map(s => s.uid);
+      if (!uids.length) break;
+      const uid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '액티브가 되지 않을 디지몬 선택' });
+      if (uid) S.setSkipNextUnsuspend(state, targetPlayer, uid);
+      break;
+    }
     case 'costGroup': {
       const st = state.players[ctx.self].battle.find(x => x.uid === ctx.sourceStackUid) || (state.players[ctx.self].raising?.uid === ctx.sourceStackUid ? state.players[ctx.self].raising : null);
       const canPay = instr.cost.every(c => {
@@ -616,14 +633,25 @@ function compileInner(text) {
     script.push({ op: 'retreat', target: 'self', n: Number(m[1]) });
   }
 
+  if (/자신(?:의)?\s*시큐리티를\s*셔플한다/.test(t)) script.push({ op: 'shuffleSecurity', who: 'self' });
+  if (/자신(?:의)?\s*시큐리티를\s*전부\s*확인한다/.test(t)) script.push({ op: 'lookSecurity', who: 'self' });
+  // "상대의 턴 종료까지 상대의 디지몬/테이머 N마리(명)는 액티브가 되지 않는다" — chosen targets skip their next unsuspend.
+  if ((m = t.match(/상대(?:의)?\s*턴\s*종료까지,?\s*상대(?:의)?\s*디지몬(?:\/테이머)?\s*(\d+)\s*마리(?:\(명\))?(?:는|가)\s*액티브가\s*되지\s*않는다/))) {
+    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'skipUnsuspend', target: 'opponent' });
+  }
+
   // Trash N cards from own hand (player picks which).
-  if ((m = t.match(/자신(?:의)?\s*패(?:에서)?\s*(\d+)\s*장(?:을)?\s*파기/)) && !/전부/.test(t)) {
+  if ((m = t.match(/자신(?:의)?\s*패(?:에서|를)?\s*(\d+)\s*장(?:을)?\s*파기/)) && !/전부/.test(t)) {
     script.push({ op: 'trashHand', who: 'self', n: Number(m[1]) });
   }
 
   // Reveal top N of own deck, add matching card(s) to hand, rest to bottom.
   if ((m = t.match(/(?:자신의\s*)?덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*(?:오픈|공개)/))) {
-    script.push({ op: 'revealTop', who: 'self', n: Number(m[1]), pick: { min: 0, max: 1 }, restTo: /덱\s*(?:의)?\s*위(?:로)?\s*(?:되돌|돌려)/.test(t) ? 'top' : 'bottom' });
+    // "그중 <조건> 카드 N장을 패에 추가한다" — the picker only offers matching cards, up to N.
+    const pm = t.match(/그\s*중\s*(.*?)\s*(\d+)\s*장(?:을)?\s*패에\s*추가한다/s);
+    const pf = pm ? parseCardFilter(pm[1]) : null;
+    script.push({ op: 'revealTop', who: 'self', n: Number(m[1]), pick: { min: 0, max: pm ? Number(pm[2]) : 1, ...(pf ? { filter: pf } : {}) },
+      restTo: /남은\s*카드는\s*파기한다/.test(t) ? 'trash' : /덱\s*(?:의)?\s*위(?:로)?\s*(?:되돌|돌려)/.test(t) ? 'top' : 'bottom' });
   }
 
   // "이 디지몬과 <다른 자신의 디지몬>으로 (코스트를 지불하여) 패의 디지몬 카드/「X」로 조그레스 진화할 수 있다."
@@ -635,7 +663,7 @@ function compileInner(text) {
   if (/코스트를?\s*(?:지불하지\s*않고|支払わ)|코스트\s*없이/.test(t) && /등장/.test(t)) {
     const zone = /트래시/.test(t) ? (/패/.test(t) ? 'any' : 'trash') : 'hand';
     const pm = t.match(/(?:패|트래시)(?:\s*(?:또는|\/)\s*(?:패|트래시))?에서,?\s*(.*?)\s*(?:\d+\s*장)[을를]?\s*(?:색\s*조건을\s*무시하고\s*)?(?:레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고/s);
-    script.push({ op: 'playFree', who: 'self', zone, filter: pm ? parseCardFilter(pm[1]) : null, rested: /레스트\s*상태로/.test(t) });
+    script.push({ op: 'playFree', who: 'self', zone, filter: pm ? parseCardFilter(pm[1]) : null, rested: /레스트\s*상태로/.test(t), noTriggers: /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(t) });
   }
 
   // "이 테이머/디지몬을 레스트시킨다" — rest the effect's own source stack (also the usual
@@ -1150,6 +1178,41 @@ export function compileToScript(text) {
   const rest = compileWithCost(cm[2]);
   if (!rest.length) return [];
   return [{ op: 'condition', if: { test }, then: rest, else: [] }];
+}
+
+// ---- sentences a compiled script silently leaves out ----
+// compileToScript understands what it can; sentences with no matching pattern used to
+// vanish without a trace. droppedSentences finds sentences whose removal doesn't change
+// the compiled script at all (=they contribute nothing) so the UI can hand them to the
+// player as a manual follow-up instead of pretending the effect fully resolved.
+function splitSentences(text) {
+  const out = []; let depth = 0, cur = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(' || ch === '（') depth++;
+    if (ch === ')' || ch === '）') depth = Math.max(0, depth - 1);
+    cur += ch;
+    if (depth === 0 && (ch === '.' || ch === '。') && !/Lv$/.test(cur.slice(0, -1)) && (i + 1 >= text.length || /\s/.test(text[i + 1]))) { out.push(cur); cur = ''; }
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
+const IGNORABLE_SENTENCE = /^(?:나머지는|남은\s*카드는|오픈한\s*카드는|그\s*중|그중|그렇게\s*했을\s*때|이하의\s*효과|·|〈룰〉|〔[^〕]+〕$|그\s*디지몬이\s*(?:가진|갖는)\s*진화원은\s*파기한다)/;
+
+export function droppedSentences(text) {
+  const sents = splitSentences(text.replace(/〈룰〉.*$/s, ''));
+  if (sents.length < 2) return [];
+  const base = JSON.stringify(compileToScript(text));
+  if (base === '[]') return [];
+  const dropped = [];
+  for (let i = 0; i < sents.length; i++) {
+    const plain = sents[i].replace(/\([^()]*\)/g, '').replace(/[.。]\s*$/, '').trim();
+    if (plain.length < 7 || IGNORABLE_SENTENCE.test(plain)) continue;
+    const without = sents.filter((_, j) => j !== i).join(' ');
+    if (JSON.stringify(compileToScript(without)) === base) dropped.push(sents[i].trim());
+  }
+  return dropped;
 }
 
 async function evalCondition(cond, ctx) {

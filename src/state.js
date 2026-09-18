@@ -686,7 +686,7 @@ export function resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo = 'bottom
     if (toHandIdxs.includes(i)) toHand.push(id); else rest.push(id);
   });
   pl.hand.push(...toHand);
-  if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
+  if (restTo === 'trash') pl.trash.push(...rest); else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
   log(state, `${p} 공개 처리: 핸드로 ${toHand.map(id=>card(id).nameKo).join(',')||'없음'} / 나머지 덱 ${restTo === 'bottom' ? '밑' : '위'}로`);
   return { toHand, rest };
 }
@@ -1788,6 +1788,7 @@ export function playFreeFromZone(state, p, zone, index, opts = {}) {
   recomputeStackGrants(stack);
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 코스트 없이 등장 (효과)`);
+  if (opts.noTriggers) { log(state, `${p} ${card(id).nameKo}의 【등장 시】 효과는 발휘하지 않음`); return stack; }
   queueTriggersForStack(state, p, stack, 'play');
   emitGameEvent(state, 'play', { owner: p, stack, cause: 'effect' });
   return stack;
