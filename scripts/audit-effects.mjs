@@ -127,6 +127,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via trySurviveByPrintedAbility / hasContinuousKeyword (deleteStack).
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && (S.isHandledSurviveBody(seg.body) || S.isHandledContinuousKeywordBody(seg.body))) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via isPlayCostLocked, checked from tamerPlayCostDiscount.
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^서로는\s*지불하는\s*등장\s*코스트를?\s*마이너스할\s*수\s*없다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
