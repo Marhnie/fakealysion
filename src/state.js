@@ -732,7 +732,11 @@ function turnConditionalDP(state, p, stack) {
   return total;
 }
 
-const KOR_COLOR_NAME = { 레드: 'red', 블루: 'blue', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+// Real prints overwhelmingly spell Yellow as "옐로" (227 occurrences in the
+// card DB vs 1 for "옐로우") — both keys map here, and every regex using
+// this alternation matches "옐로(?:우)?" (longer spelling tried first) so
+// Yellow-specific restrictions actually match instead of silently failing.
+const KOR_COLOR_NAME = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
 
 // "이 디지몬은 (X색)인/「X」으로만 진화할 수 있다." — same continuous-condition
 // family as parseTurnConditionalDP, restricting what this stack is allowed
@@ -749,7 +753,7 @@ export function evolveTargetRestriction(state, p, stack) {
       if (!active) continue;
       const body = seg.body.trim();
       if (/^이\s*디지몬은\s*진화할\s*수\s*없다\.?$/.test(body)) return { cannotEvolve: true };
-      let m = body.match(/^이\s*디지몬은\s*(레드|블루|옐로우|그린|블랙|퍼플|화이트)인\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
+      let m = body.match(/^이\s*디지몬은\s*(레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)인\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
       if (m) return { colors: [KOR_COLOR_NAME[m[1]]] };
       m = body.match(/^이\s*디지몬은\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*디지몬으로만\s*진화할\s*수\s*있다\.?$/);
       if (m) return { nameIncludes: m[1] };

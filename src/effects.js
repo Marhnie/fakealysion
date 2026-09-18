@@ -807,9 +807,13 @@ export function compileToScript(text) {
     script.push({ op: 'noop', note: '이 엔진은 메모리 위치로 어택을 제한하지 않아서 조건이 항상 충족됨(데이터 원문 표현 확인 필요)' });
   }
 
-  // Color override ("이 디지몬의 색은 그린으로도 취급한다").
-  const KOR_COLOR = { 레드: 'red', 블루: 'blue', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
-  if ((m = t.match(/이\s*디지몬(?:의)?\s*색은\s*(레드|블루|옐로우|그린|블랙|퍼플|화이트)(?:으로|로)도\s*취급/))) {
+  // Color override ("이 디지몬의 색은 그린으로도 취급한다"). Real prints
+  // overwhelmingly spell Yellow as "옐로" (227 occurrences in the card DB vs
+  // 1 for "옐로우") — matching only "옐로우" here silently failed on every
+  // real card (BT3-014/BT4-017 confirmed). "옐로(?:우)?" accepts both while
+  // trying the longer spelling first so "옐로우" isn't left with a stray "우".
+  const KOR_COLOR = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+  if ((m = t.match(/이\s*디지몬(?:의)?\s*색은\s*(레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:으로|로)도\s*취급/))) {
     script.push({ op: 'grantColor', color: KOR_COLOR[m[1]] });
   }
 
