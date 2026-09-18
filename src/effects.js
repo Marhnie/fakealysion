@@ -1070,6 +1070,21 @@ function compileInner(text) {
     script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '옵션시큐리티효과무효', duration: 'permanent' });
   }
 
+  // Bare keyword(s) alone as a segment body ("《관통》", "《블로커》《재밍》", "《S 어택 +1》"): the
+  // implicit-grant idiom — this Digimon gains them until end of turn (typically after a leading
+  // condition: "자신의 패가 3장 이하라면, 《관통》").
+  {
+    const KW_BARE = /^(?:[≪《]\s*(블로커|재밍|관통|속공|진격|충돌|길동무|회피|아머\s*퍼지|방벽|스케이프고트|돌진|연계|재기동|(?:S|시큐리티)\s*어택\s*\+\d+)\s*[≫》](?:\s*\([^()]*\))?\s*)+[.。]?$/;
+    if (KW_BARE.test(t.trim())) {
+      for (const km of t.matchAll(/[≪《]\s*([^≫》]+?)\s*[≫》]/g)) {
+        const lab = km[1].replace(/\s+/g, ' ').trim();
+        let sm;
+        if ((sm = lab.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '시큐리티어택', value: Number(sm[1]), duration: 'turn', _bare: true });
+        else script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: lab.replace(/\s+/g, ''), duration: 'turn', _bare: true });
+      }
+    }
+  }
+
   // "《진격》" printed bare, alone, as an entire segment body (BT14-017,
   // EX5-014, BT16-015, BT18-016, LM-039, all 【진화 시】) — the implicit-grant
   // idiom (a keyword name with no "얻는다" wording still means "this card
@@ -1091,7 +1106,17 @@ function compileInner(text) {
   }
 
   // "…한 뒤 이 디지몬을 소멸시킨다" runs after everything else that needs the source stack.
-  return [...script.filter(o => !o.deferLast), ...script.filter(o => o.deferLast)];
+  // The same keyword can be reached by several patterns (bare-keyword idiom + "얻는다" loops) — grant once.
+  const hasBare = script.some(o => o._bare);
+  const seenGrant = new Set();
+  const uniq = script.filter(o => {
+    if (hasBare && o.op === 'grantKeyword' && !o._bare) return false;
+    if (o.op !== 'grantKeyword') return true;
+    const key = JSON.stringify([o.keyword, o.value, o.thisStack, o.target, o.duration]);
+    if (seenGrant.has(key)) return false;
+    seenGrant.add(key); return true;
+  });
+  return [...uniq.filter(o => !o.deferLast), ...uniq.filter(o => o.deferLast)];
 }
 
 // ---- leading conditions ("<조건>라면/다면, <효과>") ----
@@ -1120,12 +1145,12 @@ function parseConditionText(c) {
   if ((m = c.match(/^자신의\s*테이머가\s*(\d+)\s*명\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).battle.filter(s => cat(ctx, s.cardId) === 'tamer').length); }
   if ((m = c.match(/^자신의\s*테이머가\s*(있다면|없다면)$/))) return (ctx) => (own(ctx).battle.some(s => cat(ctx, s.cardId) === 'tamer')) === (m[1] === '있다면');
   // zone sizes: "자신/상대의 패/트래시/시큐리티가 N장 이하/이상(이라면|있다면)"
-  if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티)(?:가|에)?\s*(\d+)\s*장\s*(이하|이상)(?:이라면|\s*있다면)$/))) {
+  if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티)(?:가|에)?\s*(\d+)\s*장\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) {
     const f = NUM_CMP(Number(m[3]), m[4]); const who = m[1]; const zone = { 패: 'hand', 트래시: 'trash', 시큐리티: 'security' }[m[2]];
     return (ctx) => f((who === '자신' ? own(ctx) : opp(ctx))[zone].length);
   }
   // board counts: "자신/상대의 디지몬/테이머가 N마리·명·장 이하/이상(이라면|있다면)"
-  if ((m = c.match(/^(자신|상대)의\s*(디지몬|테이머)(?:가|이)?\s*(\d+)\s*(?:마리|명|장)\s*(이하|이상)(?:이라면|\s*있다면)$/))) {
+  if ((m = c.match(/^(자신|상대)의\s*(디지몬|테이머)(?:가|이)?\s*(\d+)\s*(?:마리|명|장)\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) {
     const f = NUM_CMP(Number(m[3]), m[4]); const who = m[1], kind = m[2] === '테이머' ? 'tamer' : 'digimon';
     return (ctx) => f((who === '자신' ? own(ctx) : opp(ctx)).battle.filter(s => cat(ctx, s.cardId) === kind).length);
   }
@@ -1144,7 +1169,7 @@ function parseConditionText(c) {
     return (ctx) => own(ctx).battle.some(s => l.includes(ctx.S.card(s.cardId).nameKo)) === (m[2] === '있다면');
   }
   if ((m = c.match(/^이\s*디지몬이\s*「([^」]+)」(?:이)?라면$/))) return (ctx) => { const st = stackOf(ctx); return !!st && ctx.S.card(st.cardId).nameKo === m[1]; };
-  if ((m = c.match(/^이\s*디지몬의\s*진화원이\s*(\d+)\s*장\s*(이하|이상)(?:이라면|\s*있다면)$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => { const st = stackOf(ctx); return !!st && f(st.sources.length); }; }
+  if ((m = c.match(/^이\s*디지몬의\s*진화원이\s*(\d+)\s*장\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => { const st = stackOf(ctx); return !!st && f(st.sources.length); }; }
   if (/^이\s*디지몬이\s*다색(?:이)?라면$/.test(c)) return (ctx) => { const st = stackOf(ctx); return !!st && (ctx.S.card(st.cardId).colors || []).length >= 2; };
   if ((m = c.match(/^이\s*디지몬이\s*(\d+)\s*색\s*이상(?:이)?라면$/))) return (ctx) => { const st = stackOf(ctx); return !!st && (ctx.S.card(st.cardId).colors || []).length >= Number(m[1]); };
   if ((m = c.match(/^서로의\s*시큐리티\s*합계가\s*(\d+)\s*장\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).security.length + opp(ctx).security.length); }
@@ -1217,7 +1242,6 @@ export function compileToScript(text) {
   }
   // Already condition-aware (dedicated op/condition) — leave it alone.
   if (inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
-  if (!inner.length) return inner;
   const test = parseConditionText(cm[1]);
   if (!test) return []; // can't evaluate the condition → manual, never apply blindly
   const rest = compileWithCost(cm[2]);
