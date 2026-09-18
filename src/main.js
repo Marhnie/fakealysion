@@ -391,7 +391,7 @@ function cardChip(cardId, opts = {}) {
 // these ever appeared anywhere on the board before.
 const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
-  속공: '⚡속공', 진격: '⚔진격', DP감소무효: '🚫DP감소무효',
+  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
 };
 function activeKeywordBadges(stack) {

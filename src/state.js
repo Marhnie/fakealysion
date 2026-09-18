@@ -562,7 +562,7 @@ export function grantColor(state, p, uid, color) {
   log(state, `${p} ${card(stack.cardId).nameKo}는 ${color} 색으로도 취급됨`);
 }
 
-const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동']);
+const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무']);
 
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
@@ -666,7 +666,7 @@ function parseStaticGrants(text) {
     const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫](?:\s*\([^()]*\))?$/);
     if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
     const label = bare[1];
-    if (['재밍', '블로커', '관통', '재기동', '속공', '진격'].includes(label)) { out.keywords[label] = true; continue; }
+    if (['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무'].includes(label)) { out.keywords[label] = true; continue; }
     // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
     // beginner/starter-deck cards) are the same keyword.
     if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
@@ -821,7 +821,7 @@ export function recomputeStackGrants(stack) {
     dp += g.dp;
     secAtk += g.keywords['시큐리티어택'] || 0;
     linkCap += g.keywords['링크+'] || 0;
-    for (const k of ['재밍', '블로커', '관통', '재기동', '속공', '진격']) if (g.keywords[k]) flags[k] = true;
+    for (const k of ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무']) if (g.keywords[k]) flags[k] = true;
   }
   stack.inheritedDP = dp;
   stack.inheritedKeywords = {
@@ -1947,6 +1947,16 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   if (result === 'attackerWins' || result === 'tie') {
     if (hasBattleImmunity(state, dStack)) log(state, `${defenderP} ${card(dStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
     else deleteStack(state, defenderP, defenderUid, 'trash', 'battle');
+  }
+  // ≪길동무≫: "배틀에서 이 디지몬만이 소멸했을 때, 배틀한 상대의 디지몬을 소멸시킨다"
+  // — only when THIS Digimon alone was destroyed (a tie destroys both already, and
+  // an immune/saved Digimon that survived doesn't count as having been destroyed).
+  if (result === 'attackerWins' && hasKeyword(dStack, '길동무') && !dpl.battle.includes(dStack) && apl.battle.includes(aStack)) {
+    log(state, `${defenderP} ${card(defenderCardId).nameKo} 《길동무》 — ${card(attackerCardId).nameKo}도 소멸`);
+    deleteStack(state, attackerP, attackerUid, 'trash', 'effect');
+  } else if (result === 'defenderWins' && hasKeyword(aStack, '길동무') && !apl.battle.includes(aStack) && dpl.battle.includes(dStack)) {
+    log(state, `${attackerP} ${card(attackerCardId).nameKo} 《길동무》 — ${card(defenderCardId).nameKo}도 소멸`);
+    deleteStack(state, defenderP, defenderUid, 'trash', 'effect');
   }
   const piercing = hasKeyword(aStack, '관통');
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
