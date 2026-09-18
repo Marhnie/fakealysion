@@ -548,6 +548,33 @@ export function hasKeyword(stack, name) {
   return !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]);
 }
 
+// "특징으로 「X」를 가진 이 디지몬은 《KEYWORD》를 얻는다." / the bare
+// unconditional "이 디지몬은 《KEYWORD》를 얻는다." — same continuous
+// 자신/상대/서로의 턴 family as the other grants, for keywords whose
+// consumer needs to check live (e.g. 충돌, which only matters exactly when
+// Block Timing is being resolved) rather than through the cached
+// keywords/inheritedKeywords used by hasKeyword.
+export function hasContinuousKeyword(state, p, stack, keyword) {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const bareRe = new RegExp(`^이\\s*디지몬은\\s*[≪《]\\s*${escaped}\\s*[≫》](?:\\s*\\([^()]*\\))?\\s*(?:을|를)?\\s*얻는다\\.?$`);
+  const traitRe = new RegExp(`^특징으로\\s*「([^」]+)」\\s*(?:을|를)?\\s*가진\\s*이\\s*디지몬은\\s*[≪《]\\s*${escaped}\\s*[≫》](?:\\s*\\([^()]*\\))?\\s*(?:을|를)?\\s*얻는다\\.?$`);
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      const body = seg.body.trim();
+      if (bareRe.test(body)) return true;
+      const m = body.match(traitRe);
+      if (m && (card(stack.cardId).types || []).some(t => t.includes(m[1]))) return true;
+    }
+  }
+  return false;
+}
+
 // "[턴에 N회]"/"[턴 N회]" frequency caps were being parsed as plain
 // descriptive text and never actually enforced anywhere — a card like
 // ST2-11 MetalGarurumon ("【어택 시】[턴에 1회] 이 디지몬을 액티브로 한다.")

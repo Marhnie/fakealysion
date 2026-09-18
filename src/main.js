@@ -990,7 +990,12 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // Digimon with the keyword (using it rests that Digimon) — asking "does the
 // opponent block?" when they have none is both misleading and an
 // unnecessary extra click.
-function eligibleBlockers(p) {
+// 16-30 ≪충돌≫: while the attacker has it, EVERY one of the opponent's
+// Digimon is granted Blocker for this attack and must block if able (11-4/
+// 12-1's normal "may block" becomes mandatory) — checked live since it only
+// matters for the exact attack in progress, not tracked as a cached keyword.
+function eligibleBlockers(p, collidingAttacker) {
+  if (collidingAttacker) return state.players[p].battle.filter(s => !s.suspended);
   return state.players[p].battle.filter(s => S.hasKeyword(s, '블로커') && !s.suspended);
 }
 
@@ -1028,12 +1033,15 @@ function resolveFinalTarget(pa) {
 // targeted the player or a specific Digimon; 12-1-5 only excludes the
 // Digimon that's already the target from blocking (it can't block itself).
 function enterBlockCheck(pa) {
-  const blockers = eligibleBlockers(pa.opp).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
+  const attackerStack = findStack({ player: pa.attacker, uid: pa.uid });
+  const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌'));
+  const blockers = eligibleBlockers(pa.opp, colliding).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
     resolveFinalTarget(pa);
   } else {
     pa.stage = 'blockCheck';
     pa.blockers = blockers;
+    pa.mandatoryBlock = colliding;
   }
 }
 
@@ -1219,7 +1227,8 @@ function renderPendingAttack() {
       rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '닫기'));
     }
   } else if (pa.stage === 'blockCheck') {
-    rows.push(h('div', { className: 'zone-label' }, '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
+    rows.push(h('div', { className: 'zone-label' },
+      pa.mandatoryBlock ? '≪충돌≫ — 상대는 반드시 블록해야 함, 막을 디지몬 선택:' : '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {
       onClick: () => {
         S.restStack(state, pa.opp, s.uid);
@@ -1228,12 +1237,14 @@ function renderPendingAttack() {
         render();
       },
     }))));
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('button', {
-        className: 'primary',
-        onClick: () => { resolveFinalTarget(pa); render(); },
-      }, '넘기기'),
-    ]));
+    if (!pa.mandatoryBlock) {
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('button', {
+          className: 'primary',
+          onClick: () => { resolveFinalTarget(pa); render(); },
+        }, '넘기기'),
+      ]));
+    }
   } else if (pa.stage === 'result') {
     const res = pa.res;
     if (res.gameOver) {
