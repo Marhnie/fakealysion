@@ -391,7 +391,7 @@ function cardChip(cardId, opts = {}) {
 // these ever appeared anywhere on the board before.
 const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
-  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', DP감소무효: '🚫DP감소무효',
+  속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
 };
 function activeKeywordBadges(stack) {
@@ -1125,7 +1125,8 @@ function enterCounterTiming(pa) {
 // Block even apply against.
 function enterRedirectTiming(pa) {
   const options = S.findRedirectOptions(state, pa.opp, pa.attacker, pa.uid);
-  if (options.length === 0) {
+  pa.chargeTarget = S.chargeRedirectTarget(state, pa.attacker, pa.uid);
+  if (options.length === 0 && !pa.chargeTarget) {
     enterCounterTiming(pa);
   } else {
     pa.stage = 'redirectTiming';
@@ -1224,7 +1225,14 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'meta' }, '레스트 상태 디지몬이 없어서 직접 공격 불가'));
     }
   } else if (pa.stage === 'redirectTiming') {
-    rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
+    if (pa.chargeTarget) {
+      const ct = state.players[pa.opp].battle.find(s => s.uid === pa.chargeTarget);
+      if (ct) rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, `《돌진》 — 가장 DP가 높은 액티브 ${S.card(ct.cardId).nameKo}(으)로 어택 대상 변경`),
+        h('button', { onClick: () => { pa.targetKind = 'digimon'; pa.targetUid = ct.uid; pa.chargeTarget = null; pa.redirectOptions = []; enterCounterTiming(pa); render(); } }, '변경'),
+      ]));
+    }
+    if (pa.redirectOptions.length) rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
     pa.redirectOptions.forEach(opt => {
       const st = state.players[pa.opp].battle.find(s => s.uid === opt.stackUid);
       if (!st) return;

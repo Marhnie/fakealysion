@@ -348,6 +348,23 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
   return options;
 }
 
+// ≪돌진≫: "이 디지몬이 어택했을 때, 어택의 대상을 가장 DP가 높은 액티브 상태인
+// 상대의 디지몬 1마리로 변경할 수 있다." Returns the uid to redirect to (first
+// on a DP tie), or null if the attacker lacks the keyword / no legal target /
+// the attacker is immune to redirects.
+export function chargeRedirectTarget(state, attackerP, attackerUid) {
+  const apl = state.players[attackerP];
+  const aStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
+  if (!aStack || !hasKeyword(aStack, '돌진') || isAttackTargetImmune(state, attackerP, aStack)) return null;
+  const opp = opponentOf(attackerP);
+  const cands = state.players[opp].battle
+    .filter(s => !s.suspended && card(s.cardId).category === 'digimon' && !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED));
+  if (!cands.length) return null;
+  let best = cands[0], bestDp = effectiveDP(state, opp, best);
+  for (const c of cands.slice(1)) { const d = effectiveDP(state, opp, c); if (d > bestDp) { best = c; bestDp = d; } }
+  return best.uid;
+}
+
 // Marks a redirect option as used this turn (for its [턴에 N회] cap, if any).
 export function markRedirectUsed(state, p, stackUid, cardId) {
   const pl = state.players[p];
@@ -563,8 +580,8 @@ export function grantColor(state, p, uid, color) {
 }
 
 // Bare 《키워드》 lines the engine has a real consumer for (static grants).
-const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴'];
-const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴']);
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진'];
+const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진']);
 
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
