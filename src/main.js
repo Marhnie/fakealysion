@@ -1017,7 +1017,7 @@ function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
   S.queueTriggersForStack(state, p, dec.stack, 'attack');
-  const dp = S.effectiveDP(dec.stack);
+  const dp = S.effectiveDP(state, p, dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
   const pa = { attacker: p, uid, dp, opp, digimonTargets, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };

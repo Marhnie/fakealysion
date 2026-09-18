@@ -422,10 +422,6 @@ export function grantColor(state, p, uid, color) {
 
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동']);
 
-export function effectiveDP(stack) {
-  return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0);
-}
-
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
   const inherited = stack.inheritedKeywords?.['시큐리티어택'] ? Number(stack.inheritedKeywords['시큐리티어택']) || 0 : 0;
@@ -512,6 +508,57 @@ function parseStaticGrants(text) {
   return out;
 }
 
+// Every card whose text can contribute a standing grant to this stack — its
+// own top card (own:true, reads effectKo) plus every evolution source and
+// attached Link Card (own:false, reads inheritedKo). Shared by
+// recomputeStackGrants (cached, unconditional grants) and
+// turnConditionalDP (live, re-evaluated every call since it depends on
+// whose turn it currently is).
+function stackContributors(stack) {
+  return [
+    { id: stack.cardId, own: true },
+    ...stack.sources.map(id => ({ id, own: false })),
+    ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
+  ];
+}
+
+// "이 디지몬을 DP +N." printed under a bare 【자신의 턴】/【상대의 턴】/【서로의
+// 턴】 tag (no other clause in the segment) is a continuous conditional stat,
+// not a one-time trigger — it's active only while that turn-window condition
+// holds, so unlike parseStaticGrants it can't be cached once and forgotten;
+// effectiveDP re-evaluates it against the current state.activePlayer every
+// call. Confirmed extremely common (140+ cards) via a full-card-DB audit.
+function parseTurnConditionalDP(text) {
+  const out = [];
+  if (!text) return out;
+  const { segments } = parseEffectSegments(text);
+  for (const seg of segments) {
+    if (seg.tags.length !== 1) continue;
+    const tag = seg.tags[0];
+    if (!['자신의 턴', '상대의 턴', '서로의 턴'].includes(tag)) continue;
+    const m = seg.body.trim().match(/^이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
+    if (!m) continue;
+    out.push({ tag, amount: (m[1] === '-' ? -1 : 1) * Number(m[2]) });
+  }
+  return out;
+}
+
+function turnConditionalDP(state, p, stack) {
+  let total = 0;
+  for (const { id, own } of stackContributors(stack)) {
+    const grants = parseTurnConditionalDP(own ? card(id).effectKo : card(id).inheritedKo);
+    for (const g of grants) {
+      const active = g.tag === '서로의 턴' || (g.tag === '자신의 턴') === (state.activePlayer === p);
+      if (active) total += g.amount;
+    }
+  }
+  return total;
+}
+
+export function effectiveDP(state, p, stack) {
+  return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack);
+}
+
 // Recompute a stack's standing DP/keywords from THREE sources: the current
 // top card's own printed bare lines (e.g. a Digimon that just innately has
 // "《블로커》" on its own text — confirmed extremely common, ST1-06 etc. —
@@ -523,11 +570,7 @@ export function recomputeStackGrants(stack) {
   let secAtk = 0;
   let linkCap = 0;
   const flags = {};
-  const contributors = [
-    { id: stack.cardId, own: true },
-    ...stack.sources.map(id => ({ id, own: false })),
-    ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
-  ];
+  const contributors = stackContributors(stack);
   for (const { id, own } of contributors) {
     const g = parseStaticGrants(own ? card(id).effectKo : card(id).inheritedKo);
     dp += g.dp;
@@ -671,7 +714,7 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
 function ruleCheckDP(state, p, stack) {
   const pl = state.players[p];
   if (!pl.battle.includes(stack)) return; // rule applies to the battle area only, not the raising area
-  if (effectiveDP(stack) <= 0) {
+  if (effectiveDP(state, p, stack) <= 0) {
     log(state, `${p} ${card(stack.cardId).nameKo} DP 0 이하 — 룰체크로 소멸 (17-1-3-1)`);
     deleteStack(state, p, stack.uid);
   }
@@ -1034,7 +1077,7 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   const dStack = dpl.battle.find(s => s.uid === defenderUid);
   if (!aStack || !dStack) return null;
   const attackerCardId = aStack.cardId, defenderCardId = dStack.cardId;
-  const aDp = effectiveDP(aStack), dDp = effectiveDP(dStack);
+  const aDp = effectiveDP(state, attackerP, aStack), dDp = effectiveDP(state, defenderP, dStack);
   let result;
   if (aDp > dDp) result = 'attackerWins';
   else if (aDp < dDp) result = 'defenderWins';
@@ -1074,7 +1117,7 @@ export function declareAttack(state, attackerP, stackUid) {
 export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
   const apl = state.players[attackerP];
   const attackerStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
-  const attackerDp = attackerStack ? effectiveDP(attackerStack) : 0;
+  const attackerDp = attackerStack ? effectiveDP(state, attackerP, attackerStack) : 0;
   const jamming = attackerStack ? hasKeyword(attackerStack, '재밍') : false;
   const checks = 1 + (attackerStack ? securityAttackBonus(attackerStack) : 0);
   const pl = state.players[defenderP];
