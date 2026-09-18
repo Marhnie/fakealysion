@@ -181,6 +181,13 @@ async function runOne(instr, ctx) {
       }
       break;
     }
+    case 'restAll': {
+      const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      for (const s of [...state.players[targetPlayer].battle]) {
+        if (matchesFilter(S, s.cardId, instr.filter)) S.restStack(state, targetPlayer, s.uid);
+      }
+      break;
+    }
     case 'modifyDP': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const uids = state.players[targetPlayer].battle.map(s => s.uid);
@@ -542,7 +549,7 @@ export function compileToScript(text) {
   // common (confirmed a dozen+ cards via the audit, e.g. BT7-053/BT10-056/
   // EX2-029 all print almost this exact combo) — a one-time skip of the
   // target's next unsuspend, not a separate standalone effect.
-  if ((m = t.match(/상대(?:의)?\s*디지몬(?:\/테이머)?\s*(\d+)\s*마리(?:\(명\))?를\s*레스트시킨다/))) {
+  if ((m = t.match(/상대(?:의)?\s*디지몬(?:\/테이머)?\s*(\d+)\s*마리(?:\(명\))?(?:까지)?를\s*레스트시킨다/))) {
     // Word order varies across prints ("다음 상대의 액티브..." vs "상대의
     // 다음 액티브...", and "그 디지몬은" can lead OR follow "...페이즈에서는") —
     // just require both distinctive phrases to appear together rather than
@@ -556,6 +563,13 @@ export function compileToScript(text) {
     // makes sense if resting your own was actually an option).
     const target = m[1] ? (/상대/.test(m[1]) ? 'opponent' : 'self') : 'either';
     for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'rest', target });
+  }
+
+  // "[DP N 이하의] 상대의 디지몬/테이머 전부를 레스트시킨다" — mass rest.
+  if ((m = t.match(/(?:DP\s*(\d+)\s*이하의\s*)?상대(?:의)?\s*(디지몬|테이머)\s*전부(?:를)?\s*레스트시킨다/))) {
+    const filter = { category: m[2] === '테이머' ? 'tamer' : 'digimon' };
+    if (m[1]) filter.dpMax = Number(m[1]);
+    script.push({ op: 'restAll', target: 'opponent', filter });
   }
 
   // DP modification, this turn unless stated otherwise.
