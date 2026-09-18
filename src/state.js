@@ -875,11 +875,28 @@ export function placeThisInBattle(state, p, cardId) {
   const pl = state.players[p];
   const idx = pl.trash.lastIndexOf(cardId);
   if (idx !== -1) pl.trash.splice(idx, 1);
-  const stack = { uid: 'u' + Math.random().toString(36).slice(2), cardId, sources: [], suspended: false, attackEligibleTurn: state.turnNumber + 1 };
+  // makeStack(), not a bespoke literal — a bare {uid,cardId,sources,...}
+  // object missing tempDP/keywords/extraColors/etc crashes the moment this
+  // newly-placed stack's own effect grants it a keyword or color (same bug
+  // already fixed once for fuseStacks earlier this session).
+  const stack = makeStack(cardId, state.turnNumber);
   recomputeStackGrants(stack);
   pl.battle.push(stack);
   log(state, `${p} ${card(cardId).nameKo}을(를) 배틀 에어리어에 놓음`);
   return stack;
+}
+
+// Same trash -> hand pull as saveCardUnderTamer/placeThisInBattle: a card
+// revealed via security check (or used as an Option) that says "이 카드를
+// 패에 추가한다." was already pushed to pl.trash before this trigger queued.
+export function addSelfToHand(state, p, cardId) {
+  const pl = state.players[p];
+  const idx = pl.trash.lastIndexOf(cardId);
+  if (idx === -1) return false;
+  pl.trash.splice(idx, 1);
+  pl.hand.push(cardId);
+  log(state, `${p} ${card(cardId).nameKo}을(를) 패에 추가`);
+  return true;
 }
 
 // ---- Arts Digivolve (4-20) ----

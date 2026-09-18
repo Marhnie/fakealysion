@@ -302,6 +302,9 @@ async function runOne(instr, ctx) {
     case 'placeThisInBattle':
       S.placeThisInBattle(state, ctx.self, ctx.sourceCardId);
       break;
+    case 'addSelfToHand':
+      S.addSelfToHand(state, ctx.self, ctx.sourceCardId);
+      break;
     case 'noop':
       S.log(state, `(확인) ${instr.note}`);
       break;
@@ -514,9 +517,18 @@ export function compileToScript(text) {
 
   // Option cards that stay on the field after resolving ("그 후 이 카드를
   // 배틀 에어리어에 놓는다") — the card was provisionally trashed by
-  // useOptionCard; this relocates it.
-  if (/그\s*후,?\s*이\s*카드를\s*배틀\s*에어리어에\s*놓는다/.test(t)) {
+  // useOptionCard; this relocates it. Also covers the bare form with no
+  // "그 후," lead-in, printed as a whole 【시큐리티】 body by itself — by far
+  // the single most common 시큐리티 pattern (60 of 178 via the audit).
+  if (/이\s*카드를\s*배틀\s*에어리어에\s*놓는다/.test(t)) {
     script.push({ op: 'placeThisInBattle' });
+  }
+
+  // "이 카드를 패에 추가한다." — a card revealed via security check (or an
+  // Option card, after resolving) returns to hand instead of trashing.
+  // Second most common 시큐리티 pattern (53 of 178).
+  if (/이\s*카드를\s*패에\s*추가한다/.test(t)) {
+    script.push({ op: 'addSelfToHand' });
   }
 
   // Return a named/trait-matching card from own trash to hand.
