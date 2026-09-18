@@ -372,6 +372,22 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'destroySum': {
+      // Pick opponent Digimon one at a time while the running DP/cost total stays within the limit.
+      let left = instr.limit; const chosen = [];
+      const statOf = (st) => instr.stat === 'dp' ? S.effectiveDP(state, ctx.opp, st) : (S.card(st.cardId).cost || 0);
+      for (;;) {
+        const opts = state.players[ctx.opp].battle.filter(st => S.card(st.cardId).category === 'digimon' && !chosen.includes(st.uid) && statOf(st) <= left);
+        if (!opts.length) break;
+        const uid = await ctx.choose('pickStack', { player: ctx.opp, uids: opts.map(x => x.uid), prompt: `소멸시킬 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : '등장 코스트'} 합계 ${left})` });
+        if (!uid) break;
+        const st = opts.find(x => x.uid === uid);
+        if (!st) break;
+        chosen.push(uid); left -= statOf(st);
+      }
+      for (const uid of chosen) S.deleteStack(state, ctx.opp, uid, 'trash', 'effect');
+      break;
+    }
     case 'attackNow': {
       const pl = state.players[who];
       let uid = instr.thisStack ? ctx.sourceStackUid : null;
@@ -638,6 +654,14 @@ function compileInner(text) {
   if ((m = t.match(/[≪《]\s*(\d+)\s*드로우\s*[≫》]/))) script.push({ op: 'draw', who: 'self', n: Number(m[1]) });
   if ((m = t.match(/메모리(?:를|을)?\s*\+\s*(\d+)/))) script.push({ op: 'gainMemory', who: 'self', n: Number(m[1]) });
   if ((m = t.match(/메모리(?:를|을)?\s*-\s*(\d+)/))) script.push({ op: 'gainMemory', who: 'self', n: -Number(m[1]) });
+
+  // "DP의 합계가 N 이하가 되도록 상대 디지몬을 골라, 고른 디지몬 전부를 소멸시킨다" /
+  // "등장 코스트 합계 N까지 상대의 디지몬을 소멸시킨다" — pick within a shared budget.
+  if ((m = t.match(/DP의\s*합계가\s*(\d+)\s*이하가\s*되도록\s*상대(?:의)?\s*디지몬을\s*골라,?\s*고른\s*디지몬\s*전부를\s*소멸시킨다/))) {
+    script.push({ op: 'destroySum', stat: 'dp', limit: Number(m[1]) });
+  } else if ((m = t.match(/등장\s*코스트\s*합계\s*(\d+)\s*까지\s*상대(?:의)?\s*디지몬을\s*소멸시킨다/))) {
+    script.push({ op: 'destroySum', stat: 'cost', limit: Number(m[1]) });
+  }
 
   // Destroy / delete opponent's Digimon.
   if (/^이\s*디지몬을\s*소멸시킨다[.。]?$/.test(t)) {
