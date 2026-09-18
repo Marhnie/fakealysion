@@ -1072,6 +1072,30 @@ function isEvoCostLocked(state, p) {
   return false;
 }
 
+// "서로는 지불하는 등장 코스트를 마이너스할 수 없다." (BT8-071/ST12-03/
+// ST13-08/EX7-015, all 서로의 턴) — symmetric play-cost-discount lock, unlike
+// isEvoCostLocked's opponent-only form. Scans BOTH players' boards since
+// either side's copy of this ability locks everyone equally.
+function isPlayCostLocked(state) {
+  for (const owner of ['A', 'B']) {
+    const pl = state.players[owner];
+    for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
+      for (const { id, own } of stackContributors(stack)) {
+        const text = own ? card(id).effectKo : card(id).inheritedKo;
+        if (!text) continue;
+        const { segments } = parseEffectSegments(text);
+        for (const seg of segments) {
+          if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+          const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === owner);
+          if (!active) continue;
+          if (/^서로는\s*지불하는\s*등장\s*코스트를?\s*마이너스할\s*수\s*없다\.?$/.test(seg.body.trim())) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // "이 디지몬이 특징 「X」를 가진 디지몬 카드로 진화할 때, 지불하는 코스트
 // -N." — a CONTINUOUS evolution-cost discount conditioned on the TARGET
 // card's trait, unlike the one-shot addEvoCostMod/consumeEvoCostMod pair
@@ -1107,6 +1131,7 @@ export function continuousEvoCostDiscount(state, p, stack, targetCardId) {
 // the first eligible (non-suspended, trait-matching) Tamer found — mutates
 // state by resting it as a side effect of computing the discount.
 export function tamerPlayCostDiscount(state, p, targetCardId) {
+  if (isPlayCostLocked(state)) return 0;
   const tgt = card(targetCardId);
   const pl = state.players[p];
   for (const stack of pl.battle) {
