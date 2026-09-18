@@ -36,6 +36,8 @@ function matchesFilter(S, cardId, filter) {
   if (filter.dpMax != null && (c.dp || 0) > filter.dpMax) return false;
   if (filter.dpMin != null && (c.dp || 0) < filter.dpMin) return false;
   if (filter.dp != null && (c.dp || 0) !== filter.dp) return false;
+  if (filter.costMax != null && (c.cost || 0) > filter.costMax) return false;
+  if (filter.costMin != null && (c.cost || 0) < filter.costMin) return false;
   if (filter.name && c.nameKo !== filter.name) return false;
   if (filter.nameIncludes && !c.nameKo.includes(filter.nameIncludes)) return false;
   return true;
@@ -253,6 +255,25 @@ async function runOne(instr, ctx) {
       if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0).map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '어택 불가로 만들 디지몬 선택' });
       if (targetUid) S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn);
+      break;
+    }
+    case 'restrictAttackPlayer': {
+      // Narrower than restrictAttack — can still attack a Digimon directly.
+      const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      const dur = instr.expiresAfterTurn;
+      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const matching = () => state.players[targetPlayer].battle.filter(s => !instr.filter || matchesFilter(S, s.cardId, instr.filter));
+      if (instr.all) {
+        for (const s of matching()) S.restrictAttackPlayer(state, targetPlayer, s.uid, expiresAfterTurn);
+        break;
+      }
+      for (let i = 0; i < (instr.n || 1); i++) {
+        const uids = matching().map(s => s.uid);
+        if (!uids.length) break;
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '플레이어 공격 불가로 만들 디지몬 선택' });
+        if (!targetUid) break;
+        S.restrictAttackPlayer(state, targetPlayer, targetUid, expiresAfterTurn);
+      }
       break;
     }
     case 'restStack':
@@ -662,6 +683,23 @@ export function compileToScript(text) {
     script.push({ op: 'restrictAttack', target: 'opponent', filter: { hasNoSources: true }, expiresAfterTurn: 'opponentTurn', prompt: '(블록 금지 부분은 수동으로 기억해두세요 — 이 엔진의 자동 블록 판정에는 별도 반영 안 됨)' });
   } else if (/상대는\s*진화원을?\s*갖지\s*않은\s*디지몬으로는\s*어택할\s*수\s*없다/.test(t)) {
     script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, noEvoSources: true, expiresAfterTurn: 'opponentTurn', prompt: '(주의: 현재 필드의 무진화원 디지몬에만 적용, 이후 새로 등장하는 카드는 수동 확인 필요)' });
+  }
+
+  // "플레이어에게 어택할 수 없다." — narrower than the above: can still
+  // directly attack a Digimon, just not the player. Always a one-shot
+  // temporary grant on the OPPONENT's stack(s) when it reaches compileToScript
+  // at all (the bare self-restriction form is a continuous 자신/상대/서로의
+  // 턴 ability instead, handled by isAttackPlayerRestrictedByAbility).
+  if ((m = t.match(/(?:등장\s*코스트\s*(\d+)\s*(이상|이하)(?:인|의)?\s*)?상대(?:의)?\s*디지몬\s*(전부|\d+\s*마리(?:까지)?)는\s*플레이어에게\s*어택할\s*수\s*없다/))) {
+    const filter = {};
+    if (m[1]) filter[m[2] === '이상' ? 'costMin' : 'costMax'] = Number(m[1]);
+    const expiresAfterTurn = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : (/이\s*턴\s*동안/.test(t) ? 'turn' : 'permanent');
+    if (m[3] === '전부') {
+      script.push({ op: 'restrictAttackPlayer', target: 'opponent', all: true, filter, expiresAfterTurn });
+    } else {
+      const n = Number(m[3].match(/\d+/)[0]);
+      script.push({ op: 'restrictAttackPlayer', target: 'opponent', n, filter, expiresAfterTurn });
+    }
   }
 
   // "레스트할 수 없다" — the simplest unconditioned forms only; several real

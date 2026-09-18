@@ -1349,6 +1349,43 @@ export function restrictAttack(state, p, uid, expiresAfterTurn = 'permanent') {
   log(state, `${p} ${card(stack.cardId).nameKo} 어택 불가 상태 부여`);
 }
 
+// Narrower than restrictAttack — "플레이어에게 어택할 수 없다." only blocks
+// declaring the attack AGAINST THE PLAYER; this stack can still declare a
+// direct attack against an eligible opposing Digimon.
+export function restrictAttackPlayer(state, p, uid, expiresAfterTurn = 'permanent') {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return;
+  stack.cannotAttackPlayerUntil = expiresAfterTurn;
+  log(state, `${p} ${card(stack.cardId).nameKo} 플레이어 공격 불가 상태 부여`);
+}
+
+// "이 디지몬은 플레이어에게 어택할 수 없다." printed as a bare continuous
+// 자신/상대/서로의 턴 ability (as opposed to the temporary one-shot-triggered
+// form above, which uses cannotAttackPlayerUntil instead).
+function isAttackPlayerRestrictedByAbility(state, p, stack) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      if (/^이\s*디지몬은\s*플레이어에게\s*어택할\s*수\s*없다\.?$/.test(seg.body.trim())) return true;
+    }
+  }
+  return false;
+}
+
+export function canAttackPlayer(state, p, uid) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return true;
+  if (stack.cannotAttackPlayerUntil === 'permanent' || (typeof stack.cannotAttackPlayerUntil === 'number' && state.turnNumber <= stack.cannotAttackPlayerUntil)) return false;
+  return !isAttackPlayerRestrictedByAbility(state, p, stack);
+}
+
 // Opponent Digimon this attacker is legally allowed to target directly
 // (instead of attacking the player). Official base rule (11-2-7-1): the
 // target must be a RESTED (suspended) opposing Digimon. Some cards grant an

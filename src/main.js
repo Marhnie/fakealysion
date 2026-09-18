@@ -495,14 +495,14 @@ function zonePill(text) {
 function renderPlayerPanel(p) {
   const pl = state.players[p];
   const isActive = state.activePlayer === p;
-  const canAttackThisPlayerByDrag = dragData && dragData.kind === 'stack' && dragData.player !== p;
+  const canAttackThisPlayerByDrag = dragData && dragData.kind === 'stack' && dragData.player !== p && S.canAttackPlayer(state, dragData.player, dragData.uid);
   // Selecting your own eligible attacker (click, same as picking DNA/link
   // targets) highlights every legal target on the OPPONENT's side directly
   // on the board — the player and each attackable Digimon — as a second,
   // more discoverable way to attack besides dragging.
   const selectedEnemyAttacker = (sel.stack && sel.stack.player !== p && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer && state.phase === 'main')
     ? findStack(sel.stack) : null;
-  const canAttackThisPlayerByClick = selectedEnemyAttacker && !selectedEnemyAttacker.suspended;
+  const canAttackThisPlayerByClick = selectedEnemyAttacker && !selectedEnemyAttacker.suspended && S.canAttackPlayer(state, sel.stack.player, sel.stack.uid);
   const canAttackThisPlayer = canAttackThisPlayerByDrag || canAttackThisPlayerByClick;
   const legalClickTargets = canAttackThisPlayerByClick ? new Set(S.legalDigimonTargets(state, sel.stack.player, sel.stack.uid)) : new Set();
   const header = h('div', {
@@ -1074,10 +1074,11 @@ function attackFlow(p, uid, directTarget) {
   const dp = S.effectiveDP(state, p, dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
-  const pa = { attacker: p, uid, dp, opp, digimonTargets, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
+  const canHitPlayer = S.canAttackPlayer(state, p, uid);
+  const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
   sel.pendingAttack = pa;
 
-  if (directTarget === 'PLAYER') {
+  if (directTarget === 'PLAYER' && canHitPlayer) {
     pa.targetKind = 'player';
     enterRedirectTiming(pa);
   } else if (directTarget && digimonTargets.includes(directTarget) && !blockedFromDigimonTarget(p, dec.stack)) {
@@ -1133,12 +1134,16 @@ function renderPendingAttack() {
   if (pa.stage === 'targetChoice') {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
     const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('button', {
-        className: 'primary',
-        onClick: () => { pa.targetKind = 'player'; enterRedirectTiming(pa); render(); },
-      }, `${pa.opp} 본체 공격`),
-    ]));
+    if (pa.canHitPlayer) {
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('button', {
+          className: 'primary',
+          onClick: () => { pa.targetKind = 'player'; enterRedirectTiming(pa); render(); },
+        }, `${pa.opp} 본체 공격`),
+      ]));
+    } else {
+      rows.push(h('div', { className: 'meta' }, '이 디지몬은 플레이어에게 어택할 수 없음 (효과 제약)'));
+    }
     if (blockedByDynamic) {
       rows.push(h('div', { className: 'meta' }, '지금은 디지몬 직접 공격 불가 (효과 제약)'));
     } else if (pa.digimonTargets.length) {
