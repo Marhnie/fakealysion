@@ -369,6 +369,20 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'costGroup': {
+      const st = state.players[ctx.self].battle.find(x => x.uid === ctx.sourceStackUid) || (state.players[ctx.self].raising?.uid === ctx.sourceStackUid ? state.players[ctx.self].raising : null);
+      const canPay = instr.cost.every(c => {
+        if (c.op === 'trashHand') return state.players[c.who === 'opponent' ? ctx.opp : ctx.self].hand.filter(id => matchesFilter(S, id, c.filter)).length >= c.n;
+        if (c.op === 'removeSecurity') return state.players[c.who === 'opponent' ? ctx.opp : ctx.self].security.length >= 1;
+        if (c.op === 'restStack') return !!st && !st.suspended;
+        if (c.op === 'destroy') return !!st;
+        return true;
+      });
+      if (!canPay) { S.log(state, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); break; }
+      await runScript(instr.cost, ctx);
+      await runScript(instr.then, ctx);
+      break;
+    }
     case 'preventRest': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.expiresAfterTurn;
@@ -623,6 +637,10 @@ function compileInner(text) {
     const pm = t.match(/(?:패|트래시)(?:\s*(?:또는|\/)\s*(?:패|트래시))?에서,?\s*(.*?)\s*(?:\d+\s*장)[을를]?\s*(?:색\s*조건을\s*무시하고\s*)?(?:레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고/s);
     script.push({ op: 'playFree', who: 'self', zone, filter: pm ? parseCardFilter(pm[1]) : null, rested: /레스트\s*상태로/.test(t) });
   }
+
+  // "이 테이머/디지몬을 레스트시킨다" — rest the effect's own source stack (also the usual
+  // COST of "…레스트시키는 것으로," clauses, see compileWithCost).
+  if (/이\s*(?:테이머|디지몬)(?:을|를)\s*레스트시킨다/.test(t)) script.push({ op: 'restStack' });
 
   // Unsuspend ("액티브로 한다"). "이 디지몬" = the source card itself (no
   // choice needed); "자신/상대의 디지몬 N마리" = pick from that player's board.
@@ -1080,8 +1098,31 @@ function parseConditionText(c) {
   return null;
 }
 
-export function compileToScript(text) {
+// ---- "<비용>하는 것으로, <효과>" ----
+// 542 compiled effects begin with a cost clause. The old pattern scan ran the effect
+// (often BEFORE the cost, and even when the cost couldn't be paid). The cost is now
+// compiled on its own, must be payable, and is executed first.
+const COST_OPS = new Set(['trashHand', 'removeSecurity', 'restStack', 'destroy']);
+
+function normalizeCost(c) {
+  return c.trim().replace(/파기하는$/, '파기한다').replace(/소멸시키는$/, '소멸시킨다').replace(/레스트시키는$/, '레스트시킨다').replace(/되돌리는$/, '되돌린다').replace(/추가하는$/, '추가한다');
+}
+
+function compileWithCost(text) {
   const inner = compileInner(text);
+  const t = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
+  const cm = t.match(/^([^.。\n《≪]{2,90}?)\s*것으로,?\s*(.+)$/s);
+  if (!cm) return inner;
+  if (inner.some(x => x.op === 'costGroup' || x.op === 'condition')) return inner;
+  const costOps = compileInner(normalizeCost(cm[1]));
+  if (!costOps.length || !costOps.every(o => COST_OPS.has(o.op) && (o.op !== 'destroy' || o.mode === 'thisStack'))) return inner;
+  const eff = compileInner(cm[2]);
+  if (!eff.length) return [];
+  return [{ op: 'costGroup', cost: costOps, then: eff }];
+}
+
+export function compileToScript(text) {
+  const inner = compileWithCost(text);
   const trimmed = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
   const cm = trimmed.match(/^([^,.。\n]{2,80}?(?:라면|다면)),\s*(.*)$/s);
   if (!cm) return inner;
@@ -1090,7 +1131,7 @@ export function compileToScript(text) {
   if (!inner.length) return inner;
   const test = parseConditionText(cm[1]);
   if (!test) return []; // can't evaluate the condition → manual, never apply blindly
-  const rest = compileInner(cm[2]);
+  const rest = compileWithCost(cm[2]);
   if (!rest.length) return [];
   return [{ op: 'condition', if: { test }, then: rest, else: [] }];
 }
