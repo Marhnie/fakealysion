@@ -790,6 +790,19 @@ function parseOnceLimit(text) {
   return m ? Number(m[1]) : null;
 }
 
+// Printed "…할 수 있다" effects are OPTIONAL — but a script made only of ops that never
+// ask the player anything (draw, memory, mill, own-stack changes…) used to just fire.
+// Those get an explicit "발동한다 / 발동하지 않는다" prompt; scripts that already let the
+// player pick/cancel (playFree, jogress, targets…) keep their own cancel button.
+const NO_CHOICE_OPS = new Set(['draw', 'gainMemory', 'trashDeckTop', 'recoverTop', 'restStack', 'removeSecurity', 'securityTopToHand', 'securityBottomToHand', 'unsuspend', 'modifyDP', 'grantKeyword', 'securityDPMod', 'addSecurity']);
+function isOptionalAutoEffect(text, script) {
+  const bare = text.replace(/\([^()]*\)/g, '').replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '').trim();
+  if (/^상대는/.test(bare)) return false;
+  if (!/(?:할|시킬|놓을|추가할|등장시킬|사용할|오픈할|파기할|되돌릴|이동시킬|진화시킬|레스트시킬)\s*수\s*있다/.test(bare)) return false;
+  const flat = script.flatMap(o => o.op === 'costGroup' ? [...o.cost, ...o.then] : o.op === 'condition' ? [...o.then, ...(o.else || [])] : [o]);
+  return flat.length > 0 && flat.every(o => NO_CHOICE_OPS.has(o.op) && (o.op !== 'unsuspend' || o.target === 'thisStack' || true));
+}
+
 async function runPendingScript(trigger, opts = {}) {
   const limit = parseOnceLimit(trigger.text);
   if (limit != null && trigger.stackUid) {
@@ -811,6 +824,15 @@ async function runPendingScript(trigger, opts = {}) {
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, 700));
   const script = scriptFor(trigger);
+  if (isOptionalAutoEffect(trigger.text, script)) {
+    const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
+    if (!yes) {
+      S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과를 발동하지 않음`);
+      S.resolvePending(state, trigger.uid);
+      render();
+      return;
+    }
+  }
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose };
   await Effects.runScript(script, ctx);
   S.resolvePending(state, trigger.uid);
@@ -866,7 +888,12 @@ function renderUiChoice() {
   const { kind, payload, resolve } = uc;
   const rows = [h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')];
 
-  if (kind === 'pickStack') {
+  if (kind === 'confirmEffect') {
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', { className: 'primary', onClick: () => resolve(true) }, '발동한다'),
+      h('button', { onClick: () => resolve(false) }, '발동하지 않는다'),
+    ]));
+  } else if (kind === 'pickStack') {
     const cards = payload.uids.map(uid => {
       const pl = state.players[payload.player];
       const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
