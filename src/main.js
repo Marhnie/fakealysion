@@ -826,13 +826,18 @@ async function runPendingScript(trigger, opts = {}) {
 // not sit waiting for a redundant "run it?" click. Only genuinely
 // uncompiled text (script.length === 0) needs the manual fallback UI.
 const autoRunAttempted = new Set();
+let pendingRunner = null; // uid of the effect currently resolving — effects resolve ONE AT A TIME
+let runningPendingUid = null;
 function autoRunMandatoryPending() {
-  for (const t of state.pending) {
-    if (t.resolved || autoRunAttempted.has(t.uid)) continue;
-    if (!scriptFor(t).length) continue;
-    autoRunAttempted.add(t.uid);
-    runPendingScript(t, { delay: true });
-  }
+  if (pendingRunner) return;
+  const next = state.pending.find(t => !t.resolved && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
+  if (!next) return;
+  autoRunAttempted.add(next.uid);
+  runningPendingUid = next.uid;
+  pendingRunner = runPendingScript(next, { delay: true }).catch(() => {}).finally(() => {
+    pendingRunner = null; runningPendingUid = null;
+    render(); // chains into the next queued effect
+  });
 }
 
 function renderPendingEffects() {
@@ -840,12 +845,12 @@ function renderPendingEffects() {
   const rows = state.pending.map(t => {
     const c = S.card(t.cardId);
     const script = scriptFor(t);
-    return h('div', { className: `effect-box${script.length ? ' effect-firing' : ''}`, style: 'margin-bottom:6px;' }, [
+    return h('div', { className: `effect-box${script.length && t.uid === runningPendingUid ? ' effect-firing' : ''}`, style: `margin-bottom:6px;${script.length && t.uid !== runningPendingUid ? 'opacity:.6;' : ''}` }, [
       h('div', { className: 'effect-firing-title' }, `⚡ ${c.nameKo} 【${t.tags.join('】【')}】 발동`),
       h('div', {}, t.text),
       h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
         script.length
-          ? h('span', { className: 'meta' }, '처리 중…')
+          ? h('span', { className: 'meta' }, t.uid === runningPendingUid ? '▶ 처리 중…' : t.resolved ? '완료' : `⏳ 대기 중 (순서 ${state.pending.filter(x => !x.resolved && scriptFor(x).length).indexOf(t) + 1})`)
           : h('span', { className: 'meta' }, '자동 인식 실패 — 아래 버튼이나 범용 도구로 수동 처리'),
         ...quickApplyButtonsFor(t.text, t.player),
         h('button', { className: 'danger', onClick: () => { S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
@@ -1080,6 +1085,35 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // Digimon is granted Blocker for this attack and must block if able (11-4/
 // 12-1's normal "may block" becomes mandatory) — checked live since it only
 // matters for the exact attack in progress, not tracked as a cached keyword.
+// ---- step-by-step pacing (attack timings + effect resolution) ----
+// Every attack timing (대상 변경 → 카운터 → 블록 → 결과) is now shown as its own step
+// even when nothing can be decided in it, instead of the whole chain resolving in
+// one render. Auto mode advances after a short visible pause (and waits for any
+// pending effect to finish first); manual mode waits for the "다음 단계" button.
+const STEP = { manual: false, delay: 1300 };
+try { STEP.manual = localStorage.getItem('digimon_step_manual') === '1'; } catch (e) { /* ignore */ }
+
+function runPendingNext(pa) {
+  const next = pa.pendingNext;
+  if (!next) return;
+  pa.pendingNext = null; pa.paused = false; pa.token = (pa.token || 0) + 1;
+  next();
+  render();
+}
+
+function stepPause(pa, stage, info, next) {
+  pa.stage = stage; pa.info = info; pa.pendingNext = next; pa.paused = true;
+  const token = pa.token = (pa.token || 0) + 1;
+  if (STEP.manual) return;
+  const tick = () => {
+    if (sel.pendingAttack !== pa || pa.token !== token || !pa.pendingNext) return;
+    // Don't run ahead of an effect that is still resolving (its banner is on screen).
+    if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 400); return; }
+    runPendingNext(pa);
+  };
+  setTimeout(tick, STEP.delay);
+}
+
 function eligibleBlockers(p, collidingAttacker) {
   if (collidingAttacker) return state.players[p].battle.filter(s => !s.suspended);
   return state.players[p].battle.filter(s => S.hasKeyword(s, '블로커') && !s.suspended);
@@ -1123,7 +1157,8 @@ function enterBlockCheck(pa) {
   const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌'));
   const blockers = eligibleBlockers(pa.opp, colliding).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
-    resolveFinalTarget(pa);
+    pa.blockers = [];
+    stepPause(pa, 'blockCheck', '블록 타이밍 — 블록할 수 있는 디지몬이 없습니다', () => resolveFinalTarget(pa));
   } else {
     pa.stage = 'blockCheck';
     pa.blockers = blockers;
@@ -1139,7 +1174,8 @@ function enterBlockCheck(pa) {
 function enterCounterTiming(pa) {
   const counters = S.findCounterOptions(state, pa.opp);
   if (counters.length === 0) {
-    enterBlockCheck(pa);
+    pa.counters = [];
+    stepPause(pa, 'counterTiming', '카운터 타이밍 — 사용할 수 있는 카운터가 없습니다', () => enterBlockCheck(pa));
   } else {
     pa.stage = 'counterTiming';
     pa.counters = counters;
@@ -1156,7 +1192,8 @@ function enterRedirectTiming(pa) {
   pa.chargeTarget = S.chargeRedirectTarget(state, pa.attacker, pa.uid);
   const chainAvail = !pa.chainUsed && S.chainOptions(state, pa.attacker, pa.uid).length > 0;
   if (options.length === 0 && !pa.chargeTarget && !chainAvail) {
-    enterCounterTiming(pa);
+    pa.redirectOptions = [];
+    stepPause(pa, 'redirectTiming', '어택 선언 — 어택 대상을 바꿀 수 있는 효과가 없습니다', () => enterCounterTiming(pa));
   } else {
     pa.stage = 'redirectTiming';
     pa.redirectOptions = options;
@@ -1238,6 +1275,19 @@ function renderPendingAttack() {
     renderAttackSteps(pa.stage),
   ];
 
+  // Step pacing controls + the current step's explanation (see stepPause).
+  rows.push(h('label', { className: 'meta', style: 'display:flex;gap:6px;align-items:center;cursor:pointer;' }, [
+    h('input', { type: 'checkbox', checked: STEP.manual, onChange: (e) => { STEP.manual = e.target.checked; try { localStorage.setItem('digimon_step_manual', STEP.manual ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
+    '단계 수동 진행 (각 단계마다 "다음"을 눌러 진행)',
+  ]));
+  if (pa.paused && pa.pendingNext) {
+    rows.push(h('div', { className: 'effect-box step-info' }, [
+      h('div', {}, pa.info || ''),
+      h('button', { className: 'primary', onClick: () => runPendingNext(pa) }, STEP.manual ? '다음 단계 ▶' : '바로 진행 ▶'),
+      STEP.manual ? null : h('span', { className: 'meta', style: 'margin-left:8px;' }, '잠시 후 자동 진행…'),
+    ]));
+  }
+
   // ≪연계≫ — optional, offered until the battle actually resolves.
   if (attackerStackNow && pa.stage !== 'digimonResult' && pa.stage !== 'result' && !pa.chainUsed) {
     const chainUids = S.chainOptions(state, pa.attacker, pa.uid);
@@ -1276,7 +1326,7 @@ function renderPendingAttack() {
     } else {
       rows.push(h('div', { className: 'meta' }, '레스트 상태 디지몬이 없어서 직접 공격 불가'));
     }
-  } else if (pa.stage === 'redirectTiming') {
+  } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.chargeTarget) {
       const ct = state.players[pa.opp].battle.find(s => s.uid === pa.chargeTarget);
       if (ct) rows.push(h('div', { className: 'actions-row' }, [
@@ -1302,7 +1352,7 @@ function renderPendingAttack() {
       ]));
     });
     rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, pa.redirectOptions.length || pa.chargeTarget ? '넘기기' : '진행 (카운터 단계로)'));
-  } else if (pa.stage === 'counterTiming') {
+  } else if (pa.stage === 'counterTiming' && !pa.paused) {
     rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {
       rows.push(h('div', { className: 'actions-row' }, [
@@ -1346,7 +1396,7 @@ function renderPendingAttack() {
     } else {
       rows.push(h('button', { onClick: () => { endAttack(); render(); } }, '닫기'));
     }
-  } else if (pa.stage === 'blockCheck') {
+  } else if (pa.stage === 'blockCheck' && !pa.paused) {
     rows.push(h('div', { className: 'zone-label' },
       pa.mandatoryBlock ? '≪충돌≫ — 상대는 반드시 블록해야 함, 막을 디지몬 선택:' : '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {

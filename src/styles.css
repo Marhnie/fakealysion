@@ -277,3 +277,5 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 .train-btn:hover { background: var(--holo-accent); color: #001018; }
 .pile-chip.clickable { cursor: pointer; }
 .pile-chip.clickable:hover { border-color: var(--holo-accent); }
+
+.step-info { border-left: 3px solid var(--holo-accent); display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
