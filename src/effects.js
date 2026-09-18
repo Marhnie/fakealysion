@@ -265,13 +265,14 @@ async function runOne(instr, ctx) {
       break;
     case 'returnToHandStripSources': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      const dest = instr.dest || 'hand'; // 'hand' | 'deckBottom'
       const bounce = (stack) => {
         const pl = state.players[targetPlayer];
         pl.battle.splice(pl.battle.indexOf(stack), 1);
         const linkIds = (stack.linkCards || []).map(l => l.cardId);
-        pl.hand.push(stack.cardId);
+        if (dest === 'deckBottom') pl.deck.push(stack.cardId); else pl.hand.push(stack.cardId);
         pl.trash.push(...stack.sources, ...linkIds);
-        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} 핸드로, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
+        S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} ${dest === 'deckBottom' ? '덱 아래로' : '핸드로'}, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
         // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — exclude linkIds.
         for (const id of [...stack.sources, stack.cardId]) S.applyOverflowIfAny(state, targetPlayer, id);
       };
@@ -289,7 +290,7 @@ async function runOne(instr, ctx) {
       for (let i = 0; i < (instr.n || 1); i++) {
         const uids = matching().map(s => s.uid);
         if (!uids.length) break;
-        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '핸드로 되돌릴 디지몬 선택' });
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || (dest === 'deckBottom' ? '덱 아래로 되돌릴 디지몬 선택' : '핸드로 되돌릴 디지몬 선택') });
         if (!targetUid) break;
         const stack = state.players[targetPlayer].battle.find(s => s.uid === targetUid);
         if (stack) bounce(stack);
@@ -557,20 +558,27 @@ export function compileToScript(text) {
     script.push({ op: 'setMemoryIfLE', threshold: Number(m[1]), setTo: Number(m[2]) });
   }
 
-  // Bounce an opponent Digimon to hand and discard its evolution sources.
-  // "가진"/"갖는"/"가지는" are all real conjugations actually printed
-  // ("가지는?" alone, the original pattern, only ever matched "가지" or
-  // "가지는" — never "가진", by far the most common form).
-  if ((m = t.match(/(?:(레스트\s*상태[의인]|액티브\s*상태[의인])\s*)?(?:Lv\.(\d+)\s*(이하|이상)의?\s*)?(?:DP\s*(\d+)\s*(이하|이상)(?:의|인)?\s*)?상대\s*디지몬\s*(전부|\d+\s*마리(?:까지)?)를?\s*(?:대신\s*)?패로\s*되돌린다\.?\s*그\s*디지몬이\s*(?:가진|갖는|가지는)\s*진화원은?\s*파기한다/))) {
-    const filter = {};
-    if (m[2]) filter[m[3] === '이상' ? 'levelMin' : 'levelMax'] = Number(m[2]);
-    if (m[4]) filter[m[5] === '이상' ? 'dpMin' : 'dpMax'] = Number(m[4]);
-    const requireSuspended = m[1] ? m[1].startsWith('레스트') : null;
-    if (m[6] === '전부') {
-      script.push({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter, requireSuspended });
-    } else {
-      const n = Number(m[6].match(/\d+/)[0]);
-      script.push({ op: 'returnToHandStripSources', target: 'opponent', n, filter, requireSuspended });
+  // Bounce an opponent Digimon (to hand, or to the bottom of their deck) and
+  // discard its evolution sources. "가진"/"갖는"/"가지는" are all real
+  // conjugations actually printed ("가지는?" alone, the original pattern,
+  // only ever matched "가지" or "가지는" — never "가진", by far the most
+  // common form). Tried as hand first, then deck-bottom (84 combined
+  // occurrences via the full-DB audit — deck-bottom alone is the larger of
+  // the two).
+  for (const [destWord, dest] of [['패로', 'hand'], ['덱\\s*아래로', 'deckBottom']]) {
+    const re = new RegExp(`(?:(레스트\\s*상태[의인]|액티브\\s*상태[의인])\\s*)?(?:Lv\\.(\\d+)\\s*(이하|이상)의?\\s*)?(?:DP\\s*(\\d+)\\s*(이하|이상)(?:의|인)?\\s*)?상대(?:의)?\\s*디지몬\\s*(전부|\\d+\\s*마리(?:까지)?)를?\\s*(?:대신\\s*)?${destWord}\\s*되돌린다\\.?\\s*\\(?\\s*그\\s*디지몬이\\s*(?:가진|갖는|가지는)\\s*진화원은?\\s*파기한다`);
+    if ((m = t.match(re))) {
+      const filter = {};
+      if (m[2]) filter[m[3] === '이상' ? 'levelMin' : 'levelMax'] = Number(m[2]);
+      if (m[4]) filter[m[5] === '이상' ? 'dpMin' : 'dpMax'] = Number(m[4]);
+      const requireSuspended = m[1] ? m[1].startsWith('레스트') : null;
+      if (m[6] === '전부') {
+        script.push({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter, requireSuspended, dest });
+      } else {
+        const n = Number(m[6].match(/\d+/)[0]);
+        script.push({ op: 'returnToHandStripSources', target: 'opponent', n, filter, requireSuspended, dest });
+      }
+      break;
     }
   }
 
