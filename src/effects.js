@@ -513,7 +513,10 @@ export function compileToScript(text) {
   }
 
   // Tamer "if memory <= X, set it to Y" starter effect.
-  if ((m = t.match(/메모리가\s*(\d+)\s*이하일\s*때,?\s*(\d+)(?:으로)?\s*한다/))) {
+  if ((m = t.match(/메모리가\s*(\d+)\s*이하(?:일\s*때|라면),?\s*(\d+)(?:으로)?\s*한다/))) {
+    // "이하일 때"/"이하라면" ("when"/"if" ≤ N) — same Tamer turn-start
+    // boilerplate either way; "이하라면" turned out to be the far more
+    // common printed phrasing (58 of the 62 combined occurrences).
     script.push({ op: 'setMemoryIfLE', threshold: Number(m[1]), setTo: Number(m[2]) });
   }
 
