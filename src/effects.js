@@ -107,7 +107,7 @@ async function runOne(instr, ctx) {
       // ACTIVATING player's own dpMax-filtered destroy effects.
       let filter = instr.filter;
       if (filter?.dpMax != null) {
-        const boost = S.dpDestroyCapBoost(state, ctx.self);
+        const boost = S.dpDestroyCapBoost(state, ctx.self, ctx.sourceStackUid);
         if (boost) filter = { ...filter, dpMax: filter.dpMax + boost };
       }
       if (filter) uids = pl.battle.filter(s => matchesFilter(S, s.cardId, filter)).map(s => s.uid);

@@ -1161,7 +1161,13 @@ export function tamerPlayCostDiscount(state, p, targetCardId) {
 // that filter). Scoped to the bare, unconditioned form only — several real
 // prints instead scale by a per-source/trash count within the SAME
 // sentence as the destroy action itself, not attempted here.
-export function dpDestroyCapBoost(state, p) {
+//
+// `stackUid`, when given, also checks a second, narrower shape: "메모리가 N
+// 이하인 동안, 이 디지몬의 DP 소멸 효과의 상한 +N." (BT17-008/010, BT19-007/
+// 009, all inheritedKo) — scoped to just THAT ONE stack's own destroy
+// effects (not player-wide) and gated on the controller's EFFECTIVE memory
+// (the shared gauge is positive = p1's side, so p2 reads it negated).
+export function dpDestroyCapBoost(state, p, stackUid) {
   const pl = state.players[p];
   let total = 0;
   for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
@@ -1173,8 +1179,14 @@ export function dpDestroyCapBoost(state, p) {
         if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
         const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
         if (!active) continue;
-        const m = seg.body.trim().match(/^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
-        if (m) total += Number(m[1]);
+        let m = seg.body.trim().match(/^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
+        if (m) { total += Number(m[1]); continue; }
+        if (stack.uid !== stackUid) continue;
+        m = seg.body.trim().match(/^메모리가\s*(-?\d+)\s*이하인\s*동안,?\s*이\s*디지몬의\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
+        if (m) {
+          const effMemory = p === 'p1' ? state.memory : -state.memory;
+          if (effMemory <= Number(m[1])) total += Number(m[2]);
+        }
       }
     }
   }
