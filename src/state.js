@@ -1852,8 +1852,34 @@ export function playFreeFromZone(state, p, zone, index, opts = {}) {
 // up front — a script instruction like 'placeThisInBattle' (for cards that
 // say "그 후 이 카드를 배틀 에어리어에 놓는다") relocates it out of the trash
 // when it resolves.
+// 4-22 色条件: to USE an Option card the player needs, in the Battle or Breeding area, Digimon/Tamers
+// that together have every color the Option has (multicolor Options need all of their colors).
+// "…색 조건을 무시할 수 있다" printed on the card lifts it (conditions we can evaluate are checked).
+export function optionColorOk(state, p, cardId) {
+  const c = card(cardId);
+  const need = c.colors || [];
+  if (!need.length) return true;
+  const pl = state.players[p];
+  const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => ['digimon', 'tamer'].includes(card(st.cardId).category));
+  const have = new Set(stacks.flatMap(st => [...(card(st.cardId).colors || []), ...(st.extraColors || [])]));
+  if (need.every(col => have.has(col))) return true;
+  const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
+  const ig = txt.match(/([^.\n]*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시할\s*수\s*있다/);
+  if (!ig) return false;
+  const cond = ig[1].trim();
+  if (!cond) return true;
+  if (/앞면(?:인|의)?\s*시큐리티가\s*없는/.test(cond)) return true; // face-up security isn't modelled: none exist
+  const dm = cond.match(/^(.*?)\s*자신의\s*(?:디지몬|테이머)(?:이|가)\s*있는$/);
+  if (dm) { const pr = evoTargetPredicate((dm[1].trim() + ' 가진').replace(/\s*(?:를|을)\s*가진$/, ' 가진')); return !pr || stacks.some(st => pr(card(st.cardId))); }
+  return true;
+}
+
 export function useOptionCard(state, p, handIndex) {
   const pl = state.players[p];
+  if (pl.hand[handIndex] && !optionColorOk(state, p, pl.hand[handIndex])) {
+    log(state, `${p} ${card(pl.hand[handIndex]).nameKo} 사용 불가: 색 조건 미충족 (같은 색의 디지몬/테이머가 필요, 룰 4-22)`);
+    return null;
+  }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
   const cost = card(id).cost || 0;
@@ -2066,7 +2092,7 @@ export function parseJogress(cardId) {
   // "「A」+「B」가 기술되어 있는 …" style shares one descriptor across both quoted names — bail out.
   const a = parseJogressSide(sides[0]), b = parseJogressSide(sides[1]);
   if (!a || !b) return null;
-  return { cost: Number(m[2]), test: (x, y) => (a(x) && b(y)) || (a(y) && b(x)) };
+  return { cost: Number(m[2]), test: (x, y) => (a(x) && b(y)) || (a(y) && b(x)), left: a, right: b };
 }
 
 // Can `stackA` + `stackB` jogress into `cardId`? Unparsed lines stay permissive.
@@ -2097,7 +2123,12 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   // object crashes the moment its own "진화 시" effect grants it a keyword or
   // color, since grantKeyword/grantColor assume those fields already exist.
   const fused = makeStack(newCardId, state.turnNumber);
-  fused.sources = [...a.sources, a.cardId, ...b.sources, b.cardId];
+  // 8-2-2-2: the card written on the LEFT of the 〔조그레스〕 condition ends up on top (last in sources[]).
+  // Both stacks keep their own source order (8-2-2-3).
+  const jg = parseJogress(newCardId);
+  const aIsLeft = jg ? (jg.left(card(a.cardId)) && jg.right(card(b.cardId))) || !(jg.left(card(b.cardId)) && jg.right(card(a.cardId))) : true;
+  const [top, bottom] = aIsLeft ? [a, b] : [b, a];
+  fused.sources = [...bottom.sources, bottom.cardId, ...top.sources, top.cardId];
   fused.suspended = false; // DNA digivolve results always enter unsuspended
   fused.attackEligibleTurn = state.turnNumber; // DNA/Jogress results can attack immediately
   fused.viaFusion = true; // for "조그레스 진화하고 있었다면" conditions

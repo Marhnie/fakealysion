@@ -264,6 +264,18 @@ function afterMulliganCheck() {
 
 // ---------- render ----------
 
+// 6-5-1: main-phase actions (play / evolve / use / link / attack / activate / pass) may only be
+// taken while NOTHING is left unresolved — no waiting effect, open choice, or attack in progress.
+function busy() {
+  return !!state.uiChoice || !!sel.pendingAttack || state.pending.some(t => !t.resolved);
+}
+function blockIfBusy() {
+  if (!busy()) return false;
+  S.log(state, '해결 중인 처리(효과/선택/어택)가 남아 있어 지금은 행동할 수 없음 (룰 6-5-1)');
+  render();
+  return true;
+}
+
 function render() {
   if (!state) return renderSetup();
   E.autoAdvance(state);
@@ -318,10 +330,10 @@ function renderTopbar() {
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
-    h('button', { onClick: () => { E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { onClick: () => { if (state.phase === 'main' && blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
       className: 'danger', disabled: state.phase !== 'main',
-      onClick: () => { E.declarePass(state); render(); },
+      onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
     }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
   ]);
   const rows = [mainRow];
@@ -433,6 +445,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
         return;
       }
       if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
+      if (blockIfBusy()) return;
       // Dropping the hand card on the SECOND of two selected battle stacks
       // is how DNA/Jogress fusion is triggered — no separate button needed,
       // the two-click stack1+stack2 selection already signals that intent.
@@ -505,6 +518,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     title: `《딜레이》 발동: ${delayBody}`,
     onClick: (e) => {
       e.stopPropagation();
+      if (blockIfBusy()) return;
       const cardId = S.discardForDelay(state, p, stack.uid);
       if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: delayBody, resolved: false });
       render();
@@ -517,7 +531,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   const trainBtn = canTrain ? h('button', {
     className: 'delay-btn train-btn',
     title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음',
-    onClick: (e) => { e.stopPropagation(); S.useTraining(state, p, stack.uid); render(); },
+    onClick: (e) => { e.stopPropagation(); if (blockIfBusy()) return; S.useTraining(state, p, stack.uid); render(); },
   }, '🏋트레이닝') : null;
   // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
   const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
@@ -526,6 +540,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     title: `【메인】 ${ab.text.replace(/\n/g, ' ')}`,
     onClick: (e) => {
       e.stopPropagation();
+      if (blockIfBusy()) return;
       state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
       render();
     },
@@ -555,6 +570,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
 }
 
 function playFreshFromDrag(drag, p) {
+  if (blockIfBusy()) return;
   if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
   const category = S.card(drag.cardId).category;
   if (category === 'option') {
@@ -845,7 +861,7 @@ async function runPendingScript(trigger, opts = {}) {
     }
   }
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose,
-    startAttack: (p, uid) => setTimeout(() => { if (!sel.pendingAttack) { attackFlow(p, uid); render(); } }, 0) };
+    startAttack: (p, uid) => setTimeout(() => { if (!sel.pendingAttack) { attackFlow(p, uid, undefined, true); render(); } }, 0) };
   await Effects.runScript(script, ctx);
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly) {
@@ -1297,7 +1313,8 @@ function endAttack() {
   if (st) S.queueTriggersForStack(state, pa.attacker, st, 'attackEnd');
 }
 
-function attackFlow(p, uid, directTarget) {
+function attackFlow(p, uid, directTarget, force = false) {
+  if (!force && blockIfBusy()) return;
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
   S.queueTriggersForStack(state, p, dec.stack, 'attack');
