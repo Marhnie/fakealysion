@@ -314,6 +314,15 @@ export function emitGameEvent(state, kind, info) {
   }
 }
 
+// Top card currently on stack `uid` (any player's area) — snapshotted on queued triggers so that
+// 15-4-4-3 can cancel a waiting effect whose card became a NEW card (evolved/left) before it resolved.
+export function stackTopId(state, p, uid) {
+  if (!uid) return null;
+  const pl = state.players[p];
+  const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(x => x.uid === uid);
+  return st ? st.cardId : null;
+}
+
 export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   const c = card(cardId);
   const wantTags = TRIGGER_TAGS[eventKind] || [];
@@ -328,7 +337,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid) });
     }
   }
 }
@@ -367,7 +376,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
     if (applied) {
       log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid) });
     }
   }
 }
@@ -2763,6 +2772,8 @@ export function stepSecurityCheck(ctl) {
   const jamming = attackerStack ? hasKeyword(attackerStack, '재밍') : false;
   const pl = state.players[defenderP];
   const i = ctl.i;
+  // 13-1-5: a Digimon that is no longer in the battle area can't keep checking.
+  if (i > 0 && !attackerStack) { log(state, `${attackerP} 공격 중인 디지몬이 없어 남은 시큐리티 체크를 진행하지 못함 (13-1-5)`); ctl.done = true; return null; }
   if (pl.security.length === 0) {
     // 1-2-3-1: the win condition is "security was already 0 the moment
     // this attack was established" — i.e. before the FIRST check of this

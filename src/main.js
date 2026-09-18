@@ -831,6 +831,17 @@ function isOptionalAutoEffect(text, script) {
 }
 
 async function runPendingScript(trigger, opts = {}) {
+  // 15-4-4-3: a waiting effect can't resolve if its card left the area or turned into a NEW card
+  // (evolved / fused) before its turn came. 【소멸 시】 effects are meant to wait after leaving.
+  if (trigger.stackUid && trigger.topId && !trigger.inherited && !trigger.tags.some(t => t.includes('소멸 시'))) {
+    const stNow = findStack({ player: trigger.player, uid: trigger.stackUid });
+    if (!stNow || stNow.cardId !== trigger.topId) {
+      S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 카드가 벗어나거나 새 카드가 되어 발휘하지 못함 (15-4-4-3)`);
+      S.resolvePending(state, trigger.uid);
+      render();
+      return;
+    }
+  }
   const limit = parseOnceLimit(trigger.text);
   if (limit != null && trigger.stackUid) {
     const stack = findStack({ player: trigger.player, uid: trigger.stackUid });
