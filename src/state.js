@@ -536,9 +536,14 @@ function parseTurnConditionalDP(text) {
     if (seg.tags.length !== 1) continue;
     const tag = seg.tags[0];
     if (!['자신의 턴', '상대의 턴', '서로의 턴'].includes(tag)) continue;
-    const m = seg.body.trim().match(/^이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
-    if (!m) continue;
-    out.push({ tag, amount: (m[1] === '-' ? -1 : 1) * Number(m[2]) });
+    const body = seg.body.trim();
+    let m = body.match(/^이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
+    if (m) { out.push({ tag, amount: (m[1] === '-' ? -1 : 1) * Number(m[2]) }); continue; }
+    // "레스트 상태인 이 디지몬을 DP ±N." — same continuous grant, additionally
+    // conditioned on the stack currently being suspended (confirmed 13
+    // occurrences, always under 【서로의 턴】, via the full-card-DB audit).
+    m = body.match(/^레스트\s*상태인\s*이\s*디지몬을\s*DP\s*([+-])\s*(\d+)\.?$/);
+    if (m) { out.push({ tag, amount: (m[1] === '-' ? -1 : 1) * Number(m[2]), requireSuspended: true }); continue; }
   }
   return out;
 }
@@ -548,7 +553,8 @@ function turnConditionalDP(state, p, stack) {
   for (const { id, own } of stackContributors(stack)) {
     const grants = parseTurnConditionalDP(own ? card(id).effectKo : card(id).inheritedKo);
     for (const g of grants) {
-      const active = g.tag === '서로의 턴' || (g.tag === '자신의 턴') === (state.activePlayer === p);
+      const active = (g.tag === '서로의 턴' || (g.tag === '자신의 턴') === (state.activePlayer === p))
+        && (!g.requireSuspended || stack.suspended);
       if (active) total += g.amount;
     }
   }

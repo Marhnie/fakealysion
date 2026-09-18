@@ -403,7 +403,7 @@ export function compileToScript(text) {
   }
 
   // DP modification, this turn unless stated otherwise.
-  const dpDuration = /다음\s*상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : 'turn';
+  const dpDuration = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : 'turn';
   if (/이\s*디지몬(?:의)?\s*DP를\s*[+-]?\d+\s*한다/.test(t) && (m = t.match(/DP를\s*([+-]?\d+)\s*한다/))) {
     script.push({ op: 'modifyDP', target: 'self', thisStack: true, amount: Number(m[1]), duration: dpDuration });
   } else if ((m = t.match(/자신(?:의)?\s*디지몬\s*전부(?:의)?\s*DP를\s*([+-]?\d+)\s*한다/))) {
@@ -414,6 +414,21 @@ export function compileToScript(text) {
     for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'self', amount: Number(m[2]), duration: dpDuration });
   } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리(?:의)?\s*DP를\s*([+-]?\d+)\s*한다/))) {
     for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'opponent', amount: Number(m[2]), duration: dpDuration });
+  } else if (/이\s*디지몬을\s*DP\s*[+-]\s*\d+/.test(t) && (m = t.match(/이\s*디지몬을\s*DP\s*([+-]\s*\d+)/))) {
+    // The far more common terse phrasing "(대상)을 DP ±N." with no "를 ...
+    // 한다" verb at all — confirmed via a full-DB audit as the majority
+    // shape (451/3072 uncovered segments at the time this was added).
+    // Unanchored like the "한다" forms above: this clause is often preceded
+    // by a "턴 종료까지"/"[턴에 N회]" lead-in that's part of the same segment.
+    script.push({ op: 'modifyDP', target: 'self', thisStack: true, amount: Number(m[1].replace(/\s+/g, '')), duration: dpDuration });
+  } else if (/자신(?:의)?\s*디지몬\s*전부(?:를)?\s*DP\s*[+-]\s*\d+/.test(t) && (m = t.match(/디지몬\s*전부(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
+    script.push({ op: 'modifyDPAll', target: 'self', amount: Number(m[1].replace(/\s+/g, '')), duration: dpDuration });
+  } else if (/상대(?:의)?\s*디지몬\s*전부(?:를)?\s*DP\s*[+-]\s*\d+/.test(t) && (m = t.match(/디지몬\s*전부(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
+    script.push({ op: 'modifyDPAll', target: 'opponent', amount: Number(m[1].replace(/\s+/g, '')), duration: dpDuration });
+  } else if ((m = t.match(/자신(?:의)?\s*디지몬\s*(\d+)\s*마리(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
+    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'self', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration });
+  } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
+    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'opponent', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration });
   }
 
   // 《시큐리티 어택 ±N》 keyword grant — positive is usually self; negative is
@@ -512,6 +527,8 @@ export function compileToScript(text) {
   // DP modifier applied to (hidden) security Digimon at check-time.
   if ((m = t.match(/(자신|상대)(?:의)?\s*시큐리티\s*디지몬\s*전부(?:의)?\s*DP를\s*([+-]?\d+)\s*한다/))) {
     script.push({ op: 'securityDPMod', target: m[1] === '상대' ? 'opponent' : 'self', amount: Number(m[2]), duration: dpDuration });
+  } else if ((m = t.match(/(자신|상대)(?:의)?\s*시큐리티\s*디지몬\s*전부(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
+    script.push({ op: 'securityDPMod', target: m[1] === '상대' ? 'opponent' : 'self', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration });
   }
 
   // Cost reduction for the NEXT matching evolution.
