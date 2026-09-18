@@ -7,7 +7,7 @@ const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이�
 
 const app = document.getElementById('app');
 let state = null;
-let sel = { hand: null, stack: null, stack2: null, player: 'p1' }; // UI selection only
+let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; // UI selection only
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
 
@@ -330,9 +330,16 @@ function renderTopbar() {
   // board drag target the way a fixed-position overlay could.
   const infoText = describeSelectedEffects();
   if (infoText) {
+    const selStack = findStack(sel.stack);
+    const canArmFusion = sel.stack && !sel.stack2 && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer
+      && selStack && !selStack.suspended && S.card(selStack.cardId).category === 'digimon';
     rows.push(h('div', { className: 'topbar-info' }, [
       h('div', { className: 'topbar-info-text' }, infoText),
-      h('button', { onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; render(); } }, '✕'),
+      canArmFusion && !sel.armFusion
+        ? h('button', { onClick: () => { sel.armFusion = true; render(); } }, '🔗 조그레스 상대 선택')
+        : null,
+      sel.armFusion ? h('span', { className: 'meta' }, '다른 내 디지몬을 클릭하세요') : null,
+      h('button', { onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; sel.armFusion = false; render(); } }, '✕'),
     ]));
   }
   return h('div', { className: 'topbar' }, rows);
@@ -417,12 +424,19 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     onClick: opts.onClickOverride || (opts.attackTarget
       ? (() => { attackFlow(opts.attackTarget.attackerP, opts.attackTarget.attackerUid, stack.uid); sel.stack = null; render(); })
       : (() => {
-        if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; }
-        else if (sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
+        if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; sel.armFusion = false; }
+        // Only treat this click as picking a DNA/Jogress fusion partner when
+        // the "조그레스 상대 선택" button was explicitly used first — otherwise
+        // simply viewing one card's info, then clicking a different card to
+        // view ITS info instead, was silently arming the second fusion slot
+        // and hijacking the next click on that card.
+        else if (sel.armFusion && sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
           sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
+          sel.armFusion = false;
         } else {
           sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
           sel.stack2 = null;
+          sel.armFusion = false;
         }
         render();
       })),
