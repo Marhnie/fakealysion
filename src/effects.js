@@ -258,6 +258,24 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'preventRest': {
+      const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
+      const dur = instr.expiresAfterTurn;
+      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const matching = () => state.players[targetPlayer].battle.filter(s => !instr.filter || matchesFilter(S, s.cardId, instr.filter));
+      if (instr.all) {
+        for (const s of matching()) S.preventRest(state, targetPlayer, s.uid, expiresAfterTurn);
+        break;
+      }
+      for (let i = 0; i < (instr.n || 1); i++) {
+        const uids = matching().map(s => s.uid);
+        if (!uids.length) break;
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트 불가로 만들 디지몬 선택' });
+        if (!targetUid) break;
+        S.preventRest(state, targetPlayer, targetUid, expiresAfterTurn);
+      }
+      break;
+    }
     case 'hatch':
       S.hatchDigitama(state, who);
       break;
@@ -633,6 +651,20 @@ export function compileToScript(text) {
     script.push({ op: 'restrictAttack', target: 'opponent', filter: { hasNoSources: true }, expiresAfterTurn: 'opponentTurn', prompt: '(블록 금지 부분은 수동으로 기억해두세요 — 이 엔진의 자동 블록 판정에는 별도 반영 안 됨)' });
   } else if (/상대는\s*진화원을?\s*갖지\s*않은\s*디지몬으로는\s*어택할\s*수\s*없다/.test(t)) {
     script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, noEvoSources: true, expiresAfterTurn: 'opponentTurn', prompt: '(주의: 현재 필드의 무진화원 디지몬에만 적용, 이후 새로 등장하는 카드는 수동 확인 필요)' });
+  }
+
+  // "레스트할 수 없다" — the simplest unconditioned forms only; several real
+  // prints add an extra prerequisite (a specific card discarded down to no
+  // attached cards, no evolution sources, etc.) not attempted here.
+  if ((m = t.match(/상대(?:의)?\s*디지몬(\/테이머)?\s*(전부|\d+\s*마리(?:\(명\))?)(?:와|과)?\s*(?:테이머\s*\d+\s*명)?(?:은|는)?\s*레스트할\s*수\s*없다/))) {
+    const expiresAfterTurn = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? 'opponentTurn' : 'permanent';
+    const filter = m[1] ? {} : { category: 'digimon' };
+    if (m[2] === '전부') {
+      script.push({ op: 'preventRest', target: 'opponent', all: true, filter, expiresAfterTurn });
+    } else {
+      const n = Number(m[2].match(/\d+/)[0]);
+      script.push({ op: 'preventRest', target: 'opponent', n, filter, expiresAfterTurn });
+    }
   }
 
   // "이 디지몬의 DP는 마이너스되지 않는다" — permanent DP-reduction immunity.

@@ -871,8 +871,21 @@ export function restStack(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (stack.cannotBeRestedUntil === 'permanent' || (typeof stack.cannotBeRestedUntil === 'number' && state.turnNumber <= stack.cannotBeRestedUntil)) {
+    log(state, `${p} ${card(stack.cardId).nameKo}는 레스트 불가 상태라 레스트되지 않음`);
+    return;
+  }
   stack.suspended = true;
   log(state, `${p} ${card(stack.cardId).nameKo} 레스트`);
+}
+
+// "...는 레스트할 수 없다." — same shape as restrictAttack's cannotAttackUntil.
+export function preventRest(state, p, uid, expiresAfterTurn = 'permanent') {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return;
+  stack.cannotBeRestedUntil = expiresAfterTurn;
+  log(state, `${p} ${card(stack.cardId).nameKo} 레스트 불가 상태 부여`);
 }
 
 // Move the top card of own deck onto own security (top). Common "Recovery"
