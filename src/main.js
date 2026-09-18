@@ -549,10 +549,16 @@ function playFreshFromDrag(drag, p) {
   if (category === 'option') {
     S.useOptionCard(state, drag.player, drag.idx);
   } else {
-    const discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) + S.traitPlayCostDiscount(state, drag.player, drag.cardId) : 0;
+    let discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) + S.traitPlayCostDiscount(state, drag.player, drag.cardId) : 0;
+    // 《디지크로스》 (7-2): optionally place matching hand/battle cards under this card for -N each.
+    let materials = [];
+    const xr = category === 'digimon' ? S.planDigiXros(state, drag.player, drag.idx) : null;
+    if (xr && window.confirm(`《디지크로스 -${xr.per}》 — ${xr.materials.map(m => S.card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓고 등장 코스트 -${xr.discount}?`)) {
+      materials = xr.materials; discount -= xr.discount;
+    }
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (cost > 0) S.spendMemory(state, cost);
-    S.playDigimonFresh(state, drag.player, drag.idx);
+    S.playDigimonFresh(state, drag.player, drag.idx, { materials });
   }
   E.checkAutoEndTurn(state);
   dragData = null; render();

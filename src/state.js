@@ -1688,11 +1688,82 @@ export function clearExpiredModifiers(state) {
   }
 }
 
+// ---- 디지크로스 (DigiXros, rule 7-2) ----
+// "디지크로스 -N: 「A」×「B」×특징으로 「X」를 가진 디지몬 카드 2장" — while playing this
+// Digimon from hand, place any of the listed cards (from hand and/or the battle
+// area) under it; each placed card lowers the play cost by N.
+export function parseDigiXros(cardId) {
+  const line = (card(cardId).effectKo || '').split('\n').map(l => l.trim()).find(l => /^디지크로스\s*-\s*\d+\s*[:：]/.test(l));
+  if (!line) return null;
+  const m = line.match(/^디지크로스\s*-\s*(\d+)\s*[:：]\s*(.+)$/);
+  if (!m) return null;
+  const reqs = [];
+  for (let item of m[2].split('×')) {
+    item = item.trim();
+    if (!item) continue;
+    let mm;
+    if ((mm = item.match(new RegExp(String.raw`^(?:(${COLOR_WORD})인\s*)?「([^」]+)」`)))) { reqs.push({ name: mm[2], color: mm[1] ? KOR_COLOR_NAME[mm[1]] : null, count: 1 }); continue; }
+    if ((mm = item.match(/^《([^》]+)》(?:이|가)\s*기술되어\s*있는\s*디지몬\s*카드\s*(\d+|∞)\s*장/))) { reqs.push({ keyword: mm[1], count: mm[2] === '∞' ? 99 : Number(mm[2]) }); continue; }
+    if ((mm = item.match(/^특징(?:으로)?\s*((?:「[^」]+」\s*(?:또는|\/)?\s*)+)(?:를|을)\s*(가진|포함하는)\s*((?:명칭이|카드\s*넘버가)\s*서로\s*다른\s*)?디지몬\s*카드\s*(\d+|∞)\s*장/))) {
+      reqs.push({ traits: [...mm[1].matchAll(/「([^」]+)」/g)].map(x => x[1]), includes: mm[2] === '포함하는', distinct: !!mm[3], count: mm[4] === '∞' ? 99 : Number(mm[4]) });
+      continue;
+    }
+    break; // text after the requirement list (keywords, notes) — stop parsing
+  }
+  return reqs.length ? { per: Number(m[1]), reqs } : null;
+}
+
+// Greedy plan of which materials to place (hand first, then battle-area stacks).
+// `handIndex` is the card being played (excluded from the materials).
+export function planDigiXros(state, p, handIndex) {
+  const pl = state.players[p];
+  const cardId = pl.hand[handIndex];
+  const xr = cardId ? parseDigiXros(cardId) : null;
+  if (!xr) return null;
+  const usedHand = new Set([handIndex]), usedStacks = new Set(), materials = [];
+  const matches = (req, c) => req.name ? (c.nameKo === req.name && (!req.color || (c.colors || []).includes(req.color)))
+    : req.keyword ? (c.category === 'digimon' && `${c.effectKo || ''}
+${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
+    : (c.category === 'digimon' && (c.types || []).some(t => req.traits.some(x => req.includes ? t.includes(x) : t === x)));
+  for (const req of xr.reqs) {
+    let need = req.count;
+    const names = new Set();
+    for (let i = 0; i < pl.hand.length && need > 0; i++) {
+      if (usedHand.has(i)) continue;
+      const c = card(pl.hand[i]);
+      if (!matches(req, c) || (req.distinct && names.has(c.nameKo))) continue;
+      usedHand.add(i); names.add(c.nameKo); need--;
+      materials.push({ kind: 'hand', cardId: pl.hand[i] });
+    }
+    for (const st of pl.battle) {
+      if (need <= 0) break;
+      if (usedStacks.has(st.uid) || card(st.cardId).category !== 'digimon') continue;
+      const c = card(st.cardId);
+      if (!matches(req, c) || (req.distinct && names.has(c.nameKo))) continue;
+      usedStacks.add(st.uid); names.add(c.nameKo); need--;
+      materials.push({ kind: 'stack', uid: st.uid, cardId: st.cardId });
+    }
+  }
+  return materials.length ? { per: xr.per, materials, discount: xr.per * materials.length } : null;
+}
+
 export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const pl = state.players[p];
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
+  // 디지크로스: materials go under the new card (7-2-2-3/7-2-2-7) — hand cards by id,
+  // battle-area Digimon leave the area and bring their own sources with them.
+  for (const mt of opts.materials || []) {
+    if (mt.kind === 'hand') {
+      const hi = pl.hand.indexOf(mt.cardId);
+      if (hi !== -1) { pl.hand.splice(hi, 1); stack.sources.push(mt.cardId); }
+    } else {
+      const bi = pl.battle.findIndex(x => x.uid === mt.uid);
+      if (bi !== -1) { const [ms] = pl.battle.splice(bi, 1); stack.sources.push(...ms.sources, ms.cardId); }
+    }
+  }
+  if ((opts.materials || []).length) log(state, `${p} 디지크로스: ${(opts.materials).map(m => card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓음`);
   recomputeStackGrants(stack); // picks up any keyword the card innately has on its own printed text
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 신규 등장 (배틀 에어리어)`);
@@ -1922,7 +1993,7 @@ function parseJogressSide(desc) {
   const quoted = (str) => [...str.matchAll(/「([^」]+)」/g)].map(x => x[1]);
   if ((m = rest.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
   if ((m = rest.match(/((?:「[^」]+」\/?|\+)+)\s*(?:이|가)\s*기술되어\s*있는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
-  if ((m = rest.match(new RegExp(`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의)?`)))) { const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]); cons.push(c => (c.colors || []).some(x => cols.includes(x))); rest = rest.replace(m[0], ''); }
+  if ((m = rest.match(new RegExp(String.raw`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의)?`)))) { const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]); cons.push(c => (c.colors || []).some(x => cols.includes(x))); rest = rest.replace(m[0], ''); }
   if ((m = rest.match(/Lv\.\s*(\d+)/))) { const lv = Number(m[1]); cons.push(c => c.level === lv); rest = rest.replace(m[0], ''); }
   if (!cons.length && (m = rest.match(/^「([^」]+)」$/))) { const nm = m[1]; cons.push(c => c.nameKo === nm); rest = ''; }
   if (!cons.length) return null;
