@@ -1028,7 +1028,7 @@ function resolveFinalTarget(pa) {
 // targeted the player or a specific Digimon; 12-1-5 only excludes the
 // Digimon that's already the target from blocking (it can't block itself).
 function enterBlockCheck(pa) {
-  const blockers = eligibleBlockers(pa.opp).filter(s => s.uid !== pa.targetUid);
+  const blockers = eligibleBlockers(pa.opp).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
     resolveFinalTarget(pa);
   } else {

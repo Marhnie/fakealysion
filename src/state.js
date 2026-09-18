@@ -1378,6 +1378,30 @@ function isAttackPlayerRestrictedByAbility(state, p, stack) {
   return false;
 }
 
+// "이 디지몬은 (진화원을 갖지 않은) 상대의 디지몬에게는 블록당하지 않는다."
+// Same continuous 자신/상대/서로의 턴 family — checked per-blocker since the
+// no-evo-source qualifier depends on which specific stack would block.
+export function cannotBeBlockedBy(state, p, uid, blockerStack) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return false;
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (!active) continue;
+      const body = seg.body.trim();
+      if (/^이\s*디지몬은[,]?\s*블록당하지\s*않는다\.?$/.test(body)) return true;
+      if (/^이\s*디지몬은[,]?\s*상대(?:의)?\s*디지몬에게는\s*블록당하지\s*않는다\.?$/.test(body)) return true;
+      if (/^이\s*디지몬은[,]?\s*진화원을?\s*갖지\s*않은\s*상대(?:의)?\s*디지몬에게는\s*블록당하지\s*않는다\.?$/.test(body) && blockerStack.sources.length === 0) return true;
+    }
+  }
+  return false;
+}
+
 export function canAttackPlayer(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);

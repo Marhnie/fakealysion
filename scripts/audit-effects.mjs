@@ -99,6 +99,15 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via cannotBeBlockedBy, checked from enterBlockCheck.
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은[,]?\s*(?:진화원을?\s*갖지\s*않은\s*)?상대(?:의)?\s*디지몬에게는\s*블록당하지\s*않는다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은\s*블록당하지\s*않는다\.?$/.test(seg.body.trim())) {
+      turnConditionalHandled++;
+      continue;
+    }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }
     if (script && script.length) {
