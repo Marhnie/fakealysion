@@ -132,6 +132,11 @@ function auditText(cardId, source, text) {
       turnConditionalHandled++;
       continue;
     }
+    // Handled live via emitGameEvent/parseWatcherTrigger ("~했을 때" watchers in 자신/상대/서로의 턴).
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && S.isHandledWatcherBody(seg.body)) {
+      turnConditionalHandled++;
+      continue;
+    }
     // Handled live via isPlayCostLocked, checked from tamerPlayCostDiscount.
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^서로는\s*지불하는\s*등장\s*코스트를?\s*마이너스할\s*수\s*없다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;

@@ -597,9 +597,9 @@ export function compileToScript(text) {
 
   // Unsuspend ("액티브로 한다"). "이 디지몬" = the source card itself (no
   // choice needed); "자신/상대의 디지몬 N마리" = pick from that player's board.
-  if (/이\s*디지몬을\s*액티브로\s*한다/.test(t)) {
+  if (/이\s*디지몬을\s*액티브로\s*(?:한다|할\s*수\s*있다)/.test(t)) {
     script.push({ op: 'unsuspend', target: 'thisStack' });
-  } else if ((m = t.match(/(상대|자신)(?:의)?\s*디지몬\s*(\d+)\s*마리를\s*액티브로\s*한다/))) {
+  } else if ((m = t.match(/(상대|자신)(?:의)?\s*디지몬\s*(\d+)\s*마리를\s*액티브로\s*(?:한다|할\s*수\s*있다)/))) {
     for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'unsuspend', target: m[1] === '상대' ? 'opponent' : 'self' });
   }
 

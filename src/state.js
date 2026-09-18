@@ -180,6 +180,127 @@ function tryAutoApplySegment(state, p, text, sourceCardId) {
   return false;
 }
 
+
+// ---- printed "~했을 때" watcher abilities inside 【자신/상대/서로의 턴】 ----
+// e.g. "[턴에 1회] 상대의 디지몬이 소멸했을 때, 이 디지몬을 액티브로 할 수 있다."
+// These are continuous-tagged, so the bracket-tag trigger pipeline never saw
+// them (~260 segments). Game events call emitGameEvent(); every ability whose
+// subject/event/condition matches queues its effect text as a normal pending
+// item (compiled + auto-run by the UI when understood, shown manually if not).
+const WATCH_EVENT_RE = /^(.*?)\s*(등장했을|진화했을|소멸했을|레스트했을|파기되었을)\s*때,?\s*(.*)$/s;
+
+export function parseWatcherTrigger(body) {
+  let b = body.trim().split('\n')[0].replace(/\s*〈룰〉.*$/s, '').trim();
+  let limit = null;
+  const lm = b.match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]\s*(.*)$/s);
+  if (lm) { limit = Number(lm[1]); b = lm[2]; }
+  const m = b.match(WATCH_EVENT_RE);
+  if (!m) return null;
+  const kindOf = { 등장했을: 'play', 진화했을: 'digivolve', 소멸했을: 'delete', 레스트했을: 'rest', 파기되었을: 'discard' };
+  const kind = kindOf[m[2]];
+  let left = m[1].trim();
+  // Alternatives ("A 또는 B" / "A 혹은 B") and 《keyword》-dependent events aren't modelled — skip rather than misapply.
+  if (/또는|혹은|《/.test(left.replace(/「[^」]*」/g, '「」'))) return null;
+  let causeTest = () => true;
+  const cm = left.match(/(효과로|배틀에서|배틀로|배틀\s*이외로)\s*$/);
+  if (cm) {
+    left = left.slice(0, cm.index).trim();
+    const c = cm[1].replace(/\s+/g, '');
+    causeTest = c === '효과로' ? (x) => x === 'effect' || x === 'ownEffect' : c === '배틀이외로' ? (x) => x !== 'battle' : (x) => x === 'battle';
+  }
+  // digivolve: "<subject>이 <new-card desc>(으)로 진화했을 때"
+  let newCardPred = null;
+  if (kind === 'digivolve') {
+    const dm = left.match(/^(.*?(?:디지몬|테이머))(?:이|가)\s+(.+?)\s*(?:으로|로)$/);
+    if (dm) { const pr = evoTargetPredicate(dm[2].trim()); if (!pr) return null; newCardPred = pr; left = dm[1]; }
+    else left = left.replace(/(?:이|가)\s*$/, '');
+  } else left = left.replace(/(?:이|가)\s*$/, '');
+  left = left.trim();
+  let who = 'any', other = false, selfOnly = false, isTamer = false, subjPred = () => true, mm;
+  if (/이\s*디지몬$/.test(left) && !/자신|상대/.test(left)) {
+    selfOnly = true;
+    const desc = left.replace(/이\s*디지몬$/, '').trim();
+    if (desc) { const pr = evoTargetPredicate(desc); if (!pr) return null; subjPred = (c) => pr(c); }
+  } else {
+    let rest = left;
+    const om = rest.match(/^(다른\s*)/); if (om) { other = true; rest = rest.slice(om[0].length).trim(); }
+    if ((mm = rest.match(/^(.*?)(다른\s*)?(자신의|상대의|상대)\s*(디지몬|테이머|디지몬\/테이머|디지몬\s*또는\s*테이머)$/))) {
+      if (mm[2]) other = true;
+      who = mm[3] === '자신의' ? 'own' : 'opp';
+      isTamer = mm[4] === '테이머';
+      const desc = mm[1].replace(/다른\s*$/, (x) => { other = true; return ''; }).trim();
+      if (desc) { const pr = evoTargetPredicate(desc); if (!pr) return null; subjPred = (c) => pr(c); }
+    } else if ((mm = rest.match(/^(다른\s*)?자신의\s*「([^」]+)」$/))) {
+      who = 'own'; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => c.nameKo === nm;
+    } else if ((mm = rest.match(/^(다른\s*)?「([^」]+)」$/))) {
+      who = 'any'; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => c.nameKo.includes(nm);
+    } else if (/^(다른\s*)?디지몬$/.test(rest)) {
+      who = 'any'; if (/다른/.test(rest)) other = true;
+    } else if ((mm = rest.match(/^(다른\s*)?자신의\s*패$/)) && kind === 'discard') {
+      who = 'own'; subjPred = () => true;
+    } else return null;
+  }
+  // effect text, optionally gated by "그 디지몬이 <desc>를 가진다면,"
+  let effect = m[3].trim();
+  let condPred = null;
+  const cc = effect.match(/^그\s*디지몬이\s*(.+?)\s*(?:가진다면|라면),\s*(.*)$/s);
+  if (cc) { const pr = evoTargetPredicate(cc[1].replace(/\s*를?\s*가진$/, '').trim()); if (!pr) return null; condPred = pr; effect = cc[2].trim(); }
+  if (!effect) return null;
+  return { limit, kind, causeTest, newCardPred, selfOnly, who, other, isTamer, subjPred, condPred, effect };
+}
+
+export function isHandledWatcherBody(body) { return !!parseWatcherTrigger(body); }
+
+// info: { owner, stack, cause }. `stack` may already be off the board (delete).
+export function emitGameEvent(state, kind, info) {
+  const subjCard = info.stack ? card(info.stack.cardId) : null;
+  for (const hp of ['p1', 'p2']) {
+    const hpl = state.players[hp];
+    for (const holder of [hpl.raising, ...hpl.battle].filter(Boolean)) {
+      for (const { id, own } of stackContributors(holder)) {
+        const text = own ? card(id).effectKo : card(id).inheritedKo;
+        if (!text) continue;
+        const { segments } = parseEffectSegments(text);
+        for (const seg of segments) {
+          if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+          const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === hp);
+          if (!active) continue;
+          const ab = parseWatcherTrigger(seg.body);
+          if (!ab || ab.kind !== kind || !ab.causeTest(info.cause)) continue;
+          if (kind === 'discard' && ab.selfOnly) continue;
+          if (ab.selfOnly) { if (info.stack !== holder) continue; }
+          else {
+            if (ab.other && info.stack && info.stack === holder) continue;
+            if (ab.who === 'own' && info.owner !== hp) continue;
+            if (ab.who === 'opp' && info.owner === hp) continue;
+          }
+          if (subjCard) {
+            const isTam = subjCard.category === 'tamer';
+            if (ab.isTamer !== isTam && !ab.selfOnly) continue;
+            if (!ab.subjPred(subjCard)) continue;
+            if (ab.newCardPred && !ab.newCardPred(subjCard)) continue;
+            if (ab.condPred && !ab.condPred(subjCard)) continue;
+          }
+          if (ab.limit != null && turnUsesRemaining(holder, onceLimitKey(id, seg.tags), ab.limit) <= 0) continue;
+          // Leading conditions/costs we can evaluate here: "이 디지몬이 레스트|액티브 상태라면," and
+          // the very common "이 테이머를 레스트시키는 것으로," (rest the holder Tamer as the cost).
+          let effect = ab.effect, ok = true, sm;
+          if ((sm = effect.match(/^이\s*디지몬이\s*(레스트|액티브)\s*상태라면,?\s*(.*)$/s))) {
+            ok = (sm[1] === '레스트') === !!holder.suspended; effect = sm[2];
+          }
+          if (ok && (sm = effect.match(/^이\s*테이머를\s*레스트시키는\s*것으로,?\s*(.*)$/s))) {
+            ok = card(holder.cardId).category === 'tamer' && !holder.suspended; effect = sm[1];
+            if (ok) holder.suspended = true;
+          }
+          if (!ok) continue;
+          if (ab.limit != null) markTurnEffectUsed(holder, onceLimitKey(id, seg.tags));
+          state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text: effect, resolved: false, watcher: true });
+        }
+      }
+    }
+  }
+}
+
 export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   const c = card(cardId);
   const wantTags = TRIGGER_TAGS[eventKind] || [];
@@ -516,7 +637,7 @@ export function drawCards(state, p, n, isDrawPhase = false) {
 export function trashFromHand(state, p, handIndex) {
   const pl = state.players[p];
   const [id] = pl.hand.splice(handIndex, 1);
-  if (id) { pl.trash.push(id); log(state, `${p} 핸드 파기: ${card(id).nameKo}`); }
+  if (id) { pl.trash.push(id); log(state, `${p} 핸드 파기: ${card(id).nameKo}`); emitGameEvent(state, 'discard', { owner: p, stack: null, cause: 'effect' }); }
   return id;
 }
 
@@ -1117,8 +1238,10 @@ export function restStack(state, p, uid) {
     log(state, `${p} ${card(stack.cardId).nameKo}는 레스트 불가 상태라 레스트되지 않음`);
     return;
   }
+  const wasActive = !stack.suspended;
   stack.suspended = true;
   log(state, `${p} ${card(stack.cardId).nameKo} 레스트`);
+  if (wasActive) emitGameEvent(state, 'rest', { owner: p, stack, cause: 'effect' });
 }
 
 // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — a ONE-TIME skip of
@@ -1556,6 +1679,7 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 신규 등장 (배틀 에어리어)`);
   queueTriggersForStack(state, p, stack, 'play');
+  emitGameEvent(state, 'play', { owner: p, stack, cause: null });
   return stack;
 }
 
@@ -1573,6 +1697,7 @@ export function playFreeFromZone(state, p, zone, index, opts = {}) {
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 코스트 없이 등장 (효과)`);
   queueTriggersForStack(state, p, stack, 'play');
+  emitGameEvent(state, 'play', { owner: p, stack, cause: 'effect' });
   return stack;
 }
 
@@ -1762,7 +1887,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   // sources) only fire while the resulting card is actually in the battle
   // area — evolving a card that's still sitting in the raising area (legal,
   // just uncommon) doesn't trigger them.
-  if (pl.battle.includes(stack)) queueTriggersForStack(state, p, stack, 'digivolve');
+  if (pl.battle.includes(stack)) { queueTriggersForStack(state, p, stack, 'digivolve'); emitGameEvent(state, 'digivolve', { owner: p, stack, cause: null }); }
   return stack;
 }
 
@@ -2140,6 +2265,7 @@ export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   for (const id of [...stack.sources, stack.cardId]) applyOverflowIfAny(state, p, id);
   state._deleteCause = cause;
   try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; }
+  emitGameEvent(state, 'delete', { owner: p, stack, cause });
   // ≪불굴≫: "진화원을 가진 이 디지몬이 소멸했을 때, 이 카드를 코스트를 지불하지
   // 않고 등장시킨다" — the destroyed top card comes straight back as a fresh stack.
   if (toZone === 'trash' && stack.sources.length > 0 && (hasKeyword(stack, '불굴') || hasContinuousKeyword(state, p, stack, '불굴'))) {
