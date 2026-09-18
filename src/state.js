@@ -1739,6 +1739,26 @@ export function cannotBeBlockedBy(state, p, uid, blockerStack) {
   return false;
 }
 
+// Generic scan for a bare continuous 자신/상대/서로의 턴 ability whose body
+// matches `re`, read from the stack's OWN controller `p`'s perspective.
+function stackHasContinuousAbility(state, p, stack, re) {
+  for (const { id, own } of stackContributors(stack)) {
+    const text = own ? card(id).effectKo : card(id).inheritedKo;
+    if (!text) continue;
+    const { segments } = parseEffectSegments(text);
+    for (const seg of segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
+      if (active && re.test(seg.body.trim())) return true;
+    }
+  }
+  return false;
+}
+
+const RE_CANNOT_ATTACK_DIGIMON = /^이\s*디지몬은\s*상대(?:의)?\s*디지몬에게\s*어택할\s*수\s*없다\.?$/;
+const RE_CANNOT_BE_ATTACKED = /^이\s*디지몬은\s*어택당하지\s*않는다\.?$/;
+const RE_CANNOT_ATTACK_NO_OPP_DIGIMON = /^상대(?:의)?\s*디지몬이\s*없는\s*동안,?\s*이\s*디지몬은\s*어택할\s*수\s*없다\.?$/;
+
 export function canAttackPlayer(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
@@ -1762,7 +1782,10 @@ export function legalDigimonTargets(state, attackerP, attackerUid) {
   // either as a one-shot triggered grant (액티브공격 keyword) or the more
   // common continuous 자신의 턴-conditioned form (canAttackAnyActive).
   const canHitActiveAny = aStack && (hasKeyword(aStack, '액티브공격') || canAttackAnyActive(state, attackerP, aStack));
+  if (aStack && stackHasContinuousAbility(state, attackerP, aStack, RE_CANNOT_ATTACK_DIGIMON)) return [];
   return state.players[opp].battle
+    .filter(s => card(s.cardId).category === 'digimon' || !card(s.cardId).category)
+    .filter(s => !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED))
     .filter(s => s.suspended || canHitActiveAny || (canHitActiveNoSource && s.sources.length === 0))
     .map(s => s.uid);
 }
@@ -1846,6 +1869,11 @@ export function declareAttack(state, attackerP, stackUid) {
   }
   if (stack.cannotAttackUntil === 'permanent' || (typeof stack.cannotAttackUntil === 'number' && state.turnNumber <= stack.cannotAttackUntil)) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 어택 불가 상태라 공격할 수 없음`);
+    return { ok: false, reason: 'attack restricted' };
+  }
+  if (stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON)
+      && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon')) {
+    log(state, `${attackerP} ${card(stack.cardId).nameKo}는 상대 디지몬이 없는 동안 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
   stack.suspended = true;
