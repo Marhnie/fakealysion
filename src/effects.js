@@ -373,6 +373,27 @@ async function runOne(instr, ctx) {
     case 'restStack':
       S.restStack(state, ctx.self, ctx.sourceStackUid);
       break;
+    case 'oppMayPay': {
+      // The OPPONENT decides whether to pay (discard / destroy own / trash own top security); if they decline
+      // or can't, the "이 효과로 …하지 않았다면" fallback runs for the effect's owner.
+      const op = ctx.opp, opl = state.players[op];
+      let paid = false;
+      const canPay = instr.pay === 'discard' ? opl.hand.filter(id => matchesFilter(S, id, instr.filter)).length >= instr.n
+        : instr.pay === 'destroy' ? opl.battle.some(x => ['digimon', 'tamer'].includes(S.card(x.cardId).category))
+        : opl.security.length >= 1;
+      if (canPay && await ctx.choose('confirmEffect', { player: op, prompt: `${op}: 효과를 받는 대신 ${instr.pay === 'discard' ? `패 ${instr.n}장 파기` : instr.pay === 'destroy' ? '자신의 디지몬/테이머 1마리 소멸' : '시큐리티 1장 파기'}를 선택할까요?` })) {
+        if (instr.pay === 'discard') {
+          const eligible = opl.hand.map((id, i) => i).filter(i => matchesFilter(S, opl.hand[i], instr.filter));
+          const chosen = await ctx.choose('pickFromHandIndexes', { player: op, eligibleIdxs: eligible, n: instr.n, prompt: `파기할 패 ${instr.n}장 선택` });
+          if ((chosen || []).length >= instr.n) { (chosen || []).slice().sort((a, b) => b - a).forEach(i => S.trashFromHand(state, op, i)); paid = true; }
+        } else if (instr.pay === 'destroy') {
+          const uid = await ctx.choose('pickStack', { player: op, uids: opl.battle.filter(x => ['digimon', 'tamer'].includes(S.card(x.cardId).category)).map(x => x.uid), prompt: '소멸시킬 자신의 디지몬/테이머 선택' });
+          if (uid) { S.deleteStack(state, op, uid, 'trash', 'effect'); paid = true; }
+        } else { S.trashTopSecurityByEffect(state, op); paid = true; }
+      }
+      if (!paid) await runScript(instr.else, ctx);
+      break;
+    }
     case 'evolveEffect': {
       if (!ctx.E || !ctx.E.canEvolveAny) break;
       const pl = state.players[who];
@@ -1082,6 +1103,14 @@ function compileInner(text) {
     for (let i = 0; i < Number(m[4]); i++) script.push({ op: 'returnFromTrash', who: 'self', filter });
   }
 
+  // "상대는 본인의 <패 N장 / 디지몬·테이머 1마리(명) / 시큐리티 위 1장>을 파기·소멸시킬 수 있다. 이 효과로 …하지 않았다면, <효과>"
+  if ((m = t.trim().match(/^상대는\s*(?:본인의|스스로의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리\(명\)|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기|소멸시킬|파기할|소멸시킬)\s*(?:수\s*있다|할\s*수\s*있다)?\s*(?:수\s*있다)?\.\s*이\s*효과로\s*(?:파기|소멸)하지\s*않았다면,\s*(.+)$/s)) || (m = t.trim().match(/^상대는\s*(?:본인의|스스로의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리\(명\)|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기할|소멸시킬)\s*수\s*있다\.\s*이\s*효과로\s*(?:파기|소멸)하지\s*않았다면,\s*(.+)$/s))) {
+    const els = compileToScript(m[4]);
+    const kind = /^패/.test(m[1]) ? 'discard' : /^디지몬/.test(m[1]) ? 'destroy' : 'security';
+    const flt = kind === 'discard' && m[2] ? (parseCardFilter(m[2].replace(/(?:의|에서)\s*$/, '')) || null) : null;
+    if (els.length && !(kind === 'discard' && m[2] && !flt)) return [{ op: 'oppMayPay', pay: kind, n: Number(m[3] || 1), filter: flt, else: els }];
+  }
+
   // Any other descriptor ("「X」/「Y」", "특징 「X」를 가진 Lv.N의 디지몬 카드", "명칭에 「X」를 포함하는 옵션 카드").
   if (!script.some(o => o.op === 'returnFromTrash') && (m = t.match(/자신(?:의)?\s*트래시에서,?\s*(.*?)\s*(\d+)\s*장(?:까지)?(?:을|를)?\s*패(?:로|에)\s*되돌(?:린다|릴\s*수\s*있다)/s)) && !/이외|서로\s*다른|마다/.test(m[1])) {
     const qn = m[1].trim().match(/^((?:「[^」]+」\s*(?:과|와|\/)?\s*)+)$/);
@@ -1357,7 +1386,7 @@ export function compileToScript(text) {
     // A condition can also open a LATER sentence: "…한다. 그 후, <조건>라면, <효과>". The
     // whole-text scan used to run that trailing clause unconditionally, so split there:
     // prefix compiled as-is, the clause after the condition wrapped in a condition op.
-    if (!inner.length || inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
+    if (!inner.length || inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) return inner;
     const masked = trimmed.replace(/Lv\./g, 'Lv');
     const ms = masked.match(/^(.+?[.。])\s*(?:그\s*후,?\s*)?([^,.。\n]{2,80}?(?:라면|다면)),\s*(.+)$/s);
     if (!ms) return inner;
