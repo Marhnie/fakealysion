@@ -380,8 +380,33 @@ function cardChip(cardId, opts = {}) {
     c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo, loading: 'lazy' }) : null,
     h('div', { className: 'nm' }, c.nameKo),
     h('div', { className: 'meta' }, metaChildren),
+    opts.keywordBadges?.length ? h('div', { className: 'keyword-badges' }, opts.keywordBadges.map(k => h('span', { className: 'kw-badge' }, k))) : null,
     opts.sourcesCount ? h('div', { className: 'stack-src' }, `진화원 ${opts.sourcesCount}장`) : null,
   ]);
+}
+
+// Short labels for every keyword this session's many systems can actually
+// grant a stack — shown on the card chip itself instead of only affecting
+// game logic invisibly, same motivation as showing effectiveDp: none of
+// these ever appeared anywhere on the board before.
+const KEYWORD_BADGE_LABEL = {
+  블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
+  속공: '⚡속공', 진격: '⚔진격', DP감소무효: '🚫DP감소무효',
+  무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
+};
+function activeKeywordBadges(stack) {
+  const badges = [];
+  const seen = new Set();
+  for (const src of [stack.keywords, stack.inheritedKeywords]) {
+    if (!src) continue;
+    for (const [k, v] of Object.entries(src)) {
+      if (!v || seen.has(k)) continue;
+      seen.add(k);
+      if (k === '시큐리티어택') badges.push(`S어택+${v}`);
+      else if (KEYWORD_BADGE_LABEL[k]) badges.push(KEYWORD_BADGE_LABEL[k]);
+    }
+  }
+  return badges;
 }
 
 function renderStack(p, stack, zoneKind, opts = {}) {
@@ -393,6 +418,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     suspended: stack.suspended,
     sourcesCount: stack.sources.length,
     effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
+    keywordBadges: activeKeywordBadges(stack),
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
