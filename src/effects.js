@@ -838,6 +838,17 @@ export function compileToScript(text) {
     script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '옵션시큐리티효과무효', duration: 'permanent' });
   }
 
+  // "《진격》" printed bare, alone, as an entire segment body (BT14-017,
+  // EX5-014, BT16-015, BT18-016, LM-039, all 【진화 시】) — the implicit-grant
+  // idiom (a keyword name with no "얻는다" wording still means "this card
+  // gains it"), distinct from the "X는 《키워드》를 얻는다" phrasing the loop
+  // below already covers. 진격 itself has no gating logic in this engine to
+  // hook into (declareAttack never restricts by memory position), so this
+  // is tracked for consistency/display only, same as the other 5 keywords.
+  if (/^[≪《]\s*진격\s*[≫》]$/.test(t.trim())) {
+    script.push({ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '진격', duration: 'turn' });
+  }
+
   // Blocker / Jamming / Piercing / Rush keyword grants.
   for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/], ['진격', /[≪《]\s*진격\s*[≫》]/], ['충돌', /[≪《]\s*충돌\s*[≫》]/]]) {
     if (re.test(t) && /(얻는다|를\s*얻)/.test(t)) {
