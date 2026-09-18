@@ -1125,7 +1125,23 @@ export function compileToScript(text) {
   const inner = compileWithCost(text);
   const trimmed = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
   const cm = trimmed.match(/^([^,.。\n]{2,80}?(?:라면|다면)),\s*(.*)$/s);
-  if (!cm) return inner;
+  if (!cm) {
+    // A condition can also open a LATER sentence: "…한다. 그 후, <조건>라면, <효과>". The
+    // whole-text scan used to run that trailing clause unconditionally, so split there:
+    // prefix compiled as-is, the clause after the condition wrapped in a condition op.
+    if (!inner.length || inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
+    const masked = trimmed.replace(/Lv\./g, 'Lv');
+    const ms = masked.match(/^(.+?[.。])\s*(?:그\s*후,?\s*)?([^,.。\n]{2,80}?(?:라면|다면)),\s*(.+)$/s);
+    if (!ms) return inner;
+    const un = (x) => x.replace(//g, '.');
+    const prefix = compileToScript(un(ms[1]));
+    const test = parseConditionText(un(ms[2]));
+    const suffix = compileToScript(un(ms[3]));
+    if (!prefix.length && !suffix.length) return inner;
+    // Condition we can't evaluate: keep only the unconditional prefix (never run the gated clause blindly).
+    if (!test) return prefix;
+    return [...prefix, ...(suffix.length ? [{ op: 'condition', if: { test }, then: suffix, else: [] }] : [])];
+  }
   // Already condition-aware (dedicated op/condition) — leave it alone.
   if (inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
   if (!inner.length) return inner;
