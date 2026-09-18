@@ -148,6 +148,11 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .card-chip img { width: 100%; border-radius: 4px; display: block; margin-bottom: 2px; pointer-events: none; }
 .card-chip .nm { font-weight: 600; font-size: 10px; line-height: 1.15; }
 .card-chip .meta { color: var(--muted); font-size: 9px; }
+/* DP shown as printed→effective when a buff/debuff (temp, inherited, or a
+   turn-conditional grant) actually changes it — the meta row otherwise
+   always showed the static printed value even while modifiers were live. */
+.card-chip .meta .dp-buffed { color: var(--ok); font-weight: 600; }
+.card-chip .meta .dp-debuffed { color: var(--danger); font-weight: 600; }
 .stack-src { font-size: 9px; color: var(--muted); margin-top: 1px; }
 
 /* fanned-hand look — alternating tilt/lift per card, like cards held in hand */

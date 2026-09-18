@@ -352,8 +352,19 @@ function cardChip(cardId, opts = {}) {
   if (opts.suspended) cls.push('suspended');
   if (opts.attackable) cls.push('attackable');
   if (opts.justDrawn) cls.push('just-drawn');
-  const meta = [c.level ? `Lv.${c.level}` : c.category, c.dp ? `DP${c.dp}` : null, c.cost != null ? `C${c.cost}` : null]
-    .filter(Boolean).join(' · ');
+  // Show the LIVE effective DP (temp/inherited/turn-conditional modifiers
+  // all folded in — see S.effectiveDP) rather than always the static
+  // printed value, so buffs/debuffs from this session's many DP-modifying
+  // effects actually show up somewhere instead of only affecting battle
+  // math invisibly. Only for cards that print a DP stat at all (Tamers/
+  // Options have none) — effectiveDP would otherwise return a bare 0.
+  const dpModified = c.dp && opts.effectiveDp != null && opts.effectiveDp !== c.dp;
+  const dpNode = c.dp
+    ? h('span', { className: dpModified ? (opts.effectiveDp > c.dp ? 'dp-buffed' : 'dp-debuffed') : '' },
+        dpModified ? `DP${c.dp}→${opts.effectiveDp}` : `DP${c.dp}`)
+    : null;
+  const metaParts = [c.level ? `Lv.${c.level}` : c.category, dpNode, c.cost != null ? `C${c.cost}` : null].filter(x => x != null);
+  const metaChildren = metaParts.flatMap((part, i) => i === 0 ? [part] : [' · ', part]);
   const attrs = { className: cls.join(' '), onClick: opts.onClick };
   if (opts.draggable) {
     attrs.draggable = true;
@@ -368,7 +379,7 @@ function cardChip(cardId, opts = {}) {
   return h('div', attrs, [
     c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo, loading: 'lazy' }) : null,
     h('div', { className: 'nm' }, c.nameKo),
-    h('div', { className: 'meta' }, meta),
+    h('div', { className: 'meta' }, metaChildren),
     opts.sourcesCount ? h('div', { className: 'stack-src' }, `진화원 ${opts.sourcesCount}장`) : null,
   ]);
 }
@@ -381,6 +392,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     selected: isSelected || isSecondSelected,
     suspended: stack.suspended,
     sourcesCount: stack.sources.length,
+    effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
