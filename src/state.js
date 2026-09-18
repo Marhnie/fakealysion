@@ -562,7 +562,9 @@ export function grantColor(state, p, uid, color) {
   log(state, `${p} ${card(stack.cardId).nameKo}는 ${color} 색으로도 취급됨`);
 }
 
-const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무']);
+// Bare 《키워드》 lines the engine has a real consumer for (static grants).
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴'];
+const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴']);
 
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
@@ -665,8 +667,8 @@ function parseStaticGrants(text) {
     // triggered-effect clause would.
     const bare = t.match(/^[《≪]\s*([^》≫]+?)\s*[》≫](?:\s*\([^()]*\))?$/);
     if (!bare) continue; // a keyword line with extra prose is a triggered effect, not a bare grant — leave it
-    const label = bare[1];
-    if (['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무'].includes(label)) { out.keywords[label] = true; continue; }
+    const label = bare[1].replace(/\s+/g, '') === '아머퍼지' ? '아머퍼지' : bare[1];
+    if (KEYWORD_FLAGS.includes(label)) { out.keywords[label] = true; continue; }
     // "S 어택" (abbreviated) and "시큐리티 어택" (spelled out, common on
     // beginner/starter-deck cards) are the same keyword.
     if ((m = label.match(/^(?:S|시큐리티)\s*어택\s*\+(\d+)$/))) { out.keywords['시큐리티어택'] = (out.keywords['시큐리티어택'] || 0) + Number(m[1]); continue; }
@@ -821,7 +823,7 @@ export function recomputeStackGrants(stack) {
     dp += g.dp;
     secAtk += g.keywords['시큐리티어택'] || 0;
     linkCap += g.keywords['링크+'] || 0;
-    for (const k of ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무']) if (g.keywords[k]) flags[k] = true;
+    for (const k of KEYWORD_FLAGS) if (g.keywords[k]) flags[k] = true;
   }
   stack.inheritedDP = dp;
   stack.inheritedKeywords = {
@@ -1718,10 +1720,46 @@ function trySurviveBySacrifice(state, p, stack) {
   return false;
 }
 
+// Survive-destruction keywords, all "이 디지몬이 소멸할 때, <cost>로 소멸하지
+// 않는다" shaped, auto-paid like trySurviveBySacrifice (deleteStack has no async
+// choice path): 회피 (rest self), 아머 퍼지 (trash top overlaid card), 방벽
+// (battle only; trash own top security), 스케이프고트 (not from own effect;
+// destroy another own Digimon). Returns true if the stack survived.
+function trySurviveByKeyword(state, p, stack, cause) {
+  const pl = state.players[p];
+  if (hasKeyword(stack, '회피') && !stack.suspended) {
+    stack.suspended = true;
+    log(state, `${p} ${card(stack.cardId).nameKo} 《회피》 — 레스트하여 소멸하지 않음`);
+    return true;
+  }
+  if (hasKeyword(stack, '아머퍼지') && stack.sources.length > 0) {
+    const id = stack.sources.pop();
+    pl.trash.push(id);
+    log(state, `${p} ${card(stack.cardId).nameKo} 《아머 퍼지》 — ${card(id).nameKo} 파기하여 소멸하지 않음`);
+    recomputeStackGrants(stack);
+    return true;
+  }
+  if (hasKeyword(stack, '방벽') && cause === 'battle' && pl.security.length > 0) {
+    trashTopSecurityByEffect(state, p);
+    log(state, `${p} ${card(stack.cardId).nameKo} 《방벽》 — 시큐리티 1장 파기하여 소멸하지 않음`);
+    return true;
+  }
+  if (hasKeyword(stack, '스케이프고트') && cause !== 'ownEffect') {
+    const other = pl.battle.find(s => s !== stack && card(s.cardId).category === 'digimon');
+    if (other) {
+      log(state, `${p} ${card(stack.cardId).nameKo} 《스케이프고트》 — ${card(other.cardId).nameKo} 소멸시켜 소멸하지 않음`);
+      deleteStack(state, p, other.uid, 'trash', 'ownEffect');
+      return true;
+    }
+  }
+  return false;
+}
+
 export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   const pl = state.players[p];
   const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (peek && trySurviveBySacrifice(state, p, peek)) return null;
+  if (peek && trySurviveByKeyword(state, p, peek, cause)) return null;
   let stack = null;
   if (pl.raising?.uid === uid) { stack = pl.raising; pl.raising = null; }
   else {
@@ -1740,6 +1778,13 @@ export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   for (const id of [...stack.sources, stack.cardId]) applyOverflowIfAny(state, p, id);
   state._deleteCause = cause;
   try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; }
+  // ≪불굴≫: "진화원을 가진 이 디지몬이 소멸했을 때, 이 카드를 코스트를 지불하지
+  // 않고 등장시킨다" — the destroyed top card comes straight back as a fresh stack.
+  if (toZone === 'trash' && stack.sources.length > 0 && hasKeyword(stack, '불굴')) {
+    const fresh = placeThisInBattle(state, p, stack.cardId);
+    log(state, `${p} ${card(stack.cardId).nameKo} 《불굴》 — 코스트 없이 재등장`);
+    queueTriggersForStack(state, p, fresh, 'play');
+  }
   return all;
 }
 

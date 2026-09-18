@@ -111,19 +111,20 @@ async function runOne(instr, ctx) {
         if (boost) filter = { ...filter, dpMax: filter.dpMax + boost };
       }
       if (filter) uids = pl.battle.filter(s => matchesFilter(S, s.cardId, filter)).map(s => s.uid);
+      const dcause = targetPlayer === ctx.self ? 'ownEffect' : 'effect';
       if (instr.mode === 'thisStack') {
-        S.deleteStack(state, targetPlayer, ctx.sourceStackUid);
+        S.deleteStack(state, targetPlayer, ctx.sourceStackUid, 'trash', dcause);
       } else if (instr.mode === 'all') {
-        uids.forEach(uid => S.deleteStack(state, targetPlayer, uid));
+        uids.forEach(uid => S.deleteStack(state, targetPlayer, uid, 'trash', dcause));
       } else if (instr.mode === 'lowestDP') {
         const withDp = pl.battle.filter(s => uids.includes(s.uid)).map(s => ({ uid: s.uid, dp: S.card(s.cardId).dp || 0 }));
         if (withDp.length) {
           const min = Math.min(...withDp.map(x => x.dp));
-          withDp.filter(x => x.dp === min).forEach(x => S.deleteStack(state, targetPlayer, x.uid));
+          withDp.filter(x => x.dp === min).forEach(x => S.deleteStack(state, targetPlayer, x.uid, 'trash', dcause));
         }
       } else {
         const pick = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '소멸시킬 디지몬 선택' });
-        if (pick) S.deleteStack(state, targetPlayer, pick);
+        if (pick) S.deleteStack(state, targetPlayer, pick, 'trash', dcause);
       }
       break;
     }
@@ -930,7 +931,7 @@ export function compileToScript(text) {
   }
 
   // Blocker / Jamming / Piercing / Rush keyword grants.
-  for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/], ['진격', /[≪《]\s*진격\s*[≫》]/], ['충돌', /[≪《]\s*충돌\s*[≫》]/], ['길동무', /[≪《]\s*길동무\s*[≫》]/], ['재기동', /[≪《]\s*재기동\s*[≫》]/]]) {
+  for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/], ['진격', /[≪《]\s*진격\s*[≫》]/], ['충돌', /[≪《]\s*충돌\s*[≫》]/], ['길동무', /[≪《]\s*길동무\s*[≫》]/], ['방벽', /[≪《]\s*방벽\s*[≫》]/], ['아머퍼지', /[≪《]\s*아머\s*퍼지\s*[≫》]/], ['회피', /[≪《]\s*회피\s*[≫》]/], ['스케이프고트', /[≪《]\s*스케이프고트\s*[≫》]/], ['불굴', /[≪《]\s*불굴\s*[≫》]/], ['재기동', /[≪《]\s*재기동\s*[≫》]/]]) {
     if (re.test(t) && /(얻는다|[를을]\s*얻)/.test(t)) {
       const thisStack = /이\s*디지몬(?:은|이)/.test(t) && !/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
       const duration = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? 'opponentTurn' : 'turn';
