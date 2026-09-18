@@ -435,6 +435,16 @@ async function runOne(instr, ctx) {
       S.addEvoCostMod(state, ctx.self, instr.delta, instr.filter, expiresAfterTurn);
       break;
     }
+    case 'securityTopToHand': {
+      const pl = state.players[who];
+      for (let i = 0; i < (instr.n || 1); i++) {
+        const id = pl.security.shift();
+        if (!id) break;
+        pl.hand.push(id);
+        S.log(state, `${who} 시큐리티 맨 위 카드를 패에 추가: ${S.card(id).nameKo}`);
+      }
+      break;
+    }
     case 'recoverTop':
       S.recoverTopOfDeckToSecurity(state, who);
       break;
@@ -658,7 +668,24 @@ export function compileToScript(text) {
   }
 
   // 《리커버리 +1《덱》》.
-  if (/[≪《]\s*리커버리\s*\+1\s*[≪《]\s*덱\s*[≫》]\s*[≫》]/.test(t)) script.push({ op: 'recoverTop', who: 'self' });
+  // "자신의 시큐리티를 위에서부터 N장 패에 추가한다" (mandatory forms only —
+  // the optional "…추가할 수 있다" and cost-style "…하는 것으로, 《리커버리》"
+  // shapes are left uncompiled so a follow-up recovery never runs without
+  // the step it's conditioned on).
+  const secTopOptional = /시큐리티를\s*위에서(?:부터)?\s*\d+\s*장(?:을)?\s*패에\s*추가할\s*수\s*있다/.test(t);
+  const recoverAsCost = /것으로,?\s*[≪《]\s*리커버리/.test(t);
+  if (!secTopOptional && (m = t.match(/자신(?:의)?\s*시큐리티를\s*위에서(?:부터)?\s*(\d+)\s*장(?:을)?\s*패에\s*추가(?:한다|하고)/))) {
+    script.push({ op: 'securityTopToHand', who: 'self', n: Number(m[1]) });
+  }
+  // 《리커버리 +N》 (bracket nesting varies: "《리커버리 +2《덱》》", "《리커버리 《+1》》"),
+  // optionally gated by "자신의 시큐리티가 N장 이하일 때/라면,".
+  if (!secTopOptional && !recoverAsCost && (m = t.match(/리커버리\s*[≪《]?\s*\+(\d+)/))) {
+    const rec = [];
+    for (let i = 0; i < Number(m[1]); i++) rec.push({ op: 'recoverTop', who: 'self' });
+    const cm = t.match(/자신(?:의)?\s*시큐리티가\s*(\d+)\s*장\s*(?:이하일\s*때|이하라면|이라면|일\s*때)[,]?\s*[≪《]\s*리커버리/);
+    if (cm) script.push({ op: 'condition', if: { securityLE: Number(cm[1]) }, then: rec, else: [] });
+    else script.push(...rec);
+  }
 
   // Trash evolution sources: "상대 디지몬 N마리/전부의 진화원을 (아래에서부터|
   // 위에서부터) N장(까지)/전부 파기한다".
@@ -922,6 +949,9 @@ async function evalCondition(cond, ctx) {
   }
   if (cond.hasDigimon) {
     return ctx.state.players[ctx.self].battle.some(s => matchesFilter(ctx.S, s.cardId, cond.hasDigimon));
+  }
+  if (cond.securityLE != null) {
+    return ctx.state.players[ctx.self].security.length <= cond.securityLE;
   }
   if (cond.handSizeGE != null) {
     return ctx.state.players[ctx.self].hand.length >= cond.handSizeGE;
