@@ -1140,6 +1140,16 @@ function enterRedirectTiming(pa) {
   }
 }
 
+// 【어택 종료 시】 (82 printed segments) — was never queued anywhere. Fires for
+// the attacker's stack (own + inherited text) once the attack panel is closed.
+function endAttack() {
+  const pa = sel.pendingAttack;
+  sel.pendingAttack = null;
+  if (!pa) return;
+  const st = findStack({ player: pa.attacker, uid: pa.uid });
+  if (st) S.queueTriggersForStack(state, pa.attacker, st, 'attackEnd');
+}
+
 function attackFlow(p, uid, directTarget) {
   const dec = S.declareAttack(state, p, uid);
   if (!dec.ok) { render(); return; }
@@ -1305,10 +1315,10 @@ function renderPendingAttack() {
           // this attack and don't repeat here.
           onClick: () => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
         }, '체크'),
-        h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '안 함'),
+        h('button', { onClick: () => { endAttack(); render(); } }, '안 함'),
       ]));
     } else {
-      rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); } }, '닫기'));
+      rows.push(h('button', { onClick: () => { endAttack(); render(); } }, '닫기'));
     }
   } else if (pa.stage === 'blockCheck') {
     rows.push(h('div', { className: 'zone-label' },
@@ -1347,10 +1357,10 @@ function renderPendingAttack() {
         rows.push(h('div', { className: 'meta' }, '공격측 소멸 (생존 효과가 있다면 범용 도구로 처리)'));
         rows.push(h('button', {
           className: 'primary',
-          onClick: () => { sel.pendingAttack = null; render(); },
+          onClick: () => { endAttack(); render(); },
         }, '닫기'));
       } else {
-        rows.push(h('button', { onClick: () => { sel.pendingAttack = null; render(); }, }, '닫기'));
+        rows.push(h('button', { onClick: () => { endAttack(); render(); }, }, '닫기'));
       }
     }
   }
