@@ -1910,6 +1910,45 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
 }
 
 // DNA / Jogress: combine two stacks into one new stack.
+// ---- 조그레스 (Jogress) validation: "〔조그레스〕 <A>+<B> : 코스트 N" ----
+// Each side is a descriptor over a material Digimon: color list, Lv., exact
+// 「name」, "명칭에 「X」를 포함하는", or "「X」가 기술되어 있는". Returns
+// { cost, test(cardA, cardB) } or null when the line is missing/unparsed (the
+// caller then falls back to the previous permissive behavior).
+function parseJogressSide(desc) {
+  desc = desc.trim();
+  const cons = [];
+  let m, rest = desc;
+  const quoted = (str) => [...str.matchAll(/「([^」]+)」/g)].map(x => x[1]);
+  if ((m = rest.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
+  if ((m = rest.match(/((?:「[^」]+」\/?|\+)+)\s*(?:이|가)\s*기술되어\s*있는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
+  if ((m = rest.match(new RegExp(`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의)?`)))) { const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]); cons.push(c => (c.colors || []).some(x => cols.includes(x))); rest = rest.replace(m[0], ''); }
+  if ((m = rest.match(/Lv\.\s*(\d+)/))) { const lv = Number(m[1]); cons.push(c => c.level === lv); rest = rest.replace(m[0], ''); }
+  if (!cons.length && (m = rest.match(/^「([^」]+)」$/))) { const nm = m[1]; cons.push(c => c.nameKo === nm); rest = ''; }
+  if (!cons.length) return null;
+  return c => cons.every(f => f(c));
+}
+
+export function parseJogress(cardId) {
+  const line = (card(cardId).effectKo || '').split('\n').find(l => /〔조그레스〕/.test(l));
+  if (!line) return null;
+  const m = line.match(/〔조그레스〕\s*(.+?)\s*(?::|에서)\s*(?:코스트\s*)?(\d+)/);
+  if (!m) return null;
+  const sides = m[1].split('+');
+  if (sides.length !== 2) return null;
+  // "「A」+「B」가 기술되어 있는 …" style shares one descriptor across both quoted names — bail out.
+  const a = parseJogressSide(sides[0]), b = parseJogressSide(sides[1]);
+  if (!a || !b) return null;
+  return { cost: Number(m[2]), test: (x, y) => (a(x) && b(y)) || (a(y) && b(x)) };
+}
+
+// Can `stackA` + `stackB` jogress into `cardId`? Unparsed lines stay permissive.
+export function canJogress(stackA, stackB, cardId) {
+  const j = parseJogress(cardId);
+  if (!j) return { ok: true, cost: null };
+  return j.test(card(stackA.cardId), card(stackB.cardId)) ? { ok: true, cost: j.cost } : { ok: false, reason: '조그레스 조건 불일치' };
+}
+
 export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand') {
   const pl = state.players[p];
   const idxA = pl.battle.findIndex(s => s.uid === uidA);

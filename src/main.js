@@ -437,6 +437,13 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       // is how DNA/Jogress fusion is triggered — no separate button needed,
       // the two-click stack1+stack2 selection already signals that intent.
       if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
+        const stA = findStack(sel.stack);
+        const jr = stA ? S.canJogress(stA, stack, drag.cardId) : { ok: true };
+        if (!jr.ok) {
+          S.log(state, `${p} ${S.card(drag.cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stack.cardId).nameKo} (${jr.reason})`);
+          dragData = null; render();
+          return;
+        }
         S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, val('costInput'), 'hand');
         sel.stack = null; sel.stack2 = null;
         E.checkAutoEndTurn(state);

@@ -173,6 +173,30 @@ async function runOne(instr, ctx) {
       if (pick) S.retreat(state, targetPlayer, pick, instr.n);
       break;
     }
+    case 'jogressEffect': {
+      // "이 디지몬과 <다른 자신의 디지몬>으로 (코스트를 지불하여) 패의 <카드>로 조그레스 진화할 수 있다."
+      const pl = state.players[who];
+      const src = pl.battle.find(s => s.uid === ctx.sourceStackUid);
+      if (!src) break;
+      const legalCards = (partner) => pl.hand.map((id, i) => i).filter(i => {
+        const c = S.card(pl.hand[i]);
+        if (c.category !== 'digimon' || !S.parseJogress(pl.hand[i])) return false;
+        if (instr.cardName && c.nameKo !== instr.cardName) return false;
+        return S.canJogress(src, partner, pl.hand[i]).ok;
+      });
+      const partners = pl.battle.filter(s => s !== src && S.card(s.cardId).category === 'digimon'
+        && (!instr.partnerName || S.card(s.cardId).nameKo.includes(instr.partnerName)) && legalCards(s).length);
+      if (!partners.length) { S.log(state, `${who} 조그레스 진화 가능한 조합이 없음`); break; }
+      const partnerUid = await ctx.choose('pickStack', { player: who, uids: partners.map(s => s.uid), prompt: '조그레스 진화할 상대 디지몬 선택' });
+      const partner = partners.find(s => s.uid === partnerUid);
+      if (!partner) break;
+      const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone: 'hand', eligibleIdxs: legalCards(partner), prompt: '조그레스 진화할 패의 카드 선택' });
+      if (idx == null) break;
+      const cardId = pl.hand[idx];
+      const j = S.parseJogress(cardId);
+      S.fuseStacks(state, who, src.uid, partner.uid, cardId, j ? j.cost : 0, 'hand');
+      break;
+    }
     case 'playFree': {
       const pl = state.players[who];
       const okIdx = (z) => pl[z].map((id, i) => i).filter(i => matchesFilter(S, pl[z][i], instr.filter) && S.card(pl[z][i]).category !== 'option');
@@ -586,6 +610,11 @@ export function compileToScript(text) {
   // Reveal top N of own deck, add matching card(s) to hand, rest to bottom.
   if ((m = t.match(/(?:자신의\s*)?덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*(?:오픈|공개)/))) {
     script.push({ op: 'revealTop', who: 'self', n: Number(m[1]), pick: { min: 0, max: 1 }, restTo: /덱\s*(?:의)?\s*위(?:로)?\s*(?:되돌|돌려)/.test(t) ? 'top' : 'bottom' });
+  }
+
+  // "이 디지몬과 <다른 자신의 디지몬>으로 (코스트를 지불하여) 패의 디지몬 카드/「X」로 조그레스 진화할 수 있다."
+  if ((m = t.match(/^이\s*디지몬과\s*(?:명칭에\s*「([^」]+)」을?\s*포함하는\s*)?(?:다른\s*자신의|자신의\s*다른)\s*디지몬(?:\s*\d+\s*마리)?(?:으로|로),?\s*(?:코스트를\s*지불하여\s*)?패의\s*(?:디지몬\s*카드|「([^」]+)」)(?:으로|로)\s*조그레스\s*진화할\s*수\s*있다/))) {
+    script.push({ op: 'jogressEffect', who: 'self', partnerName: m[1] || null, cardName: m[2] || null });
   }
 
   // Play a card without paying cost, from hand or trash.
