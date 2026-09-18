@@ -160,9 +160,18 @@ async function runOne(instr, ctx) {
         break;
       }
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.map(s => s.uid);
-      const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
-      if (targetUid) S.restStack(state, targetPlayer, targetUid);
+      for (let i = 0; i < (instr.n || 1); i++) {
+        const uids = state.players[targetPlayer].battle.map(s => s.uid);
+        if (!uids.length) break;
+        const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
+        if (!targetUid) break;
+        S.restStack(state, targetPlayer, targetUid);
+        // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — extremely
+        // common tacked onto a rest effect (confirmed via the audit: a
+        // dozen+ cards all print this exact "레스트시킨다. ... 액티브가 되지
+        // 않는다." combo).
+        if (instr.skipNextUnsuspend) S.setSkipNextUnsuspend(state, targetPlayer, targetUid);
+      }
       break;
     }
     case 'modifyDP': {
@@ -498,9 +507,18 @@ export function compileToScript(text) {
     for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'unsuspend', target: m[1] === '상대' ? 'opponent' : 'self' });
   }
 
-  // Rest ("레스트시킨다").
-  if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리를\s*레스트시킨다/))) {
-    for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'rest', target: 'opponent' });
+  // Rest ("레스트시킨다"). "(다음\s*)?상대(?:의)?\s*액티브\s*페이즈에서는[,]?\s*
+  // 그\s*디지몬은\s*액티브가\s*되지\s*않는다" tacked on afterward is extremely
+  // common (confirmed a dozen+ cards via the audit, e.g. BT7-053/BT10-056/
+  // EX2-029 all print almost this exact combo) — a one-time skip of the
+  // target's next unsuspend, not a separate standalone effect.
+  if ((m = t.match(/상대(?:의)?\s*디지몬(?:\/테이머)?\s*(\d+)\s*마리(?:\(명\))?를\s*레스트시킨다/))) {
+    // Word order varies across prints ("다음 상대의 액티브..." vs "상대의
+    // 다음 액티브...", and "그 디지몬은" can lead OR follow "...페이즈에서는") —
+    // just require both distinctive phrases to appear together rather than
+    // pin down one exact ordering.
+    const skipNextUnsuspend = /액티브\s*페이즈에서는/.test(t) && /액티브가\s*되지\s*않는다/.test(t);
+    script.push({ op: 'rest', target: 'opponent', n: Number(m[1]), skipNextUnsuspend });
   } else if ((m = t.match(/(상대(?:의)?\s*|자신(?:의)?\s*)?디지몬\s*(\d+)\s*마리를?\s*레스트시킬\s*수\s*있다/))) {
     // Optional ("...시킬 수 있다") rest — a bare "디지몬 N마리" with NEITHER
     // 상대/자신 prefix is a genuinely either-side choice (common on cards

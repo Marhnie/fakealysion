@@ -927,6 +927,44 @@ export function restStack(state, p, uid) {
   log(state, `${p} ${card(stack.cardId).nameKo} 레스트`);
 }
 
+// "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — a ONE-TIME skip of
+// the next unsuspend cycle (consumed in engine.js's nextPhase), distinct
+// from preventRest below (which blocks resting in the first place, not
+// unsuspending an already-rested stack).
+export function setSkipNextUnsuspend(state, p, uid) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return;
+  stack.skipNextUnsuspend = true;
+  log(state, `${p} ${card(stack.cardId).nameKo} 다음 액티브 페이즈에 액티브 되지 않음`);
+}
+
+// "상대의 테이머 전부는 액티브가 되지 않는다." — a CONTINUOUS block (as
+// opposed to setSkipNextUnsuspend's one-time consumed skip), re-evaluated
+// every unsuspend cycle rather than cleared after one use. The ability
+// lives on the OPPONENT's board relative to the stack being checked (same
+// "read tags from the ability's own controller" pattern as isEvoCostLocked/
+// isMemoryGainLocked).
+export function isPreventedFromUnsuspending(state, p, stack) {
+  if (card(stack.cardId).category !== 'tamer') return false;
+  const abilityOwner = opponentOf(p);
+  const pl = state.players[abilityOwner];
+  for (const s of [pl.raising, ...pl.battle].filter(Boolean)) {
+    for (const { id, own } of stackContributors(s)) {
+      const text = own ? card(id).effectKo : card(id).inheritedKo;
+      if (!text) continue;
+      const { segments } = parseEffectSegments(text);
+      for (const seg of segments) {
+        if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+        const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === abilityOwner);
+        if (!active) continue;
+        if (/^상대(?:의)?\s*테이머\s*전부는\s*(?:액티브\s*페이즈에서는\s*)?액티브가\s*되지\s*않는다\.?$/.test(seg.body.trim())) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // "...는 레스트할 수 없다." — same shape as restrictAttack's cannotAttackUntil.
 export function preventRest(state, p, uid, expiresAfterTurn = 'permanent') {
   const pl = state.players[p];

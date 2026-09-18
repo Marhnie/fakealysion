@@ -59,7 +59,16 @@ export function nextPhase(state) {
   const active = state.activePlayer;
   const pl = state.players[active];
   if (state.phase === 'unsuspend') {
-    pl.battle.forEach(s => { s.suspended = false; });
+    // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — a one-time skip
+    // of just THIS unsuspend cycle, consumed here so the stack unsuspends
+    // normally again from the NEXT cycle onward. "상대의 테이머 전부는
+    // 액티브가 되지 않는다." is the continuous version instead — re-checked
+    // every cycle, never consumed.
+    pl.battle.forEach(s => {
+      if (s.skipNextUnsuspend) { s.skipNextUnsuspend = false; return; }
+      if (S.isPreventedFromUnsuspending(state, active, s)) return;
+      s.suspended = false;
+    });
     // 16-11-1/16-11-5: a ≪재기동≫ (Reboot) Digimon also becomes Active during
     // the OPPONENT's Active Phase, on top of its own controller's — not just
     // whichever player's own unsuspend step this is.
