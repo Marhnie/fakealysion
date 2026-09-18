@@ -769,6 +769,17 @@ function renderUiChoice() {
     }).filter(x => x.cardId);
     rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { onClick: () => resolve(x.uid) }))));
     rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
+  } else if (kind === 'pickStackAnySide') {
+    const cards = payload.entries.map(({ player, uid }) => {
+      const pl = state.players[player];
+      const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+      return { player, uid, cardId: st?.cardId };
+    }).filter(x => x.cardId);
+    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, {
+      selected: false,
+      onClick: () => resolve({ player: x.player, uid: x.uid }),
+    }))));
+    rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
   } else if (kind === 'pickFromHand') {
     const pl = state.players[payload.player];
     const idxs = pl.hand.map((id, i) => i);

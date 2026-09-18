@@ -142,6 +142,19 @@ async function runOne(instr, ctx) {
       break;
     }
     case 'rest': {
+      // "디지몬 1마리를 레스트시킬 수 있다." with no 상대/자신 prefix at all
+      // means the ACTING player's choice of either side's Digimon — common
+      // on cards that follow up with "이 효과로 자신의 디지몬이 레스트했다면"
+      // (only makes sense if resting your own was actually an option).
+      if (instr.target === 'either') {
+        const entries = [
+          ...state.players[ctx.self].battle.map(s => ({ player: ctx.self, uid: s.uid })),
+          ...state.players[ctx.opp].battle.map(s => ({ player: ctx.opp, uid: s.uid })),
+        ];
+        const picked = await ctx.choose('pickStackAnySide', { entries, prompt: instr.prompt || '레스트시킬 디지몬 선택 (자신/상대 무관)' });
+        if (picked) S.restStack(state, picked.player, picked.uid);
+        break;
+      }
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const uids = state.players[targetPlayer].battle.map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
@@ -430,6 +443,13 @@ export function compileToScript(text) {
   // Rest ("레스트시킨다").
   if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리를\s*레스트시킨다/))) {
     for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'rest', target: 'opponent' });
+  } else if ((m = t.match(/(상대(?:의)?\s*|자신(?:의)?\s*)?디지몬\s*(\d+)\s*마리를?\s*레스트시킬\s*수\s*있다/))) {
+    // Optional ("...시킬 수 있다") rest — a bare "디지몬 N마리" with NEITHER
+    // 상대/자신 prefix is a genuinely either-side choice (common on cards
+    // that combo off "이 효과로 자신의 디지몬이 레스트했다면", which only
+    // makes sense if resting your own was actually an option).
+    const target = m[1] ? (/상대/.test(m[1]) ? 'opponent' : 'self') : 'either';
+    for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'rest', target });
   }
 
   // DP modification, this turn unless stated otherwise.
