@@ -353,8 +353,10 @@ function render() {
   const prevModal = app.querySelector('.modal-panel');
   const prevModalScroll = prevModal ? prevModal.scrollTop : 0;
   app.innerHTML = '';
+  jgCache.clear();
   app.classList.toggle('log-open', panelsOpen.log);
   app.classList.toggle('sheet-open', !!(sel.hand || sel.stack));
+  try { fxSync(); } catch (e) { console.warn('fxSync', e); } // effect-visibility bookkeeping (queue, ghosts, markers)
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
@@ -367,6 +369,7 @@ function render() {
   if (newModal && prevModalScroll) newModal.scrollTop = prevModalScroll;
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
+  app.appendChild(renderFxLayer());
 }
 
 // deleteStack() (rule-check DP<=0, battle losses, 【소멸】 effects — every
@@ -375,9 +378,10 @@ function render() {
 // happened, similar to pl.pendingDrawFlash.
 function renderVanishToast() {
   const names = state.pendingVanishFlash || [];
-  state.pendingVanishFlash = [];
+  const srcs = [...new Set(state.pendingVanishSrc || [])];
+  state.pendingVanishFlash = []; state.pendingVanishSrc = [];
   if (!names.length) return null;
-  return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}`);
+  return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}` + (srcs.length ? `\n원인: ${srcs.join(', ')}` : ''));
 }
 
 function renderTopbar() {
@@ -414,17 +418,11 @@ function renderTopbar() {
   const infoText = describeSelectedEffects();
   if (infoText) {
     const selStack = findStack(sel.stack);
-    const canArmFusion = sel.stack && !sel.stack2 && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer
-      && selStack && !selStack.suspended && S.card(selStack.cardId).category === 'digimon';
     rows.push(h('div', { className: 'topbar-info' }, [
       h('div', { className: 'topbar-info-text', onClick: (e) => e.currentTarget.classList.toggle('open') }, infoText),
       h('div', { className: 'info-actions' }, [
         ...selectionActionButtons(),
-        canArmFusion && !sel.armFusion
-          ? h('button', { onClick: () => { sel.armFusion = true; render(); } }, '🔗 조그레스 상대 선택')
-          : null,
-        sel.armFusion ? h('span', { className: 'meta' }, '다른 내 디지몬을 탭하세요') : null,
-        h('button', { className: 'info-close', onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; sel.armFusion = false; render(); } }, '✕'),
+        h('button', { className: 'info-close', onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; render(); } }, '✕'),
       ]),
     ]));
   }
@@ -438,6 +436,12 @@ function selectionActionButtons() {
   if (sel.hand && handPlayable(sel.hand.player)) {
     const p = sel.hand.player, cat = S.card(state.players[p].hand[sel.hand.idx]).category;
     out.push(h('button', { className: 'primary', onClick: () => { const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi); } }, cat === 'option' ? '▶ 사용' : '▶ 등장'));
+    // 조그레스: a hand card with a 〔조그레스〕 line gets its own obvious action (a disabled-looking one still explains itself when tapped)
+    const jinfo = cat === 'digimon' ? jogressInfo(p, state.players[p].hand[sel.hand.idx]) : null;
+    if (jinfo) {
+      const hc = state.players[p].hand[sel.hand.idx], n = jinfo.pairs.length;
+      out.push(h('button', { className: 'jg-btn' + (n ? '' : ' jg-none'), title: `〔조그레스〕 ${jinfo.cond}`, onClick: () => openJogress(p, hc, null) }, n ? `🧬 조그레스 진화 (${n}조합)` : '🧬 조그레스 (재료 없음)'));
+    }
   }
   const st = findStack(sel.stack);
   if (st && sel.stack.player === state.activePlayer && state.phase === 'main') {
@@ -446,6 +450,13 @@ function selectionActionButtons() {
       let can = false;
       try { can = S.canAttackPlayer(state, p, st.uid) || S.legalDigimonTargets(state, p, st.uid).length > 0; } catch (e) { can = false; }
       out.push(h('button', { className: 'danger', disabled: !can, title: '공격 대상 목록을 엽니다 (또는 보드의 빨간 테두리 대상을 직접 탭)', onClick: () => { const u = st.uid; sel.stack = null; attackFlow(p, u); } }, '⚔ 공격'));
+    }
+    if (sel.stack.zone === 'battle' && S.card(st.cardId).category === 'digimon') { // board-first start: which hand cards could fuse this Digimon?
+      const cands = [...new Set(state.players[p].hand)].filter(id => jogressInfo(p, id)?.pairs.some(pr => pr.top.uid === st.uid || pr.bottom.uid === st.uid));
+      if (cands.length) {
+        out.push(h('span', { className: 'jg-hint' }, `🧬 조그레스 가능: ${cands.map(id => S.card(id).nameDisplayKo || S.card(id).nameKo).join(', ')}`));
+        for (const id of cands) out.push(h('button', { className: 'jg-btn', onClick: () => openJogress(p, id, st.uid) }, `🧬 ${S.card(id).nameDisplayKo || S.card(id).nameKo}`));
+      }
     }
     for (const a of stackActionList(p, st, sel.stack.zone)) out.push(h('button', { disabled: a.disabled, title: a.title, onClick: () => a.run() }, a.label));
   }
@@ -459,6 +470,7 @@ function cardChip(cardId, opts = {}) {
   if (opts.suspended) cls.push('suspended');
   if (opts.attackable) cls.push('attackable');
   if (opts.target) cls.push('tap-target');
+  if (opts.jogress) cls.push('jogress-mat');
   if (opts.justDrawn) cls.push('just-drawn');
   // Show the LIVE effective DP (temp/inherited/turn-conditional modifiers
   // all folded in — see S.effectiveDP) rather than always the static
@@ -522,7 +534,6 @@ function activeKeywordBadges(stack) {
 // Shared by the desktop drop handler AND the tap flow (doEvolve/doFuse): a hand card (or, for attacks, an
 // opposing stack) being "dropped" on `stack`. Everything the drop did lives here so a tap does exactly the same.
 async function handleStackDrop(p, stack, zoneKind, drag) {
-  const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
   if (!drag) return;
   // An opposing battle stack dropped directly onto this one is a direct
   // attack declaration on THIS specific digimon — no separate target-
@@ -534,26 +545,28 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
   }
   if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
   if (blockIfBusy()) return;
-  // Dropping the hand card on the SECOND of two selected battle stacks
-  // is how DNA/Jogress fusion is triggered — no separate button needed,
-  // the two-click stack1+stack2 selection already signals that intent.
-  if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
-    const stA = findStack(sel.stack);
-    const jr = stA ? S.canJogress(stA, stack, drag.cardId) : { ok: true };
-    if (!jr.ok) {
-      S.log(state, `${p} ${S.card(drag.cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stack.cardId).nameKo} (${jr.reason})`);
-      dragData = null; render();
+  // 조그레스 (8-2): a hand card with a printed 〔조그레스〕 line dropped/tapped on a battle Digimon opens the jogress modal
+  // (pairs containing that Digimon pre-selected) — or explains why it can't (or asks which method if normal evolution also fits).
+  if (zoneKind === 'battle' && S.parseJogress(drag.cardId)) {
+    jgCache.clear();
+    const info = jogressInfo(p, drag.cardId);
+    const withStack = !!info && info.pairs.some(pr => pr.top.uid === stack.uid || pr.bottom.uid === stack.uid);
+    let canNormal = false;
+    try {
+      const r0 = S.evolveTargetRestriction(state, p, stack), x0 = S.evoExtraArg(state, p, stack);
+      canNormal = S.card(stack.cardId).category === 'digimon' && (E.evolutionMethods(stack.cardId, drag.cardId, x0, r0, { state, p, stack }).length > 0 || E.canEvolveAny(stack.cardId, drag.cardId, x0, r0).ok);
+    } catch (e) { canNormal = false; }
+    if (withStack) {
+      if (canNormal) {
+        const pick = await ctxChoose('multipleChoice', { player: p, prompt: `${S.card(drag.cardId).nameKo}: 일반 진화와 조그레스 진화가 모두 가능합니다. 어느 쪽으로 진화하시겠습니까?`, options: ['일반 진화', '🧬 조그레스 진화', '취소'] });
+        if (pick === 1) { dragData = null; openJogress(p, drag.cardId, stack.uid); return; }
+        if (pick !== 0) { dragData = null; render(); return; }
+        // pick === 0: fall through to normal evolution
+      } else { dragData = null; openJogress(p, drag.cardId, stack.uid); return; }
+    } else if (!canNormal) {
+      dragData = null; render(); showToast(jogressReason(p, drag.cardId));
       return;
     }
-    // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
-    const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
-    let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
-    if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
-    if (!S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
-    sel.stack = null; sel.stack2 = null;
-    E.checkAutoEndTurn(state);
-    dragData = null; render();
-    return;
   }
   // canEvolveAny checks evoNormal AND every special "〔진화〕 <이름/특징>"
   // line on the target — a failure here means NO printed condition
@@ -679,21 +692,144 @@ function stackActionList(p, stack, zoneKind) {
   return out;
 }
 
-// Tap flow: with a hand card selected, which own stacks can it act on? 'fuse' = the 2nd selected DNA partner,
-// 'evolve' = every printed/granted evolution condition satisfied — the SAME legality functions handleStackDrop uses.
+// ---- 조그레스 (DNA 진화, 룰 8-2) UI ----
+// One modal ("X + Y → Z", every legal pair) is the single entry: opened from the info-panel button, from tapping/dropping the
+// hand card on a material, or from a selected material's action bar. Legality/cost come from the SAME S.canJogress /
+// S.previewEvoCostDelta the engine path (runJogress → S.fuseStacks) uses.
+let jogressModal = null; // { player, cardId, preUid, showAll } — UI only
+const jgCache = new Map(); // per-render memo of jogressInfo
+function showToast(msg) {
+  S.log(state, msg);
+  const el = h('div', { className: 'ui-toast', role: 'alert' }, msg);
+  app.appendChild(el);
+  setTimeout(() => el.remove(), 4200);
+}
+const jogressCond = (cardId) => { const l = (S.card(cardId).effectKo || '').split('\n').find(x => /〔조그레스〕/.test(x)); return l ? l.replace(/^.*?〔조그레스〕\s*/, '').trim() : ''; };
+// -> null (no printed jogress line / not a digimon) | { cond, pairs:[{top,bottom,base,delta,cost,ok}], restricted }
+function jogressInfo(p, cardId) {
+  const key = p + '|' + cardId;
+  if (jgCache.has(key)) return jgCache.get(key);
+  let out = null;
+  try {
+    const jg = S.card(cardId).category === 'digimon' ? S.parseJogress(cardId) : null;
+    if (jg) {
+      const bat = state.players[p].battle.filter(s => S.card(s.cardId).category === 'digimon');
+      const pairs = []; let restricted = null;
+      for (let i = 0; i < bat.length; i++) for (let j = i + 1; j < bat.length; j++) {
+        const a = bat[i], b = bat[j];
+        if (!S.canJogress(a, b, cardId).ok) continue;
+        const rr = [a, b].map(s => E.evoRestrictionCheck(cardId, S.evolveTargetRestriction(state, p, s))).find(r => !r.ok);
+        if (rr) { restricted = rr.reason; continue; }
+        // 8-2-2-2: the material written on the LEFT of the 〔조그레스〕 condition ends up on top (same rule as S.fuseStacks)
+        const ca = S.card(a.cardId), cb = S.card(b.cardId);
+        const aTop = (jg.left(ca) && jg.right(cb)) || !(jg.left(cb) && jg.right(ca));
+        const [top, bottom] = aTop ? [a, b] : [b, a];
+        const delta = S.previewEvoCostDelta(state, p, bottom, cardId);
+        const cost = Math.max(0, jg.cost + delta);
+        pairs.push({ top, bottom, base: jg.cost, delta, cost, ok: S.canPayCost(state, cost) });
+      }
+      out = { cond: jogressCond(cardId), pairs, restricted, matCount: bat.length };
+    }
+  } catch (e) { out = null; }
+  jgCache.set(key, out);
+  return out;
+}
+function jogressReason(p, cardId) {
+  const info = jogressInfo(p, cardId);
+  if (!info) return '이 카드에는 조그레스 조건이 없음';
+  if (info.restricted) return `조그레스 불가: ${info.restricted}`;
+  if (info.matCount < 2) return `재료 부족: 배틀 에어리어에 디지몬 2장이 필요함 (${info.cond})`;
+  return `재료가 조건에 맞지 않음: ${info.cond}`;
+}
+function jogressMatUids() { // own battle digimon that could be a material for the selected hand card
+  const out = new Set();
+  if (!sel.hand || sel.hand.player !== state.activePlayer || state.phase !== 'main' || busy()) return out;
+  const hc = state.players[sel.hand.player].hand[sel.hand.idx];
+  const info = hc != null ? jogressInfo(sel.hand.player, hc) : null;
+  if (info) for (const pr of info.pairs) { out.add(pr.top.uid); out.add(pr.bottom.uid); }
+  return out;
+}
+function openJogress(p, cardId, preUid) {
+  jgCache.clear();
+  if (blockIfBusy()) return;
+  if (p !== state.activePlayer || state.phase !== 'main') { render(); showToast('조그레스는 자신의 메인 페이즈에만 할 수 있음'); return; }
+  const info = jogressInfo(p, cardId);
+  if (!info || !info.pairs.length) { render(); showToast(jogressReason(p, cardId)); return; }
+  jogressModal = { player: p, cardId, preUid: preUid || null, showAll: false };
+  render();
+}
+// The one engine path (rule 8-2): validate → cost incl. evolve-cost modifiers (8-2-2-5) → S.fuseStacks (stacking order 8-2-2-2, attack cleanup).
+async function runJogress(p, uidA, uidB, cardId) {
+  const stA = findStack({ player: p, uid: uidA }), stB = findStack({ player: p, uid: uidB });
+  if (!stA || !stB || !state.players[p].hand.includes(cardId)) return false;
+  const jr = S.canJogress(stA, stB, cardId);
+  if (!jr.ok) { S.log(state, `${p} ${S.card(cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stB.cardId).nameKo} (${jr.reason})`); return false; }
+  // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
+  const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
+  let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
+  if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, stB, cardId) + S.hookEvoCostDiscount(state, p, stB, cardId));
+  const res = S.fuseStacks(state, p, uidA, uidB, cardId, jcost, 'hand');
+  if (!res) S.restoreEvoCostMods(evoSnap);
+  E.checkAutoEndTurn(state);
+  return !!res;
+}
+function renderJogressModal() {
+  const m = jogressModal;
+  if (!m) return null;
+  const p = m.player, info = jogressInfo(p, m.cardId);
+  if (!info || !info.pairs.length || state.activePlayer !== p || state.phase !== 'main' || !state.players[p].hand.includes(m.cardId)) { jogressModal = null; return null; }
+  const pre = m.preUid ? info.pairs.filter(x => x.top.uid === m.preUid || x.bottom.uid === m.preUid) : [];
+  const filtered = pre.length > 0 && pre.length < info.pairs.length && !m.showAll;
+  const shown = filtered ? pre : info.pairs;
+  const nm = (id) => S.card(id).nameDisplayKo || S.card(id).nameKo;
+  const memAfter = (cost) => Math.max(-10, Math.min(10, state.memory + (p === 'p1' ? -cost : cost)));
+  const fmt = (n) => (n > 0 ? '+' : '') + n;
+  const rows = shown.map(pr => {
+    const go = async () => {
+      if (blockIfBusy()) return;
+      jogressModal = null; sel.hand = null; sel.stack = null; sel.stack2 = null; dragData = null;
+      await runJogress(p, pr.top.uid, pr.bottom.uid, m.cardId);
+      jgCache.clear(); render();
+    };
+    return h('div', { className: 'jg-row' + (shown.length === 1 ? ' pre' : '') }, [
+      h('div', { className: 'jg-cards' }, [
+        cardChip(pr.top.cardId, { sourcesCount: pr.top.sources.length }), h('span', { className: 'jg-op' }, '＋'),
+        cardChip(pr.bottom.cardId, { sourcesCount: pr.bottom.sources.length }), h('span', { className: 'jg-op' }, '→'),
+        cardChip(m.cardId, {}),
+      ]),
+      h('div', { className: 'jg-cost' }, [
+        h('b', {}, `코스트 ${pr.cost}`), pr.delta ? ` (기본 ${pr.base}, 효과 ${fmt(pr.delta)})` : '',
+        ` · 메모리 ${fmt(state.memory)} → `, h('b', {}, fmt(memAfter(pr.cost))),
+      ]),
+      h('button', { className: 'primary jg-confirm', disabled: !pr.ok, onClick: go }, pr.ok ? `🧬 ${nm(pr.top.cardId)} + ${nm(pr.bottom.cardId)} → ${nm(m.cardId)}` : `메모리 부족 (코스트 ${pr.cost})`),
+    ]);
+  });
+  return h('div', { className: 'player-panel jg-modal' }, [
+    h('h3', {}, `🧬 조그레스 진화 → ${nm(m.cardId)}`),
+    h('div', { className: 'step-info' }, `조건: ${info.cond}${info.pairs.length > 1 ? ` — 가능한 조합 ${info.pairs.length}개, 하나를 고르세요` : ''}`),
+    ...rows,
+    h('div', { className: 'actions-row' }, [
+      filtered ? h('button', { onClick: () => { m.showAll = true; render(); } }, `다른 조합도 보기 (${info.pairs.length}개)`) : null,
+      h('button', { onClick: () => { jogressModal = null; render(); } }, '취소'),
+    ].filter(Boolean)),
+  ]);
+}
+
+// Tap flow: with a hand card selected, which own stacks can it act on? 'evolve' = every printed/granted evolution condition
+// satisfied — the SAME legality functions handleStackDrop uses; 'jogress' = a legal DNA material (opens the jogress modal).
 function handTargetKind(p, stack, zoneKind) {
   if (!sel.hand || sel.hand.player !== p || p !== state.activePlayer || state.phase !== 'main') return null;
   if (zoneKind !== 'battle' && zoneKind !== 'raising') return null;
   const hc = state.players[p].hand[sel.hand.idx];
   if (hc == null || S.card(hc).category !== 'digimon') return null;
-  if (sel.stack2 && sel.stack2.uid === stack.uid && sel.stack && sel.stack.player === p) return 'fuse';
   if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) return null;
   try {
     const restr = S.evolveTargetRestriction(state, p, stack);
     const extra = S.evoExtraArg(state, p, stack);
     if (E.evolutionMethods(stack.cardId, hc, extra, restr, { state, p, stack }).length) return 'evolve';
-    return E.canEvolveAny(stack.cardId, hc, extra, restr).ok ? 'evolve' : null;
-  } catch (e) { return null; }
+    if (E.canEvolveAny(stack.cardId, hc, extra, restr).ok) return 'evolve';
+  } catch (e) { /* fall through */ }
+  return zoneKind === 'battle' && jogressMatUids().has(stack.uid) ? 'jogress' : null;
 }
 // Can the selected hand card be played/used from the hand right now (tap the battle area / the ▶ button)?
 function handPlayable(p) {
@@ -706,12 +842,14 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   const isSelected = sel.stack && sel.stack.uid === stack.uid;
   const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
   const isOwnActiveBattle = p === state.activePlayer && zoneKind === 'battle' && !stack.suspended && state.phase === 'main';
+  const jgMat = zoneKind === 'battle' && p === state.activePlayer && jogressMatUids().has(stack.uid);
   const chip = cardChip(stack.cardId, {
     selected: isSelected || isSecondSelected,
     suspended: stack.suspended,
     sourcesCount: stack.sources.length,
     effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
-    keywordBadges: activeKeywordBadges(stack),
+    keywordBadges: [...activeKeywordBadges(stack), ...(jgMat ? ['🧬재료'] : [])],
+    jogress: jgMat,
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
@@ -722,33 +860,30 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       : (() => {
         // Tap flow: a hand card is selected and this stack is a legal evolve / DNA target → same action as dropping it here.
         const tk = handTargetKind(p, stack, zoneKind);
+        if (tk === 'jogress') { openJogress(p, state.players[p].hand[sel.hand.idx], stack.uid); return; }
+        if (!tk && sel.hand && sel.hand.player === p && zoneKind === 'battle' && p === state.activePlayer && state.phase === 'main' && jogressInfo(p, state.players[p].hand[sel.hand.idx])) {
+          render(); showToast(jogressReason(p, state.players[p].hand[sel.hand.idx])); return; // a jogress card is selected: explain instead of silently swapping the selection
+        }
         if (tk) {
-          const hi = sel.hand.idx; sel.hand = null; sel.armFusion = false;
-          if (tk !== 'fuse') { sel.stack = null; sel.stack2 = null; }
+          const hi = sel.hand.idx; sel.hand = null;
+          sel.stack = null; sel.stack2 = null;
           doEvolve(p, stack.uid, hi);
           return;
         }
-        if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; sel.armFusion = false; }
-        // Only treat this click as picking a DNA/Jogress fusion partner when
-        // the "조그레스 상대 선택" button was explicitly used first — otherwise
-        // simply viewing one card's info, then clicking a different card to
-        // view ITS info instead, was silently arming the second fusion slot
-        // and hijacking the next click on that card.
-        else if (sel.armFusion && sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
-          sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
-          sel.armFusion = false;
-        } else {
+        if (sel.stack && sel.stack.uid === stack.uid) sel.stack = null;
+        else {
           sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
           sel.stack2 = null;
-          sel.armFusion = false;
-          sel.hand = null; // one thing selected at a time (a hand card is picked AFTER the DNA partners)
+          sel.hand = null; // one thing selected at a time
         }
         render();
       })),
   });
 
+  const fxHit = fxHitFor(p, stack);
+  if (fxHit) { chip.classList.add('fx-hit', fxHit); chip.appendChild(h('div', { className: 'fx-badge' }, '🎯')); }
   const acts = stackActionList(p, stack, zoneKind);
-  const actBtn = (a, cls) => h('button', { className: cls, title: a.title, disabled: a.disabled, onClick: (e) => { e.stopPropagation(); a.run(); } }, a.label);
+  const actBtn =(a, cls) => h('button', { className: cls, title: a.title, disabled: a.disabled, onClick: (e) => { e.stopPropagation(); a.run(); } }, a.label);
   const delayBtn = acts.find(a => a.kind === 'delay') ? actBtn(acts.find(a => a.kind === 'delay'), 'delay-btn') : null;
   const trainBtn = acts.find(a => a.kind === 'train') ? actBtn(acts.find(a => a.kind === 'train'), 'delay-btn train-btn') : null;
   const mainActs = acts.filter(a => a.kind === 'main');
@@ -812,6 +947,7 @@ async function playFreshFromDrag(drag, p) {
     for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += await o.apply(ctxChoose) || 0; }
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     if (category === 'digimon') discount += S.handSelfPlayDiscount(state, drag.player, drag.cardId); // shard7: printed "이 카드가 등장할 때, …등장 코스트 -N"
+    if (category === 'digimon' && discount < 0 && S.isPlayCostLocked(state)) { S.log(state, `${drag.player} 등장 코스트 감소 무효 (서로는 지불하는 등장 코스트를 마이너스할 수 없다)`); discount = 0; } // ST13-08/EX7-015: covers every reduction source (hand self-discount, Xros, assembly, hook options)
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
     if (cost > 0) S.spendMemory(state, cost);
@@ -902,6 +1038,7 @@ function renderPlayerPanel(p) {
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
     }, [
       ...pl.battle.map(s => renderStack(p, s, 'battle', legalClickTargets.has(s.uid) ? { attackTarget: { attackerP: sel.stack.player, attackerUid: sel.stack.uid } } : {})),
+      ...fxGhostNodes(p), // 소멸한 카드의 흔적 (효과 출처 표시, 눌러서 닫기)
       // Always show plenty of open slots to drop a new card into — at
       // least 3 empty ones, more if the area is still mostly empty —
       // instead of only appearing once and disappearing the moment the
@@ -936,9 +1073,10 @@ function renderPlayerPanel(p) {
       draggable: p === state.activePlayer && state.phase === 'main',
       dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
       justDrawn: i >= pl.hand.length - justDrawnCount,
+      keywordBadges: (p === state.activePlayer && state.phase === 'main' && jogressInfo(p, id)?.pairs.length) ? ['🧬조그레스 가능'] : undefined,
       onClick: () => {
         sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id };
-        if (sel.hand && !sel.stack2) { sel.stack = null; sel.armFusion = false; } // tap flow: the hand card is the only selection unless DNA partners are already picked
+        if (sel.hand) sel.stack = null; // tap flow: the hand card is the only selection
         render();
       },
     }))),
@@ -1174,6 +1312,7 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
+  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
@@ -1380,6 +1519,8 @@ function renderModal() {
   if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
   const choiceUi = renderUiChoice();
   if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
+  const jogressUi = busy() ? null : renderJogressModal();
+  if (jogressUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]);
   const pendingUi = renderPendingAttack();
   if (pendingUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]);
   return null;
@@ -1936,6 +2077,7 @@ function renderPendingAttack() {
         S.restStack(state, pa.opp, s.uid, 'block');
         pa.targetKind = 'digimon'; pa.targetUid = s.uid;
         noteRedirect(pa);
+        { const aBl = findStack({ player: pa.attacker, uid: pa.uid }); if (aBl) S.emitGameEvent(state, 'blocked', { owner: pa.attacker, stack: aBl, blocker: s, cause: null }); } // "이 디지몬이 블록당했을 때" (ST1-09)
         resolveFinalTarget(pa);
         render();
       },
@@ -1984,12 +2126,168 @@ function renderLog() {
   }
   return h('div', { className: 'log-panel' }, [
     h('div', { className: 'log-panel-header' }, [
-      h('span', { className: 'section-title', style: 'margin:0;' }, '로그'),
+      h('span', { className: 'fx-tabs' }, [
+        h('button', { className: 'fx-tab' + (fxUI.tab === 'log' ? ' on' : ''), onClick: () => { fxUI.tab = 'log'; render(); } }, '로그'),
+        h('button', { className: 'fx-tab' + (fxUI.tab === 'fx' ? ' on' : ''), onClick: () => { fxUI.tab = 'fx'; render(); } }, '효과 기록'),
+      ]),
       h('button', { className: 'log-close-btn', onClick: () => { panelsOpen.log = false; render(); } }, '접기 ▶'),
     ]),
-    ...state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)),
+    ...(fxUI.tab === 'fx' ? renderFxHistory() : state.log.slice(0, 100).map(e => h('div', {}, [`[턴${e.turn}] `,
+      e.src && e.src.kind === 'effect' ? [h('span', { className: `fx-logsrc fx-${e.src.owner}` }, [`${pNm(e.src.owner)} `, fxCardLink(e.src.cardId, `「${S.card(e.src.cardId).nameKo}」`), e.src.tag ? `【${e.src.tag}】` : '']), ': '] : null,
+      e.msg].flat().filter(x => x != null)))),
   ]);
 }
 
-window.__dbg = () => ({ dragData, sel, state, S, E, Effects, render, attackFlow });
+// ================= effect visibility (presentation only — the engine never reads any of this) =================
+// state.fxHistory holds one record per resolved effect (see effects.js runScript / state.js fxNewRec): source card, tag, printed
+// text, the log lines it produced and the stacks it made vanish. Here: resolution card + pager, board markers, ghost tiles, history tab.
+const FX_DELAYS = { '2': 2000, '5': 5000, '10': 10000, manual: 0 };
+const fxUI = { seen: 0, stateRef: null, queue: [], idx: 0, open: false, timer: null, tab: 'log', info: null, expanded: new Set(), ghosts: [], markRec: null, markUntil: 0, markTimer: null, hits: { p1: new Set(), p2: new Set() }, cfg: '5' };
+try { const v = localStorage.getItem('digimon_fx_delay'); if (v && v in FX_DELAYS) fxUI.cfg = v; } catch (e) { /* ignore */ }
+const pNm = (p) => String(p || '').toUpperCase();
+const fxOwnerOf = (m) => { const x = /^(p1|p2)\s/.exec(m); return x ? x[1] : null; };
+const fxTrivial = (r) => !r.entries.length && !r.vanished.length && r.mem0 === r.mem1;
+function fxForeign(rec) { // did the effect touch the OTHER player's cards / lines?
+  if (rec.src.kind !== 'effect') return false;
+  return rec.vanished.some(v => v.owner !== rec.src.owner) || rec.entries.some(e => { const o = fxOwnerOf(e.msg); return o && o !== rec.src.owner; });
+}
+function fxDelayFor(rec) {
+  if (fxUI.cfg === 'manual') return 0;
+  const d = FX_DELAYS[fxUI.cfg];
+  return fxForeign(rec) || rec.src.kind !== 'effect' ? d : Math.min(d, 2000); // the acting player's own harmless effects fade sooner
+}
+function fxSrcLabel(rec) {
+  if (rec.src.kind !== 'effect') return rec.src.label || '룰';
+  return `${pNm(rec.src.owner)}의 「${S.card(rec.src.cardId).nameKo}」${rec.src.tag ? '【' + rec.src.tag + '】' : ''}`;
+}
+function fxHitNames(rec) { // names of on-board cards the effect's log lines are about, per owner (+ vanished ones)
+  const out = { p1: new Set(), p2: new Set() };
+  for (const v of rec.vanished) out[v.owner].add(v.name);
+  for (const e of rec.entries) {
+    const o = fxOwnerOf(e.msg); if (!o || /스택 소멸/.test(e.msg)) continue;
+    for (const s of state.players[o].battle) { const nm = S.card(s.cardId).nameKo; if (e.msg.includes(nm)) out[o].add(nm); }
+  }
+  return out;
+}
+function fxResults(rec) {
+  const items = [];
+  for (const e of rec.entries) {
+    if (/스택 소멸/.test(e.msg)) continue;
+    const o = fxOwnerOf(e.msg);
+    items.push({ owner: o, text: o ? `${pNm(o)} ${e.msg.replace(/^(p1|p2)\s+/, '')}` : e.msg });
+  }
+  for (const v of rec.vanished) items.push({ owner: v.owner, text: `💀 ${pNm(v.owner)}의 「${v.name}」 소멸`, vanish: true });
+  if (rec.mem0 !== rec.mem1) items.push({ owner: null, text: `메모리 ${rec.mem0} → ${rec.mem1}` });
+  return items;
+}
+function fxCardLink(cardId, label) {
+  return h('span', { className: 'fx-cardlink', title: '카드 정보 보기', onClick: (e) => { e.stopPropagation(); fxUI.info = cardId; render(); } }, label);
+}
+function fxSync() {
+  if (!state) return;
+  const hist = state.fxHistory || [];
+  if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
+  for (const rec of hist.slice(0, 6)) { // ghost tiles for freshly vanished stacks (a rec can gain vanishes after being seen)
+    const from = rec._vs || 0;
+    for (const v of rec.vanished.slice(from)) fxUI.ghosts.push({ ...v, by: fxSrcLabel(rec), gid: rec.id + ':' + fxUI.ghosts.length + ':' + Math.random().toString(36).slice(2, 6) });
+    rec._vs = rec.vanished.length;
+  }
+  if (fxUI.ghosts.length > 8) fxUI.ghosts.splice(0, fxUI.ghosts.length - 8);
+  const fresh = hist.filter(r => r.id > fxUI.seen && !fxTrivial(r)).reverse();
+  if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
+  if (fresh.length) {
+    const wasOpen = fxUI.open && fxUI.queue.length;
+    for (const r of fresh) if (!fxUI.queue.includes(r)) fxUI.queue.push(r);
+    if (fxUI.queue.length > 30) fxUI.queue.splice(0, fxUI.queue.length - 30);
+    if (!wasOpen) fxUI.idx = fxUI.queue.length - fresh.length;
+    fxUI.open = true;
+    fxUI.markRec = fresh[fresh.length - 1]; fxUI.markUntil = Date.now() + 6000;
+    clearTimeout(fxUI.markTimer); fxUI.markTimer = setTimeout(() => { if (state) render(); }, 6100);
+    clearTimeout(fxUI.timer);
+    if (fxUI.cfg !== 'manual') { const ms = Math.max(...fresh.map(fxDelayFor)); fxUI.timer = setTimeout(() => { fxUI.open = false; if (state) render(); }, ms); }
+  }
+  fxUI.hits = { p1: new Set(), p2: new Set() };
+  if (fxUI.markRec && Date.now() < fxUI.markUntil) { const n = fxHitNames(fxUI.markRec); fxUI.hits = n; }
+}
+function fxHitFor(p, stack) {
+  if (!fxUI.markRec || Date.now() >= fxUI.markUntil || !fxUI.hits[p].has(S.card(stack.cardId).nameKo)) return null;
+  return fxUI.markRec.src.owner !== p ? 'fx-hit-foe' : 'fx-hit-own';
+}
+function fxGhostNodes(p) {
+  return fxUI.ghosts.filter(g => g.owner === p).map(g => {
+    const c = S.card(g.cardId);
+    return h('div', { className: `fx-ghost fx-${p}`, title: '눌러서 닫기', onClick: () => { fxUI.ghosts = fxUI.ghosts.filter(x => x !== g); render(); } }, [
+      c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo }) : null,
+      h('div', { className: 'nm' }, c.nameKo),
+      h('div', { className: 'fx-ghost-by' }, `소멸: ${g.by}`),
+    ]);
+  });
+}
+function fxRecView(rec, full) {
+  const c = rec.src.cardId ? S.card(rec.src.cardId) : { nameKo: '' };
+  const foreign = fxForeign(rec), so = rec.src.owner;
+  const kids = [];
+  if (foreign) {
+    const n = fxHitNames(rec), tgt = pNm(so === 'p1' ? 'p2' : 'p1'), names = [...n[so === 'p1' ? 'p2' : 'p1']];
+    kids.push(h('div', { className: 'fx-alert' }, `⚠ ${pNm(so)}의 「${c.nameKo}」 효과로 ${tgt} 피해` + (names.length ? ': ' + names.map(x => `「${x}」`).join(' ') : '')));
+  }
+  kids.push(h('div', { className: `fx-src-row fx-${so || 'rule'}` }, [
+    rec.src.kind === 'effect' && c.imgUrl ? h('img', { className: 'fx-src-img', src: c.imgUrl, alt: c.nameKo, onClick: () => { fxUI.info = rec.src.cardId; render(); } }) : null,
+    h('div', {}, [
+      h('div', { className: 'fx-src-name' }, rec.src.kind === 'effect'
+        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited ? h('span', { className: 'fx-tag' }, ' 상속') : null]
+        : `⚙ ${rec.src.label}`),
+      h('div', { className: 'meta' }, `턴 ${rec.turn}`),
+    ]),
+  ]));
+  const res = fxResults(rec), shown = full ? res.slice(0, 14) : res;
+  kids.push(res.length ? h('ul', { className: 'fx-results' }, [...shown.map(r => h('li', { className: r.owner ? `fx-${r.owner}` : '' }, r.text)), res.length > shown.length ? h('li', {}, `… 외 ${res.length - shown.length}건`) : null])
+    : h('div', { className: 'meta' }, '(눈에 띄는 변화 없음)'));
+  if (rec.text && (full || fxUI.expanded.has(rec.id))) kids.push(h('div', { className: 'fx-text' }, rec.text));
+  return h('div', { className: 'fx-rec' + (foreign ? ' fx-rec-foe' : '') }, kids);
+}
+function fxDelaySelect() {
+  return h('label', { className: 'meta fx-cfg' }, ['효과 표시 ', h('select', { onchange: (e) => { fxUI.cfg = e.target.value; try { localStorage.setItem('digimon_fx_delay', fxUI.cfg); } catch (err) { /* ignore */ } } },
+    [['2', '짧게 2초'], ['5', '보통 5초'], ['10', '길게 10초'], ['manual', '수동 확인']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxUI.cfg) o.selected = true; return o; }))]);
+}
+function renderFxLayer() {
+  const root = h('div', { className: 'fx-root' });
+  if (fxUI.info) {
+    const c = S.card(fxUI.info);
+    root.appendChild(h('div', { className: 'fx-info', onClick: () => { fxUI.info = null; render(); } }, [
+      c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo }) : null,
+      h('div', {}, [h('b', {}, c.nameKo), h('div', { className: 'fx-text' }, c.effectKo || ''), h('div', { className: 'meta' }, '(눌러서 닫기)')]),
+    ]));
+  }
+  if (!fxUI.queue.length) return root;
+  if (!fxUI.open) { root.appendChild(h('div', { className: 'fx-chip', onClick: () => { fxUI.open = true; render(); } }, `⚡ 효과 ${fxUI.queue.length}건 ▲`)); return root; }
+  fxUI.idx = Math.min(Math.max(0, fxUI.idx), fxUI.queue.length - 1);
+  const rec = fxUI.queue[fxUI.idx], n = fxUI.queue.length;
+  root.appendChild(h('div', { className: 'fx-panel' + (fxForeign(rec) ? ' fx-panel-foe' : '') }, [
+    h('div', { className: 'fx-head' }, [
+      h('b', {}, '⚡ 효과 처리'),
+      n > 1 ? h('span', { className: 'fx-pager' }, [
+        h('button', { disabled: fxUI.idx <= 0, onClick: () => { fxUI.idx--; render(); } }, '◀ 이전'),
+        ` ${fxUI.idx + 1}/${n} `,
+        h('button', { disabled: fxUI.idx >= n - 1, onClick: () => { fxUI.idx++; render(); } }, '다음 ▶'),
+      ]) : null,
+      h('button', { className: 'primary', onClick: () => { fxUI.queue = []; fxUI.open = false; clearTimeout(fxUI.timer); render(); } }, '확인 ✕'),
+    ]),
+    fxRecView(rec, true),
+    h('div', { className: 'fx-foot' }, [fxDelaySelect(), fxUI.cfg === 'manual' ? h('span', { className: 'meta' }, '확인을 누를 때까지 유지') : h('span', { className: 'meta' }, '잠시 후 자동으로 접힙니다')]),
+  ]));
+  return root;
+}
+function renderFxHistory() {
+  const hist = (state.fxHistory || []).filter(r => !fxTrivial(r));
+  return [
+    fxDelaySelect(),
+    ...(hist.length ? hist.map(r => h('div', { className: 'fx-hist-item', onClick: () => { fxUI.expanded.has(r.id) ? fxUI.expanded.delete(r.id) : fxUI.expanded.add(r.id); render(); } }, [
+      h('div', { className: 'fx-hist-title' }, `${fxUI.expanded.has(r.id) ? '▼' : '▶'} ${fxSrcLabel(r)}`),
+      fxRecView(r, false),
+    ])) : [h('div', { className: 'meta' }, '아직 처리된 효과가 없습니다.')]),
+  ];
+}
+
+window.__dbg = () => ({ dragData, sel, state, S, E, Effects, render, attackFlow, fxUI });
 init();

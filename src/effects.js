@@ -595,11 +595,21 @@ export async function runScript(script, ctx) {
   if (!prevSrc) S.beginCause(state); // 15-8-5-4: a new cause (effect resolution) — immediate effects may be used once again
   state._fxSrc = fxSourceOf(ctx);
   state._rcDepth = (state._rcDepth || 0) + 1; // 17-1-2-2: no rule check while an effect is being processed
+  // effect-visibility (presentation only): the outermost resolution gets a record that log()/deleteStack() attribute their lines to
+  let fxRec = null;
+  if (!state._fxRec) {
+    try {
+      const tr = ctx.trigger || {};
+      fxRec = S.fxNewRec(state, { kind: 'effect', cardId: ctx.sourceCardId, owner: ctx.self, tag: (tr.tags || ctx.tags || []).map(t => String(t).replace(/^__/, '')).join('】【'), inherited: !!tr.inherited, kw: tr.kw || null }, tr.text || ctx.text || '');
+      state._fxRec = fxRec;
+    } catch (e) { fxRec = null; }
+  }
   try {
     for (const instr of script || []) {
       await runOne(instr, ctx);
     }
   } finally {
+    if (fxRec) { state._fxRec = null; try { S.fxCommit(state, fxRec); } catch (e) { /* presentation only */ } }
     state._fxSrc = prevSrc; state._caster = prevCaster;
     if (--state._rcDepth <= 0) { state._rcDepth = 0; S.flushLeaves(state); S.flushRuleChecks(state); }
   }
@@ -1126,6 +1136,7 @@ async function runOneCore(instr, ctx) {
         for (const s of state.players[targetPlayer].battle) {
           if (matchesFilter(S, s, instr.filter, state) && (!instr.noEvoSources || s.sources.length === 0)) {
             S.restrictAttack(state, targetPlayer, s.uid, expiresAfterTurn);
+            if (instr.noBlock) S.setS3Flag(s, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn);
           }
         }
         if (instr.prompt) S.log(state, instr.prompt);
@@ -1135,7 +1146,7 @@ async function runOneCore(instr, ctx) {
       if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0 && S.card(s.cardId).category === 'digimon').map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '어택 불가로 만들 디지몬 선택' });
       if (targetUid && instr.distinct) ((ctx._distinctPicks ||= {})[instr.distinct] ||= new Set()).add(targetUid);
-      if (targetUid) S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn);
+      if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3Flag(tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
       break;
     }
     case 'restrictAttackPlayer': {
@@ -1814,6 +1825,8 @@ function parseEvolveEffect(text) {
 // DP debuff). They are removed here; a token definition "「X」 (디지몬·…) 토큰" is kept as a marker for the spawnToken pattern.
 // Printed-text idioms rewritten into forms the pattern scans already understand.
 function prepRewrites(text) {
+  // "조그레스 진화하고 있었을 때, …" (ST9-05/11, ST10-06, BT8-015/042 …) is the same condition as "…있었다면," (condTestFor -> stack.viaFusion)
+  text = text.replace(/조그레스\s*진화하고\s*있었을\s*때,/g, '조그레스 진화하고 있었다면,');
   // "…N장 오픈한다. 그 카드가 <조건>(이)라면, 패에 추가한다." -> "…그중 <조건> 1장을 패에 추가한다."
   text = text.replace(/(오픈한다\.\s*)그\s*카드가\s*([^.,]{2,60}?)(?:이라면|라면),?\s*패에\s*추가한다\./g, '$1그중 $2 1장을 패에 추가한다.');
   // "…이하의 조건을 만족하는 <명사>…" + "▷특징으로 「A」/「B」를 포함(…은 제외)" line -> the trait clause inlined (the exclusion is built into matchesFilter/evoTargetPredicate)
@@ -2209,7 +2222,7 @@ function grantSubject(t) {
   const sn = splitSentences(t).find(x => /[≪《][^≫》]+[≫》](?:[^.。「]|「[^」]*」)*?(?:얻|준다|주고|부여)/.test(x)) || t;
   const pre = sn.split(/[≪《]/)[0].replace(/\s+$/, '');
   if (/(?:^|[,.]\s*|까지\s*|동안\s*)이\s*디지몬(?:은|에게|이|에)\s*,?$/.test(pre)) return { thisStack: true, sn };
-  if (/그\s*디지몬(?:\s*1\s*마리)?(?:은|는|에게|이)\s*,?$/.test(pre)) return { last: true, sn };
+  if (/(?:그|이\s*효과로\s*(?:등장|진화)(?:한|시킨))\s*디지몬(?:\s*1\s*마리)?(?:은|는|에게|이)\s*,?$/.test(pre)) return { last: true, sn };
   const tail = String.raw`(?:은|는|에게|에|를|을|가)?\s*,?\s*$`;
   const tgS = findTgt(pre, '자신', '디지몬', tail), tgO = findTgt(pre, '상대', '디지몬', tail);
   const tg = tgS && tgO ? (pre.lastIndexOf('상대') > pre.lastIndexOf('자신') ? tgO : tgS) : (tgS || tgO);
@@ -2510,12 +2523,12 @@ function compileInner(text) {
   // "상대의 턴 종료까지" already consumed the one "상대" in the sentence).
   if ((m = t.match(/[≪《]\s*(?:시큐리티\s*어택|S\s*어택)\s*([+-]\d+)\s*[≫》]/))) {
     const value = Number(m[1]);
-    const duration = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? oppDur(t) : (/자신의\s*턴\s*(?:동안|중)/.test(t) || !/이\s*턴\s*동안|턴\s*종료\s*시?까지/.test(t) ? 'permanent' : 'turn');
+    const duration = /다음\s*자신(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? 'nextOwnTurn' : /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?까지/.test(t) ? oppDur(t) : (/자신의\s*턴\s*(?:동안|중)/.test(t) || !/이\s*턴\s*동안|턴\s*종료\s*시?까지/.test(t) ? 'permanent' : 'turn');
     const gsA = /(?:얻|준다|주고|부여)/.test(t) ? grantSubject(t) : null;
     if (gsA) script.push(...subjectOps(gsA, (sub) => ({ op: 'grantKeyword', ...sub, keyword: '시큐리티어택', value, duration })));
     else {
       const target = value < 0 && /디지몬\s*\d+\s*마리에게/.test(t) ? 'opponent' : 'self';
-      const thisStack = target === 'self' && /이\s*디지몬은/.test(t) && !/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
+      const thisStack = target === 'self' && /이\s*디지몬은|이\s*디지몬을\s*DP\s*[+-]/.test(t) &&!/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
       const countM = t.match(/디지몬\s*(\d+)\s*마리에게/);
       const count = thisStack ? 1 : (countM ? Number(countM[1]) : 1);
       const dk = 'sa' + (++DISTINCT_SEQ); for (let i = 0; i < count; i++) script.push({ op: 'grantKeyword', target, thisStack, keyword: '시큐리티어택', value, duration, ...(count > 1 ? { distinct: dk } : {}) });
@@ -2693,10 +2706,11 @@ function compileInner(text) {
     // "(다음) 상대의 턴 종료까지" always means the opponent's coming turn when it is printed on your own turn
     const expires = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? oppDur(t) : /이\s*턴\s*동안|턴\s*종료\s*시?까지/.test(t) ? 'turn' : 'permanent';
     const tgX = findTgt(t, '상대', '디지몬', String.raw`(?:는|은|가)?\s*(?:,\s*)?어택(?:과\s*블록)?을?\s*할\s*수\s*없다`);
-    if (tgX && tgX.all) script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, expiresAfterTurn: expires, ...tgtProps(tgX) });
-    else for (let i = 0; i < (tgX?.n || 1); i++) script.push({ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: expires, ...(tgX ? tgtProps(tgX) : {}), ...(tgX?.upTo ? { optional: true } : {}) });
+    const nbk = /어택과\s*블록/.test(t) ? { noBlock: true } : {}; // "어택과 블록을 할 수 없다": also lock blocking (s3 'noBlock' flag)
+    if (tgX && tgX.all) script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, expiresAfterTurn: expires, ...nbk, ...tgtProps(tgX) });
+    else for (let i = 0; i < (tgX?.n || 1); i++) script.push({ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: expires, ...nbk, ...(tgX ? tgtProps(tgX) : {}), ...(tgX?.upTo ? { optional: true } : {}) });
   } else if (/진화원을?\s*갖지\s*않은\s*상대(?:의)?\s*디지몬\s*1\s*마리를?\s*선택한다\.?\s*그\s*디지몬은\s*다음\s*상대(?:의)?\s*턴\s*종료\s*시?까지\s*어택과\s*블록을?\s*할\s*수\s*없다/.test(t)) {
-    script.push({ op: 'restrictAttack', target: 'opponent', filter: { hasNoSources: true }, expiresAfterTurn: 'opponentTurn', prompt: '(블록 금지 부분은 수동으로 기억해두세요 — 이 엔진의 자동 블록 판정에는 별도 반영 안 됨)' });
+    script.push({ op: 'restrictAttack', target: 'opponent', filter: { hasNoSources: true }, expiresAfterTurn: 'opponentTurn', noBlock: true });
   } else if (/상대는\s*진화원을?\s*갖지\s*않은\s*디지몬으로는\s*어택할\s*수\s*없다/.test(t)) {
     script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, noEvoSources: true, expiresAfterTurn: 'opponentTurn', prompt: '(주의: 현재 필드의 무진화원 디지몬에만 적용, 이후 새로 등장하는 카드는 수동 확인 필요)' });
   }
@@ -2835,7 +2849,7 @@ function compileInner(text) {
   // Blocker / Jamming / Piercing / Rush keyword grants.
   for (const [kw, re] of [['블로커', /[≪《]\s*블로커\s*[≫》]/], ['재밍', /[≪《]\s*재밍\s*[≫》]/], ['관통', /[≪《]\s*관통\s*[≫》]/], ['속공', /[≪《]\s*속공\s*[≫》]/], ['진격', /[≪《]\s*진격\s*[≫》]/], ['충돌', /[≪《]\s*충돌\s*[≫》]/], ['길동무', /[≪《]\s*길동무\s*[≫》]/], ['방벽', /[≪《]\s*방벽\s*[≫》]/], ['아머퍼지', /[≪《]\s*아머\s*퍼지\s*[≫》]/], ['회피', /[≪《]\s*회피\s*[≫》]/], ['스케이프고트', /[≪《]\s*스케이프고트\s*[≫》]/], ['불굴', /[≪《]\s*불굴\s*[≫》]/], ['돌진', /[≪《]\s*돌진\s*[≫》]/], ['연계', /[≪《]\s*연계\s*[≫》]/], ['재기동', /[≪《]\s*재기동\s*[≫》]/]]) {
     if (re.test(t) && /(얻는다|[를을]\s*얻|얻고|준다|주고|부여)/.test(t) && new RegExp(re.source + String.raw`(?:[^.。「]|「[^」]*」)*?(?:얻|준다|주고|부여)`).test(t)) {
-      const duration = /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? oppDur(t) : 'turn';
+      const duration = /다음\s*자신(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? 'nextOwnTurn' : /(?:다음\s*)?상대(?:의)?\s*턴\s*종료\s*시?\s*까지/.test(t) ? oppDur(t) : 'turn';
       const gsK = grantSubject(t);
       if (gsK) script.push(...subjectOps(gsK, (sub) => ({ op: 'grantKeyword', ...sub, keyword: kw, duration })));
       else {
@@ -3848,4 +3862,6 @@ export function lookupCardSpecific(cardId, tags, text) {
 }
 
 // helpers for per-card shard scripts (src/cards/shard1X.js): compile a printed sentence / evaluate a printed condition at run time
+// main.js: a 〔턴에 1회〕 effect whose whole script is one leading condition ("자신의 패가 8장 이상일 때, …") that is unmet is not activated, so it must not use up the once-per-turn count
+export const evalConditionPublic = (cond, ctx) => evalCondition(cond, ctx);
 export const FX_HELPERS = { compileSecurityLook, prepText, strictCardFilter, xrosOptsFor, parseConditionText, condTestFor, parseCardFilter, matchesFilter, compileToScript, perCount };
