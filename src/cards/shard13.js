@@ -250,7 +250,7 @@ sc('BT20-097::서로의 턴', async (ctx) => {
 });
 
 // ST20-14: Lv.5 이상의 자신의 디지몬이 배틀 에어리어를 벗어날 때(소멸) → 패의 「어드벤처」 Lv.5 이하 디지몬 1장을 등장
-hk('ST20-14', { tag: '서로의 턴', events: { delete: (state, hp, h, info) => info.owner === hp && !!info.stack && isDig(info.stack) && (C(info.stack.cardId).level || 0) >= 5 && delayReady(state, h) } });
+hk('ST20-14', { tag: '서로의 턴', events: { leaveBattle: (state, hp, h, info) => info.owner === hp && !!info.stack && isDig(info.stack) && (C(info.stack.cardId).level || 0) >= 5 && delayReady(state, h) } });
 sc('ST20-14::서로의 턴', (ctx, R) => delayOnly(ctx, () => runText(ctx, R, '자신의 패에서 특징 「어드벤처」를 가진 Lv.5 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.')));
 
 // ------------------------------------------------------------------ helpers (part 2)

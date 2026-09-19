@@ -531,3 +531,39 @@ button.jg-btn.jg-none { opacity: 0.6; }
   .fx-panel { left: 0; right: 0; bottom: 0; width: 100vw; max-height: 62vh; border-radius: 12px 12px 0 0; }
   .fx-chip { bottom: 60px; }
 }
+
+/* ---------- deck builder: filters + card preview ---------- */
+.db-row { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; margin: 3px 0; }
+.db-searchrow .db-search { flex: 1; min-width: 140px; }
+.db-lbl { font-size: 11px; color: var(--muted); min-width: 56px; }
+.db-panel { border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; margin: 4px 0; background: rgba(0,0,0,0.2); }
+.db-chip { padding: 2px 8px; font-size: 12px; border-radius: 12px; }
+.db-chip.col-red { border-left: 3px solid #d85a5a; } .db-chip.col-blue { border-left: 3px solid #4ea8de; }
+.db-chip.col-yellow { border-left: 3px solid #e6c94a; } .db-chip.col-green { border-left: 3px solid #57b06a; }
+.db-chip.col-black { border-left: 3px solid #888; } .db-chip.col-purple { border-left: 3px solid #a070e0; }
+.db-chip.col-white { border-left: 3px solid #eee; }
+.db-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.db-num { width: 76px; }
+.db-help { display: inline-block; width: 20px; height: 20px; line-height: 20px; text-align: center; border: 1px solid var(--border); border-radius: 50%; color: var(--muted); cursor: help; font-size: 12px; }
+.db-count { margin-left: auto; }
+.db-quick { position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; min-height: 0 !important; padding: 0 !important; line-height: 20px; border-radius: 50%; font-size: 13px; opacity: 0.85; }
+.db-minus { background: #5a2a2a; }
+.db-preview { position: fixed; top: 0; right: 0; bottom: 0; width: 350px; z-index: 50; display: flex; flex-direction: column; background: #14161b; border-left: 1px solid var(--border); box-shadow: -6px 0 14px rgba(0,0,0,0.4); }
+.db-pv-head { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.db-pv-close { margin-left: auto; }
+.db-pv-body { flex: 1; overflow-y: auto; padding: 8px 10px; }
+.db-pv-img { width: 200px; max-width: 60%; display: block; margin: 0 auto 6px; border-radius: 6px; }
+.db-pv-name { font-weight: 700; font-size: 16px; }
+.db-pv-line { font-size: 12px; margin: 2px 0; }
+.db-pv-box { margin-top: 6px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.03); }
+.db-pv-text { white-space: pre-wrap; font-size: 12px; line-height: 1.5; }
+.db-pv-foot { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px; border-top: 1px solid var(--border); font-size: 12px; }
+.db-pv-body mark, .db-pv-name mark { background: #d9b36c; color: #111; border-radius: 2px; padding: 0 1px; }
+.board.db-preview-open { margin-right: 366px; }
+@media (max-width: 900px), (pointer: coarse) {
+  .db-preview { top: auto; left: 0; width: auto; max-height: 62vh; border-left: 0; border-top: 1px solid var(--border); border-radius: 12px 12px 0 0; }
+  .board.db-preview-open { margin-right: 0 !important; padding-bottom: 62vh; }
+  .db-pv-img { width: 120px; float: left; margin: 0 8px 4px 0; }
+  .db-panel { max-height: 55vh; overflow-y: auto; }
+  .db-search { min-width: 0; }
+}

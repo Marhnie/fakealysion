@@ -2,6 +2,8 @@ import * as S from './state.js';
 import * as E from './engine.js';
 import * as Effects from './effects.js';
 import * as DB from './deckbuilder.js';
+import * as DBS from './dbsearch.js'; // deck-builder search/filter (pure)
+import { fxEmit, fxGetMode, fxSetMode, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
@@ -94,131 +96,342 @@ function renderSetup() {
 }
 
 // ---------- deck builder ----------
+// The search box / filter controls / deck-name input are created ONCE per builder screen and stay in the DOM;
+// filter changes only rebuild the results grid (debounced), deck lists and preview panel — never the inputs.
 
+const DBS_KEY = 'digimon_dbfilter_v1';
 let dbDraft = null;
-let dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+let dbFilter = DBS.defaultFilter();
 let dbSavedName = '';
 let dbLastError = '';
+let dbIndex = null, dbOpts = null;
+let dbPreview = null;      // card id shown in the preview panel
+let dbMatched = [];        // ids matching the current filter (preview ◀ ▶ browses these)
+let dbTerms = [];          // highlight terms of the current query
+let dbPanelOpen = false;   // filter accordion
+let dbEls = null;          // live DOM refs of the current builder screen
+let dbSyncers = [];        // functions that re-sync chip/input state from dbFilter
+let dbTimer = null;
+let dbKeyBound = false;
+const dbLP = { timer: null, fired: false };
+let dbLastTap = { id: '', t: 0 };
+
+function loadDbFilter() {
+  const def = DBS.defaultFilter();
+  try {
+    const j = JSON.parse(localStorage.getItem(DBS_KEY) || 'null');
+    if (!j || typeof j !== 'object') return def;
+    const out = { ...def };
+    for (const k of Object.keys(def)) {
+      if (j[k] === undefined) continue;
+      if (Array.isArray(def[k])) { if (Array.isArray(j[k])) out[k] = j[k]; }
+      else if (def[k] && typeof def[k] === 'object') out[k] = { ...def[k], ...j[k] };
+      else if (typeof def[k] === typeof j[k]) out[k] = j[k];
+    }
+    out.pageSize = 60;
+    return out;
+  } catch { return def; }
+}
+function saveDbFilter() { try { localStorage.setItem(DBS_KEY, JSON.stringify({ ...dbFilter, pageSize: 60 })); } catch { /* storage unavailable */ } }
 
 function openDeckBuilder() {
   dbDraft = DB.newDraft();
-  dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+  dbFilter = loadDbFilter();
   dbSavedName = '';
+  dbPreview = null;
+  dbLastError = '';
   renderDeckBuilderScreen();
 }
 
-function matchesDbFilter(c) {
-  if (dbFilter.category && c.category !== dbFilter.category) return false;
-  if (dbFilter.colors.length && !dbFilter.colors.some(col => (c.colors || []).includes(col))) return false;
-  if (dbFilter.q) {
-    const q = dbFilter.q.toLowerCase();
-    if (!c.nameKo.includes(dbFilter.q) && !(c.nameDisplayKo || '').includes(dbFilter.q) && !(c.id || '').toLowerCase().includes(q) && !(c.nameEn || '').toLowerCase().includes(q)) return false;
-  }
-  return true;
+function dbEnsureIndex() {
+  if (!dbIndex) { dbIndex = DBS.buildIndex(S.CARDS); dbOpts = DBS.buildOptions(S.CARDS, dbIndex); }
+}
+function dbCtx() { return { copies: (id) => DB.copiesInDeck(dbDraft, id), max: (id) => DB.maxCopiesFor(id) }; }
+
+function dbSchedule() { // coalesce bursts of keystrokes into one grid refresh
+  clearTimeout(dbTimer);
+  dbTimer = setTimeout(() => { dbFilter.pageSize = 60; saveDbFilter(); dbRefreshResults(); }, 120);
+}
+function dbFilterChanged() { dbSyncers.forEach(f => f()); dbFilter.pageSize = 60; saveDbFilter(); dbRefreshResults(); }
+function toggleIn(arr, v) { const i = arr.indexOf(v); if (i === -1) arr.push(v); else arr.splice(i, 1); }
+
+function dbAdd(id) { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; dbRefreshDeck(); }
+function dbRemove(id) { DB.removeCard(dbDraft, id); dbLastError = ''; dbRefreshDeck(); }
+function dbOpenPreview(id) { dbPreview = id; dbRefreshPreview(); }
+function dbStepPreview(d) {
+  const i = dbMatched.indexOf(dbPreview);
+  if (i === -1) return;
+  const n = dbMatched[i + d];
+  if (n) { if (dbMatched.indexOf(n) >= dbFilter.pageSize) { dbFilter.pageSize += 60; dbRefreshResults(); } dbOpenPreview(n); }
 }
 
-function allCardIds() { return Object.keys(S.CARDS); }
+function dbChip(label, isOn, toggle, title, extraCls = '') {
+  const b = h('button', { className: 'db-chip ' + extraCls, title: title || undefined, onClick: () => { toggle(); dbFilterChanged(); } }, label);
+  const sync = () => b.classList.toggle('primary', !!isOn());
+  dbSyncers.push(sync); sync();
+  return b;
+}
+function dbRange(key, label, step) {
+  const mk = (bound, ph) => {
+    const inp = h('input', { type: 'number', className: 'db-num', placeholder: ph, min: '0', step: String(step), inputmode: 'numeric' });
+    inp.value = dbFilter[key][bound];
+    inp.addEventListener('input', () => { dbFilter[key][bound] = inp.value; dbSchedule(); });
+    dbSyncers.push(() => { if (document.activeElement !== inp) inp.value = dbFilter[key][bound]; });
+    return inp;
+  };
+  return h('div', { className: 'db-row' }, [h('span', { className: 'db-lbl' }, label), mk('min', '최소'), '~', mk('max', '최대')]);
+}
 
 function renderDeckBuilderScreen() {
-  // Full re-render destroys/recreates every DOM node (this app's usual
-  // pattern), which would otherwise steal focus out of the search box on
-  // every keystroke. Snapshot + restore focus/cursor across the rebuild.
-  const prevActive = document.activeElement;
-  const wasSearchFocused = prevActive && prevActive.placeholder === '이름/카드번호 검색';
-  const prevCursor = wasSearchFocused ? prevActive.selectionStart : null;
-
-  const prevDbScroll = app.querySelector('.board')?.scrollTop || 0; // full rebuild would jump back to the top on every tap
+  dbEnsureIndex();
+  dbSyncers = [];
+  const prevScroll = app.querySelector('.board')?.scrollTop || 0;
   app.innerHTML = '';
-  const v = DB.validate(dbDraft);
+  const els = dbEls = {};
+
+  els.mainN = h('span'); els.digN = h('span');
   app.appendChild(h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
-    h('b', {}, '덱 빌더'),
-    h('span', {}, `메인 ${v.mainN}/50`),
-    h('span', { style: v.digitamaN > 5 ? 'color:var(--danger)' : '' }, `디지타마 ${v.digitamaN}/5`),
+    h('b', {}, '덱 빌더'), els.mainN, els.digN,
     h('button', { onClick: () => { const el = document.getElementById('db-deck'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, '내 덱 ↓'),
     h('button', { onClick: () => { state = null; render(); } }, '나가기'),
   ])]));
 
-  const filterRow = h('div', { className: 'actions-row' }, [
-    (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; if (e.isComposing) return; renderDeckBuilderScreen(); }); inp.addEventListener('compositionend', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
-    ...['red', 'blue', 'yellow', 'green', 'black', 'purple', 'white'].map(col => h('button', {
-      className: dbFilter.colors.includes(col) ? 'primary' : '',
-      onClick: () => { const i = dbFilter.colors.indexOf(col); if (i === -1) dbFilter.colors.push(col); else dbFilter.colors.splice(i, 1); renderDeckBuilderScreen(); },
-    }, col)),
-    ...['', 'digimon', 'tamer', 'option', 'digitama'].map(cat => h('button', {
-      className: dbFilter.category === cat ? 'primary' : '',
-      onClick: () => { dbFilter.category = cat; renderDeckBuilderScreen(); },
-    }, cat || '전체')),
+  // --- search row (created once) ---
+  const inp = h('input', { className: 'db-search', placeholder: '검색: 이름·번호·특징·효과 …', value: dbFilter.q, autocomplete: 'off', enterkeyhint: 'search' });
+  let composing = false;
+  inp.addEventListener('compositionstart', () => { composing = true; });
+  inp.addEventListener('input', (e) => { dbFilter.q = inp.value; if (e.isComposing || composing) return; dbSchedule(); }); // IME: don't refresh mid-composition
+  inp.addEventListener('compositionend', () => { composing = false; dbFilter.q = inp.value; dbSchedule(); });
+  els.search = inp;
+  const scopeSel = h('select', { className: 'db-scope', title: '검색 범위' }, DBS.SCOPES.map(([v, l]) => h('option', { value: v }, l)));
+  scopeSel.value = dbFilter.scope;
+  scopeSel.addEventListener('change', () => { dbFilter.scope = scopeSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { scopeSel.value = dbFilter.scope; });
+  const help = h('span', { className: 'db-help', tabindex: '0', title: '검색 문법\n· 공백 = AND  (예: 옐로 퍼플)\n· "따옴표" = 구문 그대로  (예: "덱 위에서부터 3장")\n· -단어 = 제외  (예: 블로커 -재밍)\n· a|b = 또는  (예: 리커버리|세이브)\n대소문자·띄어쓰기는 무시합니다.' }, '?');
+  const sortSel = h('select', { className: 'db-sort', title: '정렬' }, DBS.SORTS.map(([v, l]) => h('option', { value: v }, '정렬: ' + l)));
+  sortSel.value = dbFilter.sort;
+  sortSel.addEventListener('change', () => { dbFilter.sort = sortSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { sortSel.value = dbFilter.sort; });
+  els.count = h('span', { className: 'meta db-count' });
+  els.toggle = h('button', { onClick: () => { dbPanelOpen = !dbPanelOpen; els.panel.style.display = dbPanelOpen ? '' : 'none'; dbUpdateBar(); } });
+  const resetBtn = h('button', { onClick: () => {
+    const keep = dbFilter.sort; dbFilter = DBS.defaultFilter(); dbFilter.sort = keep;
+    els.search.value = ''; dbFilterChanged();
+  } }, '필터 초기화');
+  const searchRow = h('div', { className: 'db-row db-searchrow' }, [inp, scopeSel, help]);
+  const barRow = h('div', { className: 'db-row' }, [els.toggle, sortSel, resetBtn, els.count]);
+
+  // --- filter panel (accordion) ---
+  const traitInput = h('input', { className: 'db-trait-in', placeholder: '특징 추가 (자동완성)', list: 'db-trait-list', autocomplete: 'off' });
+  const traitList = h('datalist', { id: 'db-trait-list' }, dbOpts.traits.map(t => h('option', { value: t })));
+  els.traitChips = h('span', { className: 'db-chips' });
+  const renderTraitChips = () => els.traitChips.replaceChildren(...dbFilter.traits.map(t => h('button', { className: 'db-chip primary', title: '클릭하면 제거', onClick: () => { toggleIn(dbFilter.traits, t); dbFilterChanged(); } }, t + ' ✕')));
+  dbSyncers.push(renderTraitChips); renderTraitChips();
+  const addTrait = () => { const v = traitInput.value.trim(); if (v && dbOpts.traits.includes(v) && !dbFilter.traits.includes(v)) { dbFilter.traits.push(v); traitInput.value = ''; dbFilterChanged(); } };
+  traitInput.addEventListener('change', addTrait);
+  traitInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTrait(); } });
+
+  const colorKo = Object.fromEntries(DBS.COLORS.map(([k, ko]) => [k, ko]));
+  const sect = (label, ...kids) => h('div', { className: 'db-row' }, [h('span', { className: 'db-lbl' }, label), ...kids]);
+  const setSel = h('select', { className: 'db-scope', title: '세트' }, [h('option', { value: '' }, '전체 세트'), ...dbOpts.sets.map(s => h('option', { value: s }, s))]);
+  setSel.value = dbFilter.setKey;
+  setSel.addEventListener('change', () => { dbFilter.setKey = setSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { setSel.value = dbFilter.setKey; });
+
+  els.panel = h('div', { className: 'db-panel', style: dbPanelOpen ? '' : 'display:none' }, [
+    sect('종류', ...DBS.CATS.map(([v, l]) => dbChip(l, () => dbFilter.cats.includes(v), () => toggleIn(dbFilter.cats, v)))),
+    sect('색', ...DBS.COLORS.map(([v, l]) => dbChip(l, () => dbFilter.colors.includes(v), () => toggleIn(dbFilter.colors, v), '', 'col-' + v)),
+      dbChip('단색만', () => dbFilter.mono, () => { dbFilter.mono = !dbFilter.mono; }, '체크 해제 = 다색 포함')),
+    sect('Lv', ...[2, 3, 4, 5, 6, 7].map(n => dbChip('Lv.' + n, () => dbFilter.levels.includes(n), () => toggleIn(dbFilter.levels, n)))),
+    dbRange('cost', '등장·사용 코스트', 1), dbRange('dp', 'DP', 1000), dbRange('evo', '진화 코스트', 1),
+    sect('특징', traitInput, traitList, els.traitChips),
+    sect('키워드', ...dbOpts.keywords.map(k => dbChip(k, () => dbFilter.keywords.includes(k), () => toggleIn(dbFilter.keywords, k), '《' + k + '》'))),
+    sect('효과 타입', ...dbOpts.tags.map(k => dbChip('【' + DBS.tagLabel(k) + '】', () => dbFilter.tags.includes(k), () => toggleIn(dbFilter.tags, k)))),
+    sect('팩', ...['ST', 'BT', 'EX', 'P', 'LM', 'AD', 'RB'].map(p => dbChip(p, () => dbFilter.packs.includes(p), () => toggleIn(dbFilter.packs, p))), setSel),
+    sect('레어도', ...dbOpts.rarities.map(r => dbChip(r, () => dbFilter.rarities.includes(r), () => toggleIn(dbFilter.rarities, r)))),
+    sect('덱', dbChip('내 덱에 있는 카드만', () => dbFilter.inDeck, () => { dbFilter.inDeck = !dbFilter.inDeck; }),
+      dbChip('한도(4장) 찬 카드 숨기기', () => dbFilter.hideMax, () => { dbFilter.hideMax = !dbFilter.hideMax; })),
   ]);
 
-  const matched = allCardIds().filter(id => matchesDbFilter(S.card(id)));
-  const shown = matched.slice(0, dbFilter.pageSize);
-  const cardGrid = h('div', { className: 'hand-list' }, shown.map(id => {
-    const have = DB.copiesInDeck(dbDraft, id);
-    return cardChip(id, {
-      selected: have > 0,
-      deckCount: have || undefined,
-      onClick: () => { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; renderDeckBuilderScreen(); },
-    });
-  }));
-  if (dbLastError) filterRow.appendChild(h('span', { style: 'color:var(--danger)' }, dbLastError));
-  const loadMore = matched.length > shown.length
-    ? h('button', { onClick: () => { dbFilter.pageSize += 60; renderDeckBuilderScreen(); } }, `더 보기 (${matched.length - shown.length}장 더 있음)`)
-    : h('span', { className: 'meta' }, `총 ${matched.length}장 검색됨`);
+  els.err = h('div', { className: 'meta', style: 'color:var(--danger)' });
+  els.grid = h('div', { className: 'hand-list' });
+  els.more = h('div', { className: 'actions-row' });
 
-  const draftMainList = Object.entries(dbDraft.main).map(([id, n]) => deckLineItem(id, n));
-  const draftDigitamaList = Object.entries(dbDraft.digitama).map(([id, n]) => deckLineItem(id, n));
-
-  const saved = DB.loadSavedDecks();
+  // --- right column: deck ---
+  els.deckErrors = h('div');
+  els.mainList = h('div', { className: 'stack-list' });
+  els.digList = h('div', { className: 'stack-list' });
+  els.mainLbl = h('div', { className: 'zone-label' }); els.digLbl = h('div', { className: 'zone-label' });
+  els.saved = h('div');
   const nameInput = h('input', { placeholder: '덱 이름', value: dbSavedName });
   nameInput.addEventListener('input', (e) => { dbSavedName = e.target.value; });
-
+  els.name = nameInput;
   const rightCol = h('div', { className: 'player-panel', id: 'db-deck', style: 'min-width:260px;' }, [
-    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 1장 제거)'),
-    v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'),
-    h('div', { className: 'zone-label' }, `메인덱 (${v.mainN}/50)`),
-    h('div', { className: 'stack-list' }, draftMainList),
-    h('div', { className: 'zone-label' }, `디지타마덱 (${v.digitamaN}/5)`),
-    h('div', { className: 'stack-list' }, draftDigitamaList),
+    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 미리보기 · － 버튼으로 1장 제거)'),
+    els.deckErrors, els.mainLbl, els.mainList, els.digLbl, els.digList,
     h('div', { className: 'actions-row' }, [nameInput, h('button', { className: 'primary', onClick: () => {
-      if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; renderDeckBuilderScreen(); return; }
+      if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; dbRefreshDeck(); return; }
       // 1-4-1: an illegal deck (not exactly 50 / >5 digitama / over the copy limit) cannot be saved.
       const legal = DB.validate(dbDraft);
-      if (!legal.ok) { dbLastError = '저장 불가 — ' + legal.errors.join(' / '); renderDeckBuilderScreen(); return; }
+      if (!legal.ok) { dbLastError = '저장 불가 — ' + legal.errors.join(' / '); dbRefreshDeck(); return; }
       dbLastError = '';
       const all = DB.loadSavedDecks();
       all[dbSavedName.trim()] = DB.toDeckDefRecord({ ...dbDraft, name: dbSavedName.trim() });
       DB.saveSavedDecks(all);
-      renderDeckBuilderScreen();
+      dbRefreshDeck();
     } }, '저장')]),
-    Object.keys(saved).length ? h('div', {}, [
-      h('div', { className: 'zone-label' }, '저장된 덱'),
-      ...Object.keys(saved).map(name => h('div', { className: 'actions-row' }, [
-        h('span', {}, name),
-        h('button', { onClick: () => { dbDraft = { name, main: { ...saved[name].main }, digitama: { ...saved[name].digitama } }; dbSavedName = name; renderDeckBuilderScreen(); } }, '불러오기'),
-        h('button', { className: 'danger', onClick: () => { delete saved[name]; DB.saveSavedDecks(saved); renderDeckBuilderScreen(); } }, '삭제'),
-      ])),
-    ]) : null,
-    h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; renderDeckBuilderScreen(); } }, '새로 만들기(초기화)'),
+    els.saved,
+    h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; dbLastError = ''; dbRefreshDeck(); } }, '새로 만들기(초기화)'),
   ]);
 
-  app.appendChild(h('div', { className: 'board' }, [
-    h('div', { className: 'player-panel' }, [filterRow, cardGrid, loadMore]),
+  els.board = h('div', { className: 'board' }, [
+    h('div', { className: 'player-panel db-left' }, [searchRow, barRow, els.panel, els.err, els.grid, els.more]),
     rightCol,
-  ]));
+  ]);
+  app.appendChild(els.board);
+  els.preview = h('div', { id: 'db-preview', className: 'db-preview', style: 'display:none' });
+  app.appendChild(els.preview);
 
-  const dbBoard = app.querySelector('.board');
-  if (dbBoard && prevDbScroll) dbBoard.scrollTop = prevDbScroll;
-  if (wasSearchFocused) {
-    const freshInput = [...app.querySelectorAll('input')].find(i => i.placeholder === '이름/카드번호 검색');
-    if (freshInput) { freshInput.focus(); freshInput.setSelectionRange(prevCursor, prevCursor); }
+  if (!dbKeyBound) {
+    dbKeyBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (!dbEls || !dbEls.board.isConnected || !dbPreview) return;
+      if (e.key === 'Escape') { dbPreview = null; dbRefreshPreview(); return; }
+      const t = e.target && e.target.tagName;
+      if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+      if (e.key === 'ArrowLeft') dbStepPreview(-1); else if (e.key === 'ArrowRight') dbStepPreview(1);
+    });
   }
+
+  dbRefreshDeck();
+  if (prevScroll) els.board.scrollTop = prevScroll;
+}
+
+function dbUpdateBar() {
+  if (!dbEls) return;
+  const n = DBS.activeFilterCount(dbFilter);
+  dbEls.toggle.textContent = `필터 ${dbPanelOpen ? '▴' : '▾'}${n ? ` (${n})` : ''}`;
+  dbEls.count.textContent = `${dbMatched.length}장`;
+}
+
+function dbTile(id) {
+  const have = DB.copiesInDeck(dbDraft, id);
+  const chip = cardChip(id, {
+    selected: have > 0,
+    deckCount: have || undefined,
+    onClick: () => {
+      if (dbLP.fired) { dbLP.fired = false; return; } // long-press already added
+      const now = Date.now();
+      if (dbLastTap.id === id && now - dbLastTap.t < 350) { dbLastTap = { id: '', t: 0 }; dbAdd(id); return; } // double-click = add
+      dbLastTap = { id, t: now };
+      dbOpenPreview(id);
+    },
+  });
+  chip.style.position = 'relative';
+  chip.appendChild(h('button', { className: 'db-quick', title: '덱에 1장 추가', onClick: (e) => { e.stopPropagation(); dbAdd(id); } }, '＋'));
+  chip.addEventListener('pointerdown', () => { dbLP.fired = false; clearTimeout(dbLP.timer); dbLP.timer = setTimeout(() => { dbLP.fired = true; dbAdd(id); }, 600); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) chip.addEventListener(ev, () => clearTimeout(dbLP.timer));
+  return chip;
+}
+
+function dbRefreshResults() {
+  if (!dbEls) return;
+  const r = DBS.runSearch(dbFilter, S.CARDS, dbIndex, dbCtx());
+  dbMatched = r.ids; dbTerms = r.terms;
+  const shown = dbMatched.slice(0, dbFilter.pageSize);
+  dbEls.grid.replaceChildren(...shown.map(dbTile));
+  dbEls.more.replaceChildren(dbMatched.length > shown.length
+    ? h('button', { onClick: () => { dbFilter.pageSize += 60; dbRefreshResults(); } }, `더 보기 (${dbMatched.length - shown.length}장 더 있음)`)
+    : h('span', { className: 'meta' }, dbMatched.length ? `총 ${dbMatched.length}장 검색됨` : '검색 결과가 없습니다'));
+  dbUpdateBar();
+  if (dbPreview) dbRefreshPreview(); // ◀ ▶ position / highlight follow the new results
+}
+
+function dbRefreshDeck() {
+  if (!dbEls) return;
+  const els = dbEls;
+  const v = DB.validate(dbDraft);
+  els.mainN.textContent = `메인 ${v.mainN}/50`;
+  els.digN.textContent = `디지타마 ${v.digitamaN}/5`;
+  els.digN.style.color = v.digitamaN > 5 ? 'var(--danger)' : '';
+  els.deckErrors.replaceChildren(v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'));
+  els.mainLbl.textContent = `메인덱 (${v.mainN}/50)`;
+  els.digLbl.textContent = `디지타마덱 (${v.digitamaN}/5)`;
+  els.mainList.replaceChildren(...Object.entries(dbDraft.main).map(([id, n]) => deckLineItem(id, n)));
+  els.digList.replaceChildren(...Object.entries(dbDraft.digitama).map(([id, n]) => deckLineItem(id, n)));
+  els.err.textContent = dbLastError;
+  if (document.activeElement !== els.name) els.name.value = dbSavedName;
+  const saved = DB.loadSavedDecks();
+  els.saved.replaceChildren(...(Object.keys(saved).length ? [
+    h('div', { className: 'zone-label' }, '저장된 덱'),
+    ...Object.keys(saved).map(name => h('div', { className: 'actions-row' }, [
+      h('span', {}, name),
+      h('button', { onClick: () => { dbDraft = { name, main: { ...saved[name].main }, digitama: { ...saved[name].digitama } }; dbSavedName = name; dbLastError = ''; dbRefreshDeck(); } }, '불러오기'),
+      h('button', { className: 'danger', onClick: () => { delete saved[name]; DB.saveSavedDecks(saved); dbRefreshDeck(); } }, '삭제'),
+    ])),
+  ] : []));
+  dbRefreshResults(); // tile copy counts, in-deck / at-limit filters
 }
 
 function deckLineItem(id, n) {
-  return cardChip(id, {
-    deckCount: n,
-    onClick: () => { DB.removeCard(dbDraft, id); renderDeckBuilderScreen(); },
-  });
+  const chip = cardChip(id, { deckCount: n, onClick: () => dbOpenPreview(id) });
+  chip.style.position = 'relative';
+  chip.appendChild(h('button', { className: 'db-quick db-minus', title: '덱에서 1장 빼기', onClick: (e) => { e.stopPropagation(); dbRemove(id); } }, '－'));
+  return chip;
+}
+
+// ---- preview panel (right side on desktop, bottom sheet on phones) ----
+function dbHl(text) { return DBS.splitHighlight(text, dbTerms).map(p => p.hit ? h('mark', {}, p.t) : p.t); }
+function dbRefreshPreview() {
+  if (!dbEls) return;
+  const box = dbEls.preview;
+  dbEls.board.classList.toggle('db-preview-open', !!dbPreview);
+  if (!dbPreview || !S.CARDS[dbPreview]) { dbPreview = null; box.style.display = 'none'; box.replaceChildren(); return; }
+  const id = dbPreview, c = S.card(id);
+  const have = DB.copiesInDeck(dbDraft, id), max = DB.maxCopiesFor(id);
+  const zone = c.category === 'digitama' ? 'digitama' : 'main';
+  const zoneN = DB.totalCount(dbDraft[zone]), zoneMax = zone === 'digitama' ? 5 : 50;
+  const inZone = dbDraft[zone][id] || 0;
+  const canAdd = have < max && zoneN < zoneMax;
+  const idx = dbMatched.indexOf(id);
+  const CAT_KO = { digimon: '디지몬', tamer: '테이머', option: '옵션', digitama: '디지타마' };
+  const COL_KO = Object.fromEntries(DBS.COLORS.map(([k, ko]) => [k, ko]));
+  const line = (k, val) => (val == null || val === '' ? null : h('div', { className: 'db-pv-line' }, [h('b', {}, k + ' '), val]));
+  const textBox = (label, text) => (text ? h('div', { className: 'db-pv-box' }, [h('div', { className: 'zone-label' }, label), h('div', { className: 'db-pv-text' }, dbHl(text))]) : null);
+  const all = (c.effectKo || '') + '\n' + (c.inheritedKo || '');
+  const linesOf = (re) => all.split('\n').filter(l => re.test(l)).join('\n');
+  const security = linesOf(/^\s*【시큐리티】/);
+  const linkish = linesOf(/링크|크로스|조그레스|Xros|Jogress|링크/i);
+  const evo = c.evoNormal ? `${c.evoNormal.conditionText || ('Lv.' + c.evoNormal.level)} → 진화 코스트 ${c.evoNormal.cost}` : null;
+  box.replaceChildren(
+    h('div', { className: 'db-pv-head' }, [
+      h('button', { disabled: idx <= 0, title: '이전 카드 (←)', onClick: () => dbStepPreview(-1) }, '◀'),
+      h('span', { className: 'meta' }, idx >= 0 ? `${idx + 1} / ${dbMatched.length}` : '검색 결과 밖'),
+      h('button', { disabled: idx === -1 || idx >= dbMatched.length - 1, title: '다음 카드 (→)', onClick: () => dbStepPreview(1) }, '▶'),
+      h('button', { className: 'db-pv-close', title: '닫기 (Esc)', onClick: () => { dbPreview = null; dbRefreshPreview(); } }, '✕'),
+    ]),
+    h('div', { className: 'db-pv-body' }, [
+      c.imgUrl ? h('img', { className: 'db-pv-img', src: c.imgUrl, alt: c.nameKo }) : null,
+      h('div', { className: 'db-pv-name' }, dbHl(c.nameDisplayKo || c.nameKo)),
+      h('div', { className: 'meta' }, [c.id, ' · ', CAT_KO[c.category] || c.category, c.rarity ? ` · ${c.rarity}` : '', c.setName ? ` · ${c.setName}` : '']),
+      line('Lv', c.level != null ? String(c.level) : null),
+      line(c.category === 'option' ? '사용 코스트' : '등장 코스트', c.cost != null ? String(c.cost) : null),
+      line('DP', c.dp != null ? String(c.dp) : null),
+      line('색', (c.colors || []).map(k => COL_KO[k] || k).join(' / ')),
+      line('특징', [...(c.types || []), c.attribute, c.form && /^[가-힣]/.test(c.form) ? c.form : null].filter(Boolean).join(' / ')),
+      line('진화', evo),
+      textBox('효과', c.effectKo),
+      textBox('진화원 효과', c.inheritedKo),
+      textBox('시큐리티 효과', security),
+      textBox('링크 / 크로스 / 조그레스', linkish),
+    ]),
+    h('div', { className: 'db-pv-foot' }, [
+      h('span', {}, `덱 ${inZone}장 (동일 넘버 ${have}/${max}) · ${zone === 'digitama' ? '디지타마' : '메인'} ${zoneN}/${zoneMax}`),
+      h('button', { className: 'primary', disabled: !canAdd, title: canAdd ? '' : (have >= max ? `같은 카드 넘버 최대 ${max}장` : '덱이 가득 찼습니다'), onClick: () => dbAdd(id) }, '＋ 덱에 추가'),
+      h('button', { disabled: inZone <= 0, onClick: () => dbRemove(id) }, '－ 덱에서 빼기'),
+    ]),
+  );
+  box.style.display = '';
 }
 
 let mulliganDecided = { p1: false, p2: false };
@@ -370,6 +583,7 @@ function render() {
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
   app.appendChild(renderFxLayer());
+  fxEmit('render', { state }); // VFX overlay: snapshot tile geometry, watch battle log lines, play queued effect animations
 }
 
 // deleteStack() (rule-check DP<=0, battle losses, 【소멸】 effects — every
@@ -702,7 +916,7 @@ function showToast(msg) {
   S.log(state, msg);
   const el = h('div', { className: 'ui-toast', role: 'alert' }, msg);
   app.appendChild(el);
-  setTimeout(() => el.remove(), 4200);
+  setTimeout(() => el.remove(), Math.max(4200, readMs(msg, 3000, 12000)));
 }
 const jogressCond = (cardId) => { const l = (S.card(cardId).effectKo || '').split('\n').find(x => /〔조그레스〕/.test(x)); return l ? l.replace(/^.*?〔조그레스〕\s*/, '').trim() : ''; };
 // -> null (no printed jogress line / not a digimon) | { cond, pairs:[{top,bottom,base,delta,cost,ok}], restricted }
@@ -880,6 +1094,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       })),
   });
 
+  chip.dataset.fxp = p; chip.dataset.fxu = stack.uid; chip.dataset.fxn = S.card(stack.cardId).nameKo; chip.dataset.fxc = stack.cardId; // VFX overlay anchors
   const fxHit = fxHitFor(p, stack);
   if (fxHit) { chip.classList.add('fx-hit', fxHit); chip.appendChild(h('div', { className: 'fx-badge' }, '🎯')); }
   const acts = stackActionList(p, stack, zoneKind);
@@ -1003,7 +1218,7 @@ function renderPlayerPanel(p) {
 
   // 6-4: hatch OR move, not both, per breeding phase visit
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
-  const pileRail = h('div', { className: 'pile-rail' }, [
+  const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
@@ -1068,7 +1283,7 @@ function renderPlayerPanel(p) {
         },
       }, `⚡메인(${a.zone === 'hand' ? '패' : '트래시'}) ${S.card(a.cardId).nameKo}`)))] : [];
     })(),
-    h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
+    h('div', { className: 'hand-list', 'data-fxhand': p }, pl.hand.map((id, i) => cardChip(id, {
       selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
       draggable: p === state.activePlayer && state.phase === 'main',
       dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
@@ -1085,10 +1300,9 @@ function renderPlayerPanel(p) {
   return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, [
     header,
     h('div', { className: 'field-row' }, [
-      h('div', { className: 'field-zones' }, [
-        h('div', { className: 'zone-row' }, [raisingZone, battleZone]),
-        handZone,
-      ]),
+      h('div', { className: 'field-zones' }, p === 'p2'
+        ? [handZone, h('div', { className: 'zone-row' }, [raisingZone, battleZone])] // 위쪽 플레이어: 패가 필드보다 위(테이블 맞은편에 앉은 배치)
+        : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
       pileRail,
     ]),
   ]);
@@ -1670,6 +1884,14 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // even when nothing can be decided in it, instead of the whole chain resolving in
 // one render. Auto mode advances after a short visible pause (and waits for any
 // pending effect to finish first); manual mode waits for the "다음 단계" button.
+// 읽기 속도: 사람이 읽어야 하는 문구(단계 설명, 효과 결과, 알림)는 글자 수에 비례해 오래 보여 준다.
+const READ_SPEEDS = { slow: 1.6, normal: 1.0, fast: 0.6 };
+const READ = { speed: 'normal' };
+try { const v = localStorage.getItem('digimon_read_speed'); if (v && v in READ_SPEEDS) READ.speed = v; } catch (e) { /* ignore */ }
+function readMs(text, minMs = 1500, maxMs = 14000) {
+  const chars = String(text || '').replace(/\s+/g, '').length;
+  return Math.round(Math.min(maxMs, Math.max(minMs, 900 + chars * 85)) * READ_SPEEDS[READ.speed]);
+}
 const STEP = { manual: false, delay: 1300 };
 try { STEP.manual = localStorage.getItem('digimon_step_manual') === '1'; } catch (e) { /* ignore */ }
 
@@ -1691,7 +1913,7 @@ function stepPause(pa, stage, info, next) {
     if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 400); return; }
     runPendingNext(pa);
   };
-  setTimeout(tick, STEP.delay);
+  setTimeout(tick, Math.max(STEP.delay, readMs(info, 1300, 8000)));
 }
 
 function eligibleBlockers(p, collidingAttacker) {
@@ -2141,8 +2363,8 @@ function renderLog() {
 // ================= effect visibility (presentation only — the engine never reads any of this) =================
 // state.fxHistory holds one record per resolved effect (see effects.js runScript / state.js fxNewRec): source card, tag, printed
 // text, the log lines it produced and the stacks it made vanish. Here: resolution card + pager, board markers, ghost tiles, history tab.
-const FX_DELAYS = { '2': 2000, '5': 5000, '10': 10000, manual: 0 };
-const fxUI = { seen: 0, stateRef: null, queue: [], idx: 0, open: false, timer: null, tab: 'log', info: null, expanded: new Set(), ghosts: [], markRec: null, markUntil: 0, markTimer: null, hits: { p1: new Set(), p2: new Set() }, cfg: '5' };
+const FX_DELAYS = { auto: -1, '2': 2000, '5': 5000, '10': 10000, manual: 0 };
+const fxUI = { seen: 0, stateRef: null, queue: [], idx: 0, open: false, timer: null, tab: 'log', info: null, expanded: new Set(), ghosts: [], markRec: null, markUntil: 0, markTimer: null, hits: { p1: new Set(), p2: new Set() }, cfg: 'auto' };
 try { const v = localStorage.getItem('digimon_fx_delay'); if (v && v in FX_DELAYS) fxUI.cfg = v; } catch (e) { /* ignore */ }
 const pNm = (p) => String(p || '').toUpperCase();
 const fxOwnerOf = (m) => { const x = /^(p1|p2)\s/.exec(m); return x ? x[1] : null; };
@@ -2153,6 +2375,11 @@ function fxForeign(rec) { // did the effect touch the OTHER player's cards / lin
 }
 function fxDelayFor(rec) {
   if (fxUI.cfg === 'manual') return 0;
+  if (fxUI.cfg === 'auto') { // reading time from the printed text + concrete results
+    const txt = `${rec.text || ''} ${(rec.entries || []).map(e => e.msg).join(' ')}`;
+    const d0 = readMs(txt, 2500, 16000);
+    return fxForeign(rec) || rec.src.kind !== 'effect' ? d0 : Math.min(d0, Math.round(3500 * READ_SPEEDS[READ.speed])); // the acting player's own harmless effects fade sooner
+  }
   const d = FX_DELAYS[fxUI.cfg];
   return fxForeign(rec) || rec.src.kind !== 'effect' ? d : Math.min(d, 2000); // the acting player's own harmless effects fade sooner
 }
@@ -2193,6 +2420,8 @@ function fxSync() {
     rec._vs = rec.vanished.length;
   }
   if (fxUI.ghosts.length > 8) fxUI.ghosts.splice(0, fxUI.ghosts.length - 8);
+  for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
+  if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
   const fresh = hist.filter(r => r.id > fxUI.seen && !fxTrivial(r)).reverse();
   if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
   if (fresh.length) {
@@ -2246,9 +2475,17 @@ function fxRecView(rec, full) {
   if (rec.text && (full || fxUI.expanded.has(rec.id))) kids.push(h('div', { className: 'fx-text' }, rec.text));
   return h('div', { className: 'fx-rec' + (foreign ? ' fx-rec-foe' : '') }, kids);
 }
+function fxVfxSelect() { // 이펙트 (activation VFX intensity, fx.js)
+  return h('label', { className: 'meta fx-cfg' }, ['이펙트 ', h('select', { onchange: (e) => fxSetMode(e.target.value) },
+    FX_MODE_LABELS.map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxGetMode()) o.selected = true; return o; }))]);
+}
+function readSpeedSelect() {
+  return h('label', { className: 'meta fx-cfg' }, ['읽기 속도 ', h('select', { onchange: (e) => { READ.speed = e.target.value; try { localStorage.setItem('digimon_read_speed', READ.speed); } catch (err) { /* ignore */ } } },
+    [['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === READ.speed) o.selected = true; return o; }))]);
+}
 function fxDelaySelect() {
   return h('label', { className: 'meta fx-cfg' }, ['효과 표시 ', h('select', { onchange: (e) => { fxUI.cfg = e.target.value; try { localStorage.setItem('digimon_fx_delay', fxUI.cfg); } catch (err) { /* ignore */ } } },
-    [['2', '짧게 2초'], ['5', '보통 5초'], ['10', '길게 10초'], ['manual', '수동 확인']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxUI.cfg) o.selected = true; return o; }))]);
+    [['auto', '읽는 시간 자동'], ['2', '짧게 2초'], ['5', '보통 5초'], ['10', '길게 10초'], ['manual', '수동 확인']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxUI.cfg) o.selected = true; return o; }))]);
 }
 function renderFxLayer() {
   const root = h('div', { className: 'fx-root' });
@@ -2274,14 +2511,14 @@ function renderFxLayer() {
       h('button', { className: 'primary', onClick: () => { fxUI.queue = []; fxUI.open = false; clearTimeout(fxUI.timer); render(); } }, '확인 ✕'),
     ]),
     fxRecView(rec, true),
-    h('div', { className: 'fx-foot' }, [fxDelaySelect(), fxUI.cfg === 'manual' ? h('span', { className: 'meta' }, '확인을 누를 때까지 유지') : h('span', { className: 'meta' }, '잠시 후 자동으로 접힙니다')]),
+    h('div', { className: 'fx-foot' }, [fxDelaySelect(), readSpeedSelect(), fxVfxSelect(), fxUI.cfg === 'manual' ? h('span', { className: 'meta' }, '확인을 누를 때까지 유지') : h('span', { className: 'meta' }, '잠시 후 자동으로 접힙니다')]),
   ]));
   return root;
 }
 function renderFxHistory() {
   const hist = (state.fxHistory || []).filter(r => !fxTrivial(r));
   return [
-    fxDelaySelect(),
+    fxDelaySelect(), readSpeedSelect(), fxVfxSelect(),
     ...(hist.length ? hist.map(r => h('div', { className: 'fx-hist-item', onClick: () => { fxUI.expanded.has(r.id) ? fxUI.expanded.delete(r.id) : fxUI.expanded.add(r.id); render(); } }, [
       h('div', { className: 'fx-hist-title' }, `${fxUI.expanded.has(r.id) ? '▼' : '▶'} ${fxSrcLabel(r)}`),
       fxRecView(r, false),

@@ -344,7 +344,7 @@ SCRIPTS['*::__ownDiscard'] = [fn(async (ctx, R) => {
   }
   if (/이\s*카드의\s*【시큐리티】\s*효과를\s*발휘한다/.test(text)) { // 시큐리티에서 효과로 파기되었을 때 (BT15-092, BT18-098, ST22-10)
     const Fx = await import('../effects.js');
-    const seg = S.parseEffectSegments(C(id).effectKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티'));
+    const seg = S.parseEffectSegments(C(id).effectKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티')) || S.parseEffectSegments(C(id).inheritedKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티')); // (an Option's 【시큐리티】 effect is printed in its inheritedKo box — ST22-10 …)
     if (!seg) { log(ctx, `${C(id).nameKo}: 【시큐리티】 효과가 없어 처리할 효과가 없음`); return; }
     await R.runScript(Fx.lookupCardSpecific(id, seg.tags, seg.body) || Fx.compileToScript(seg.body), ctx);
     return;

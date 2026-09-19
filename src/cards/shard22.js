@@ -38,3 +38,10 @@ HOOKS['ST10-06'] = [{ tag: '서로의 턴', has: '등장했을 때', events: {
 // parser only grants to the holder itself), so it is a live hook, not the one-shot grantKeyword the compiler produced.
 HOOKS['ST10-12'] = [{ tag: '자신의 턴', src: 'inheritedKo', has: '길동무', grantKw: (state, hp, h, t) =>
   (C(t.cardId).category === 'digimon' && S.ownerOfStack(state, t) === hp && S.stackColors(t).includes('yellow') ? ['길동무'] : []) }];
+
+// ST9-11 다이노몬 (진화원) 【자신의 턴】 이 디지몬의 색 1색당 이 디지몬의 DP를 +1000 한다. (live: counts the holder's CURRENT colors)
+HOOKS['ST9-11'] = [{ tag: '자신의 턴', src: 'inheritedKo', has: '색 1색당', dp: (state, hp, holder, target) => (target === holder ? 1000 * S.stackColors(holder).length : 0) }];
+
+// ST12-13 시스터몬 느와르 【서로의 턴】 명칭에 「헉몬」을 포함하거나 특징으로 「로얄 나이츠」를 가진 자신의 디지몬 전부는 《재기동》을 얻는다. — continuous grant to ALL matching own Digimon.
+HOOKS['ST12-13'] = [{ tag: '서로의 턴', has: '재기동', grantKw: (state, hp, h, t) =>
+  (C(t.cardId).category === 'digimon' && S.ownerOfStack(state, t) === hp && (S.effectiveInfo(state, t, hp).names.some(n => n.includes('헉몬')) || (C(t.cardId).types || []).includes('로얄 나이츠')) ? ['재기동'] : []) }];
