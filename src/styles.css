@@ -454,3 +454,33 @@ button, .card-chip, .pile-chip, .link-badge { touch-action: manipulation; -webki
   .mem-num { font-size: 12px; padding: 3px 0; }
   .mem-num.mem-active { font-size: 15px; }
 }
+
+/* ---- 조그레스 (DNA 진화) UI ---- */
+:root { --jg: #b07cf5; }
+.card-chip.jogress-mat, .card-chip.jogress-mat.tap-target { border-color: var(--jg); animation: none; box-shadow: 0 0 0 2px var(--jg), 0 0 14px 4px rgba(176,124,245,0.75); }
+.card-chip.jogress-mat .kw-badge { background: var(--jg); color: #170a2b; font-weight: 700; }
+button.jg-btn { background: #4b2a86; border-color: var(--jg); color: #fff; font-weight: 700; }
+button.jg-btn.jg-none { opacity: 0.6; }
+.jg-hint { color: var(--jg); font-weight: 700; font-size: 12px; }
+.jg-modal h3 { margin: 0 0 4px; color: var(--jg); }
+.jg-row { border: 2px solid #3a3350; border-radius: 10px; padding: 8px; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.jg-row.pre { border-color: var(--jg); box-shadow: 0 0 12px rgba(176,124,245,0.5); }
+.jg-cards { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.jg-cards .card-chip { width: 96px; flex: 0 0 auto; transform: none !important; }
+.jg-op { font-size: 22px; font-weight: 700; color: var(--jg); }
+.jg-cost { text-align: center; font-size: 13px; }
+.jg-confirm { min-height: 44px; font-size: 14px; background: #6b3fc4; color: #fff; }
+.jg-confirm:disabled { background: #3a3350; color: #999; }
+.ui-toast { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); max-width: min(92vw, 520px); background: #2a1f14; color: #ffd9a0; border: 2px solid #e0a040; border-radius: 10px; padding: 10px 14px; z-index: 1000; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); }
+@media (max-width: 900px), (pointer: coarse) { .jg-cards .card-chip { width: 72px; } .jg-cards { gap: 3px; } }
+
+/* ---------- desktop: centre the whole UI ---------- */
+@media (min-width: 901px) and (pointer: fine) {
+  .table-surface { max-width: 1120px; margin: 0 auto; }
+  .topbar-row { justify-content: center; flex-wrap: wrap; }
+  .topbar-row .gauge-track { max-width: 260px; }
+  .actions { max-width: 1120px; margin-left: auto; margin-right: auto; }
+  .player-panel { margin-left: auto; margin-right: auto; }
+  .zone-row, .hand-row, .field-zones { justify-content: center; }
+  .mem-track { max-width: 1120px; margin: 0 auto; }
+}
