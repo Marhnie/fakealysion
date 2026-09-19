@@ -3293,6 +3293,8 @@ export function battleSecurityCheck(ctl, id) {
   const r = { empty: false, revealed: id, secDp, atkDp: attackerDp, result };
   ctl.results.push(r);
   ctl.i++;
+  // 16-4-1/16-4-2: ≪S 어택≫ is continuous — gaining/losing it mid-check (e.g. from a 【시큐리티】 effect) changes the count now.
+  ctl.total = 1 + hookSecurityAttackBonus(state, attackerP, attackerStack);
   // attacker died (unless saved) — remaining checks don't happen
   if (result === 'defenderWins' || result === 'tie' || ctl.i >= ctl.total) ctl.done = true;
   queueAfterBattle(state); // 14-2-5: 【시큐리티】 "배틀 종료 시" effects fire now

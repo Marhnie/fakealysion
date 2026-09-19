@@ -117,7 +117,7 @@ function evoCands(ctx, o) {
     }
   }
   return raw.filter(c => C(c.id).category === 'digimon' && (!o.pred || o.pred(C(c.id), c.id))
-    && (o.ignoreCond || E.canEvolveAny(st.cardId, c.id, st.extraColors || [], restr).ok));
+    && (o.ignoreCond ? E.evoRestrictionCheck(c.id, restr).ok : E.canEvolveAny(st.cardId, c.id, st.extraColors || [], restr).ok));
 }
 async function evolveInto(ctx, o) {
   const { state, E } = ctx;

@@ -260,7 +260,7 @@ async function evolveInteractive(ctx, o) {
   const arr = o.from === 'trash' ? pl.trash : pl.hand;
   const ignore = o.ignoreCond && !S.s1HookAny(state, 's1evoIgnoreLocked', {});
   const chk = (stack, id) => E.canEvolveAny(stack.cardId, id, stack.extraColors || [], S.evolveTargetRestriction(state, who, stack));
-  const okCard = (stack, id) => C(id).category === 'digimon' && (!o.cardPred || o.cardPred(id)) && (ignore || chk(stack, id).ok);
+  const okCard = (stack, id) => C(id).category === 'digimon' && (!o.cardPred || o.cardPred(id)) && (ignore ? E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, who, stack)).ok : chk(stack, id).ok);
   let stacks = o.subject ? [o.subject] : pl.battle.filter(s => isDigimon(s) && (!o.stackPred || o.stackPred(s)));
   stacks = stacks.filter(s => s && arr.some(id => okCard(s, id)));
   if (!stacks.length) return null;

@@ -1373,6 +1373,7 @@ function noteRedirect(pa) {
 }
 
 function enterRedirectTiming(pa) {
+  if (pa.fireDeclare) { const f = pa.fireDeclare; pa.fireDeclare = null; f(); } // 11-2-2: 【어택 시】 triggers only after the target is fixed
   if (pa.s1ForcedTarget) { pa.targetKind = 'digimon'; pa.targetUid = pa.s1ForcedTarget; pa.s1ForcedTarget = null; } // shard1 (BT4-075)
   if (!pa.s1Noted) { // shard1: 'attackTarget' event (BT2-084 등) + BT4-101
     pa.s1Noted = true;
@@ -1420,13 +1421,20 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (!force && blockIfBusy()) return;
   const dec = S.declareAttack(state, p, uid, atkOpts);
   if (!dec.ok) { render(); return; }
-  S.queueTriggersForStack(state, p, dec.stack, 'attack');
-  S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
+  // 11-2-2: the attack target is chosen together with the declaration, i.e. BEFORE 【어택 시】 effects are triggered/resolved.
+  // Drag-drop already knows the target; the click path defers the triggers until a target is picked (see enterRedirectTiming).
+  const fireDeclare = () => {
+    const st = findStack({ player: p, uid });
+    if (!st) return;
+    S.queueTriggersForStack(state, p, st, 'attack');
+    S.emitGameEvent(state, 'attack', { owner: p, stack: st, cause: null });
+  };
   const dp = S.effectiveDP(state, p, dec.stack);
   const opp = S.opponentOf(p);
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
   const canHitPlayer = S.canAttackPlayer(state, p, uid);
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
+  pa.fireDeclare = fireDeclare;
   sel.pendingAttack = pa;
   state.attackCtx = pa; // read by card scripts ("어택 중인 대상…"); pa.terminate() ends this attack ("그 어택을 종료한다")
   pa.terminate = () => { if (sel.pendingAttack === pa) { endAttack(); render(); } };
@@ -1598,10 +1606,13 @@ function renderPendingAttack() {
     }
     if (res.piercing) {
       // 16-7-3: the ≪관통≫ check is mandatory — no "안 함" option.
+      // 16-7-4: the pierce check is a pending process handled AFTER effects triggered by this battle (e.g. 【소멸 시】) resolve.
+      const pierceWaiting = state.pending.some(t => !t.resolved) || !!state.uiChoice;
       rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, '≪관통≫ — 시큐리티 체크 (강제)'),
+        h('span', {}, pierceWaiting ? '≪관통≫ — 대기 중인 효과를 먼저 처리하세요 (16-7-4)' : '≪관통≫ — 시큐리티 체크 (강제)'),
         h('button', {
           className: 'primary',
+          disabled: pierceWaiting,
           // Piercing's bonus check is still part of THIS attack's single
           // "성립의 확인" — Counter/Block Timing already happened once for
           // this attack and don't repeat here.

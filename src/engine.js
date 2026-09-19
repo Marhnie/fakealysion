@@ -290,12 +290,10 @@ export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restr
   }
   return base;
 }
-function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restriction = null) {
-  const src = S.card(sourceCardId);
+// 8-1-2-2: restrictions ("진화할 수 없다"/"X로만 진화할 수 있다") are NOT evolution conditions, so even effects that ignore the
+// evolution condition must respect them. Returns {ok:true} or {ok:false, reason}.
+export function evoRestrictionCheck(targetCardId, restriction = null) {
   const tgt = S.card(targetCardId);
-  if (S.isTokenId(sourceCardId)) return { ok: false, reason: '토큰 위에는 카드를 겹칠 수 없음 (룰 4-21-3)' };  // A continuous "이 디지몬은 (X색)/「X」으로만 진화할 수 있다." restriction on
-  // the SOURCE stack (see S.evolveTargetRestriction) — checked against the
-  // TARGET card, independent of whichever printed condition below it uses.
   if (restriction) {
     if (restriction.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
     if (restriction.colors && !restriction.colors.some(c => (tgt.colors || []).includes(c))) {
@@ -308,10 +306,19 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
       return { ok: false, reason: `진화 제한: 명칭에 「${restriction.nameIncludes}」를 포함하는 디지몬으로만 진화 가능` };
     }
   }
+  return { ok: true };
+}
+function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restriction = null) {
+  const src = S.card(sourceCardId);
+  const tgt = S.card(targetCardId);
+  if (S.isTokenId(sourceCardId)) return { ok: false, reason: '토큰 위에는 카드를 겹칠 수 없음 (룰 4-21-3)' };
+  const rc = evoRestrictionCheck(targetCardId, restriction);
+  if (!rc.ok) return rc;
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
   const srcColors = extraColors.replace ? extraColors.replace : [...(src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과
   const srcNames = [src.nameKo, ...(extraColors.names || [])]; // .names: 「이 디지몬은 …의 명칭 전부를 얻는다」
+  let best = null; // 8-1-2-1: several applicable conditions -> the cheapest one
   for (const cond of conditions) {
     if (typeof cond.level === 'number' && src.level !== cond.level) continue;
     if (cond.nameExact && !srcNames.includes(cond.nameExact)) continue;
@@ -321,7 +328,8 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
       const isAny = cond.colors.length >= 7;
       if (!isAny && !cond.colors.some(c => srcColors.includes(c))) continue;
     }
-    return { ok: true, cost: cond.cost, raw: cond.raw };
+    if (!best || cond.cost < best.cost) best = { ok: true, cost: cond.cost, raw: cond.raw };
   }
+  if (best) return best;
   return { ok: false, reason: `어떤 진화 조건도 만족 못함 (대상: ${src.nameKo} Lv.${src.level})` };
 }

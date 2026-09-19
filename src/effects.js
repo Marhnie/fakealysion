@@ -522,7 +522,7 @@ async function runOneCore(instr, ctx) {
     case 'evolveEffect': {
       if (!ctx.E || !ctx.E.canEvolveAny) break;
       const pl = state.players[who];
-      const evoOk = (stack, id) => (instr.ignoreCond && !S.s1HookAny(state, 's1evoIgnoreLocked', {})) || ctx.E.canEvolveAny(stack.cardId, id, S.evoExtraArg(state, who, stack), S.evolveTargetRestriction(state, who, stack)).ok;
+      const evoOk = (stack, id) => (instr.ignoreCond && !S.s1HookAny(state, 's1evoIgnoreLocked', {}) && ctx.E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, who, stack)).ok) || ctx.E.canEvolveAny(stack.cardId, id, S.evoExtraArg(state, who, stack), S.evolveTargetRestriction(state, who, stack)).ok;
       const cardsFor = (stack) => (instr.zone === 'trash' ? pl.trash : pl.hand).map((id, i) => i).filter(i => {
         const id = (instr.zone === 'trash' ? pl.trash : pl.hand)[i];
         return matchesFilter(S, id, instr.cardFilter) && evoOk(stack, id);

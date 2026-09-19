@@ -108,7 +108,7 @@ async function evolveGeneric(ctx, o) {
   const zone = o.zone || 'hand';
   const cands = o.subject === 'this' ? [me(ctx)].filter(Boolean) : pl.battle.filter(s => isDig(s) && (!o.subject || o.subject(s)));
   const okCards = (st) => pl[zone].map((id, i) => i).filter(i => C(pl[zone][i]).category === 'digimon' && (!o.cardPred || o.cardPred(pl[zone][i])) &&
-    (o.ignoreCond || ctx.E.canEvolveAny(st.cardId, pl[zone][i], st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok));
+    (o.ignoreCond ? ctx.E.evoRestrictionCheck(pl[zone][i], S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, pl[zone][i], st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok));
   const stacks = cands.filter(s => okCards(s).length);
   if (!stacks.length) { S.log(state, `${ctx.self} 진화시킬 수 있는 조합이 없음`); return null; }
   const st = stacks.length === 1 ? stacks[0] : await pickStack(ctx, ctx.self, stacks, o.prompt || '진화시킬 디지몬 선택');
