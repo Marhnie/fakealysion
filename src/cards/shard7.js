@@ -277,8 +277,13 @@ async function revealPick(ctx, n, groups, rest = 'bottom') {
   const { state, self } = ctx;
   const revealed = S.revealTop(state, self, n);
   const chosen = [];
-  for (const g of groups) {
-    const elig = revealed.map((id, i) => ({ id, i })).filter((x) => !chosen.includes(x.i) && g(x.id));
+  // a card fitting several criteria must not be spent on the wrong one: only offer cards that keep the remaining criteria as fillable as possible (verify-reveal-3)
+  const maxFill = (avail, preds) => { const owner = new Map(); const tryK = (k, seen) => { for (const ci of avail) { if (seen.has(ci) || !preds[k](revealed[ci])) continue; seen.add(ci); if (!owner.has(ci) || tryK(owner.get(ci), seen)) { owner.set(ci, k); return true; } } return false; }; let c = 0; for (let k = 0; k < preds.length; k++) if (tryK(k, new Set())) c++; return c; };
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    const avail0 = revealed.map((_, i) => i).filter((i) => !chosen.includes(i));
+    const best = maxFill(avail0, groups.slice(gi));
+    const elig = revealed.map((id, i) => ({ id, i })).filter((x) => !chosen.includes(x.i) && g(x.id) && 1 + maxFill(avail0.filter((j) => j !== x.i), groups.slice(gi + 1)) >= best);
     if (!elig.length) continue;
     const r = await ctx.choose('pickFromRevealed', { player: self, revealed, eligible: elig, min: 0, max: 1, prompt: '공개된 카드 중 패에 추가할 카드 선택' });
     for (const i of r || []) if (!chosen.includes(i)) chosen.push(i);
@@ -305,6 +310,7 @@ async function linkThisOption(ctx) {
 SCRIPTS['ST22-08::메인'] = [F(async (ctx) => {
   const { state, self } = ctx;
   await linkThisOption(ctx);
+  if (!digimonsOf(state, ctx.opp).length) return; // no opposing Digimon: skip the pointless DP-reference prompt
   const mine = await pickStack(ctx, self, digimonsOf(state, self), 'DP 기준이 될 자신의 디지몬 선택 (취소=소멸 안 함)');
   if (!mine) return;
   const dp = S.effectiveDP(state, self, mine);
@@ -1409,6 +1415,74 @@ SCRIPTS['EX11-034::등장 시'] = [F(async (ctx) => {
 // play a card of the holder's sources (inherited 【서로의 턴 종료 시】)
 SCRIPTS['BT24-086::서로의 턴 종료 시'] = [F(async (ctx) => { await playFromOwnSources(ctx, holderOf(ctx), (id) => nameIs(id, '서월령')); })];
 SCRIPTS['EX11-070::서로의 턴 종료 시'] = [F(async (ctx) => { await playFromOwnSources(ctx, holderOf(ctx), (id) => nameIs(id, '언체인')); })];
+// EX11-051 【등장 시】【진화 시】【소멸 시】 destroy one lowest-Lv opp digimon ("1장"), then may play a 고스트형 Lv.4-or-lower digimon card from trash free
+SCRIPTS['EX11-051::등장 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const t = await pickStack(ctx, ctx.opp, LOWLV(state, ctx.opp), '소멸시킬 (Lv.이 가장 낮은) 상대 디지몬 선택', { kind: 'delete', mandatory: true });
+  if (t) destroyIt(ctx, ctx.opp, t);
+  const i = await pickIdx(ctx, self, 'trash', (id) => isDig(id) && hasType(id, '고스트형') && lv(id) <= 4, '코스트 없이 등장시킬 고스트형 카드 선택 (취소=안 함)');
+  if (i != null) S.playFreeFromZone(state, self, 'trash', i);
+})];
+// EX11-012 【진화 시】【어택 종료 시】 destroy an opp digimon with DP <= this digimon's; then return 1 card of opp's trash to its deck bottom -> opp gets a 「석화」 token
+TOKENS['S7-TOKEN-SEOKHWA'] = { nameKo: '석화', colors: ['white'], dp: 3000, level: null, cost: 0, effectKo: '【자신의 턴】 이 디지몬은 레스트할 수 없다.\n【소멸 시】 자신의 시큐리티를 위에서부터 1장 파기한다.' };
+SCRIPTS['EX11-012::진화 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const h = holderOf(ctx);
+  if (h) {
+    const dp = S.effectiveDP(state, self, h);
+    const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp).filter((s) => S.effectiveDP(state, ctx.opp, s) <= dp), `DP ${dp} 이하의 소멸시킬 상대 디지몬 선택 (취소=안 함)`, { kind: 'delete' });
+    if (t) destroyIt(ctx, ctx.opp, t);
+  }
+  const opl = state.players[ctx.opp];
+  if (!opl.trash.length) return;
+  const k = await pickFromList(ctx, self, opl.trash.slice(), '덱 아래로 되돌릴 상대 트래시의 카드 선택 (취소=안 함 — 상대는 「석화」 토큰을 얻지 않음)');
+  if (k == null) return;
+  opl.deck.push(opl.trash.splice(k, 1)[0]);
+  spawnToken(ctx, ctx.opp, 'S7-TOKEN-SEOKHWA');
+})];
+// EX11-035 【서로의 턴】 / EX11-032 【진화 시】: play a green 조/새/병아리 digimon card from hand free; DP limit = base + per * (rested digimon on both sides)
+const restedDigimon = (state) => ['p1', 'p2'].reduce((n, p) => n + digimonsOf(state, p).filter((s) => s.suspended).length, 0);
+async function playGreenBird(ctx, base, per) {
+  const { state, self } = ctx;
+  const limit = base + per * restedDigimon(state);
+  const i = await pickIdx(ctx, self, 'hand', (id) => isDig(id) && typeIncl(id, '조', '새', '병아리') && (C(id).colors || []).includes('green') && (C(id).dp || 0) <= limit, `코스트 없이 등장시킬 DP ${limit} 이하 그린 카드 선택 (취소=안 함)`);
+  if (i != null) S.playFreeFromZone(state, self, 'hand', i);
+}
+SCRIPTS['EX11-035::서로의 턴'] = [F((ctx) => playGreenBird(ctx, 3000, 2000))];
+SCRIPTS['EX11-032::진화 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const entries = [...digimonsOf(state, self).map((s) => ({ player: self, uid: s.uid })), ...digimonsOf(state, ctx.opp).filter((s) => !S.effectBlocked(state, ctx.opp, s, 'rest')).map((s) => ({ player: ctx.opp, uid: s.uid }))];
+  if (entries.length) {
+    const pick = await ctx.choose('pickStackAnySide', { entries, prompt: '레스트할 디지몬 선택 (취소=안 함)' });
+    if (pick) { const st = findSt(state, pick.player, pick.uid); if (st) await restIt(ctx, pick.player, st); }
+  }
+  await playGreenBird(ctx, 3000, 1000);
+})];
+// EX11-022 【등장 시】【진화 시】 play a 퍼펫형 digimon card (DP <= 4000) from hand/trash free; destroy it at turn end
+SCRIPTS['EX11-022::등장 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const pl = state.players[self];
+  const cands = [];
+  pl.hand.forEach((id) => { if (isDig(id) && hasType(id, '퍼펫형') && (C(id).dp || 0) <= 4000) cands.push({ id, z: 'hand' }); });
+  pl.trash.forEach((id) => { if (isDig(id) && hasType(id, '퍼펫형') && (C(id).dp || 0) <= 4000) cands.push({ id, z: 'trash' }); });
+  if (!cands.length) return;
+  const k = await pickFromList(ctx, self, cands.map((c) => c.id), '코스트 없이 등장시킬 퍼펫형 카드 선택 (취소=안 함)');
+  if (k == null) return;
+  const c = cands[k];
+  const arr = c.z === 'hand' ? pl.hand : pl.trash;
+  const st = S.playFreeFromZone(state, self, c.z, arr.lastIndexOf(c.id));
+  if (!st) return;
+  const uid = st.uid;
+  S.scheduleEndOfTurn(state, () => { const s = findSt(state, self, uid); if (s) S.deleteStack(state, self, uid, 'trash', 'ownEffect'); }, { player: self, label: '이 턴 종료 시 소멸' });
+})];
+// EX11-017 【등장 시】【진화 시】【어택 시】[턴에 1회] play 「카즈키 스즈네」 or a Lv.4-or-lower 빙설형 digimon card from hand free
+SCRIPTS['EX11-017::등장 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const i = await pickIdx(ctx, self, 'hand', (id) => nameIs(id, '카즈키 스즈네') || (isDig(id) && hasType(id, '빙설형') && lv(id) <= 4), '코스트 없이 등장시킬 카드 선택 (취소=안 함)');
+  if (i != null) S.playFreeFromZone(state, self, 'hand', i);
+})];
+// EX11-041 (inherited) 【자신의 턴】 this digimon's attack target can't be changed
+H('EX11-041', { tag: '자신의 턴', src: 'inheritedKo', has: '변경되지', redirectImmune: (state, hp, holder, aStack) => aStack === holder });
 // EX11-016 (inherited) 【자신의 턴】 while no opp digimon has sources: this 빙설형 digimon gets 《관통》 and 《S 어택 +1》
 const NO_OPP_SRC = (state, hp, holder) => hasType(holder.cardId, '빙설형') && !digimonsOf(state, opp(hp)).some((s) => s.sources.length > 0);
 H('EX11-016', { tag: '자신의 턴', src: 'inheritedKo', has: '진화원을 가진 상대의 디지몬이 없는 동안', kw: (state, hp, holder, name) => name === '관통' && NO_OPP_SRC(state, hp, holder), kwNum: (state, hp, holder) => (NO_OPP_SRC(state, hp, holder) ? 1 : 0) });

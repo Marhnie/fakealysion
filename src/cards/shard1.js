@@ -226,8 +226,11 @@ async function revealPickEach(ctx, who, n, preds, prompt) {
   const rev = pl.deck.splice(0, n);
   S.log(state, `${who} 덱 위 ${rev.length}장 오픈: ${rev.map(id => C(id).nameKo).join(', ')}`);
   const taken = [];
-  for (const pred of preds) {
-    const elig = rev.map((id, i) => ({ id, i })).filter(x => !taken.includes(x.i) && pred(x.id));
+  const maxFill = (avail, ps) => { const owner = new Map(); const tryK = (k, seen) => { for (const ci of avail) { if (seen.has(ci) || !ps[k](rev[ci])) continue; seen.add(ci); if (!owner.has(ci) || tryK(owner.get(ci), seen)) { owner.set(ci, k); return true; } } return false; }; let c = 0; for (let k = 0; k < ps.length; k++) if (tryK(k, new Set())) c++; return c; };
+  for (let pi = 0; pi < preds.length; pi++) { // a card fitting both criteria must not be spent on the wrong one (verify-reveal-3)
+    const pred = preds[pi];
+    const av0 = rev.map((_, i) => i).filter(i => !taken.includes(i)), bestF = maxFill(av0, preds.slice(pi));
+    const elig = rev.map((id, i) => ({ id, i })).filter(x => !taken.includes(x.i) && pred(x.id) && 1 + maxFill(av0.filter(j => j !== x.i), preds.slice(pi + 1)) >= bestF);
     if (!elig.length) continue;
     const sel = await ctx.choose('pickFromRevealed', { player: who, revealed: rev, eligible: elig, min: 0, max: 1, prompt });
     const i = sel && sel[0];
@@ -287,7 +290,7 @@ function dpUntilNextOppTurn(ctx, p, uid, amount) {
   const { state } = ctx;
   S.modifyDP(state, p, uid, amount, 'turn');
   const st = findStack(state, p, uid);
-  if (st && st.dpExpiry !== 'permanent') st.dpExpiry = state.turnNumber + 1;
+  if (st && st.dpExpiry !== 'permanent') st.dpExpiry = S.durationEnd(state, 'nextOpponentTurn');
 }
 
 // ================================================================== SCRIPTS
@@ -304,7 +307,7 @@ function recover(ctx, who = ctx.self) {
   if (S.s1SecIncreaseBlocked(ctx.state, who)) { S.log(ctx.state, `${who} 시큐리티를 늘릴 수 없음 (효과 제한)`); return; }
   S.recoverTopOfDeckToSecurity(ctx.state, who);
 }
-const untilNextOppTurn = (state) => state.turnNumber + 1;
+const untilNextOppTurn = (state) => S.durationEnd(state, 'nextOpponentTurn');
 
 // ---- ST2-14 (시큐리티): 진화원 없는 상대 디지몬 1마리 — 다음 자신의 턴 종료 시까지 어택/블록 불가
 SCRIPTS['ST2-14::시큐리티'] = [fn(async (ctx) => {
@@ -1221,7 +1224,9 @@ D('EX2-007', '서로의 턴', '어택할 수 없으며', { noAttack: () => true,
 D('BT5-008', '자신의 턴', '다른 「가오스몬」', { dp: (state, hp, holder, target, tp) => (tp === hp && target !== holder && C(target.cardId).nameKo === '가오스몬' ? 3000 : 0) });
 D('BT7-084', '자신의 턴', '다른 자신의 「에오스몬」', { dp: (state, hp, holder, target, tp) => (tp === hp && target !== holder && C(target.cardId).nameKo === '에오스몬' ? 1000 : 0) });
 // BT8-084: 「이 디지몬이 4색 이상인 동안 DP+4000」 (colors = own colors + colors of the evolution sources, own turn)
-D('BT8-084', '자신의 턴', '4색 이상', { dp: (state, hp, holder, target) => (target === holder && new Set([...stackColors(holder), ...holder.sources.flatMap(id => C(id).colors || [])]).size >= 4 ? 4000 : 0) });
+D('BT8-084', '자신의 턴', '4색 이상', { dp: (state, hp, holder, target) => (target === holder && new Set(stackColors(holder)).size >= 4 ? 4000 : 0) });
+D('BT8-084', '자신의 턴', '색으로도 취급', { addColors: (state, hp, holder) => holder.sources.flatMap(id => C(id).colors || []) });
+D('BT3-014', '자신의 턴', '옐로로도 취급', { addColors: () => ['yellow'] });
 // BT7-085 (inherited): 「이 디지몬의 DP가 10000 이상인 동안 《S 어택 +1》」 (DP includes the +2000 above)
 DI('BT7-085', '자신의 턴', '10000 이상', { sAtk: (state, hp, holder, aStack) => (aStack === holder && S.effectiveDP(state, hp, holder) >= 10000 ? 1 : 0) });
 D('BT7-065', '자신의 턴', '진화원의 특징으로', { dp: (state, hp, holder, target) => (target === holder ? 1000 * holder.sources.filter(xAnti).length : 0) });

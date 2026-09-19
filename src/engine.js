@@ -378,6 +378,7 @@ function satisfiedEvoConditions(sourceCardId, targetCardId, extraColors = [], re
       if (cnt >= Number(um[2])) out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
       continue;
     }
+    { const gm = isNormalCond ? null : String(cond.raw || '').match(/^(.*?(?:동안|있다면)),\s*/); if (gm && restriction && restriction.evoGate && !restriction.evoGate(gm[1])) continue; } // state-dependent gate (EX10-023 「자신의 「최지석」이 있는 동안」 …)
     const pr = isNormalCond ? null : S.cardDescPredicate(String(cond.raw || '').replace(/^.*?(?:동안|있다면),\s*/, ''));
     if (pr) {
       const variants = [...new Set([...srcNames, ...srcInclNames])];
