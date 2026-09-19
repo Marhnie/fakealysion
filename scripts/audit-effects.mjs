@@ -24,7 +24,7 @@ const TURN_TAGS = new Set(['자신의 턴', '상대의 턴', '서로의 턴']);
 
 // Mirrors main.js's scriptFor().
 function scriptFor(trigger) {
-  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags);
+  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text);
   if (specific) return specific;
   if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
     const { segments } = S.parseEffectSegments(S.card(trigger.cardId).effectKo || '');
@@ -82,12 +82,12 @@ function auditText(cardId, source, text) {
     // button rather than the normal queueTriggersFor('use') pipeline (which
     // would incorrectly let it fire immediately on use instead of only
     // later, from the battle area, after the placement turn).
-    if (seg.tags.includes('메인') && /^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(seg.body.trim())) {
+    if (seg.tags.includes('메인') && /^[≪《]\s*딜레이\s*[≫》](?:\s*\([^()]*\))?(?:\s|$)/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }
     // Handled live via dpDestroyCapBoost, checked from the 'destroy' op.
-    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+\d+\.?$/.test(seg.body.trim())) {
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^(?:자신이?\s*발휘하는|이\s*디지몬의)\s*DP\s*소멸\s*효과의?\s*상한\s*\+\d+\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }
@@ -97,7 +97,7 @@ function auditText(cardId, source, text) {
       continue;
     }
     // Handled live via S.canAttackAnyActive, checked from legalDigimonTargets.
-    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다\.?$/.test(seg.body.trim())) {
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은?[,]?\s*액티브\s*상태(?:의|인)?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }
@@ -154,7 +154,7 @@ function auditText(cardId, source, text) {
     }
     // Handled live via fullEffectInheritTarget, checked from
     // stackContributors/queueTriggersForStack.
-    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*명칭에\s*「[^」]+」\s*(?:을|를)?\s*포함하는\s*카드의\s*효과\s*전부를\s*얻는다\.?$/.test(seg.body.trim())) {
+    if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*(?:명칭에\s*)?「[^」]+」\s*(?:을|를)?\s*(?:포함하는\s*카드)?의\s*효과\s*전부를\s*얻는다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
     }
@@ -181,6 +181,12 @@ function auditText(cardId, source, text) {
     if (seg.tags.length === 1 && TURN_TAGS.has(seg.tags[0]) && /^상대(?:의)?\s*테이머\s*전부는\s*(?:액티브\s*페이즈에서는\s*)?액티브가\s*되지\s*않는다\.?$/.test(seg.body.trim())) {
       turnConditionalHandled++;
       continue;
+    }
+    // Bespoke continuous/replacement hooks registered by a shard (state.js hookDescriptorFor). Event-driven hooks
+    // (descriptor.events) still need their SCRIPTS entry below, so only purely continuous ones are skipped here.
+    {
+      const hd = S.hookDescriptorFor(cardId, seg.tags, seg.body);
+      if (hd && (!hd.events || hd.selfContained)) { turnConditionalHandled++; continue; }
     }
     let script = [];
     try { script = scriptFor({ cardId, tags: seg.tags, text: seg.body }); } catch (e) { script = []; }

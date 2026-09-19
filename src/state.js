@@ -5,6 +5,8 @@
 // through the generic tools exposed here (draw, trash, reveal, security
 // add/remove, memory delta, de-evolve) and triggered from the UI.
 
+import { HOOKS as CARD_HOOKS } from './cards/index.js';
+
 export let CARDS = {};
 export let DECKS = {};
 
@@ -23,6 +25,22 @@ export async function loadData() {
       c.evoNormal = { ...c.evoNormal, level: c.level - 1, conditionText: `Lv.${c.level - 1}` };
     }
   }
+  // s6: the dgchub trait list omits the 「어플몬」 trait on Appmon Digimon (only their app-category attribute
+  // — 소셜/툴/내비/엔터테인먼트/시스템/게임/라이프 — survives in `attribute`); cards printing "특징 「어플몬」" need it.
+  const APPMON_ATTR = new Set(['소셜', '툴', '내비', '엔터테인먼트', '시스템', '게임', '라이프']);
+  for (const c of Object.values(CARDS)) {
+    if (c.category === 'digimon' && APPMON_ATTR.has(c.attribute) && !(c.types || []).includes('어플몬')) c.types = [...(c.types || []), '어플몬'];
+  }
+  // s6: "〈룰〉특징: 유형 「수생형」을 가진다." — a printed rule line that adds traits to the card itself.
+  for (const c of Object.values(CARDS)) {
+    const text = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
+    if (!text.includes('〈룰〉')) continue;
+    for (const line of text.split('\n')) {
+      if (!/^\s*〈룰〉\s*(?:특징|유형)\s*[:：]/.test(line) || !/가진다|갖는다|가진|갖는/.test(line)) continue;
+      for (const m of line.matchAll(/「([^」]+)」/g)) if (!(c.types || []).includes(m[1])) c.types = [...(c.types || []), m[1]];
+    }
+  }
+  S2.fixData(CARDS); // shard2: data repairs + pseudo cards (tokens)
 }
 
 export function card(id) {
@@ -65,6 +83,9 @@ export function parseEffectSegments(text) {
     }
     const atBoundary = boundaryIndex === 0 || text[boundaryIndex - 1] === '\n';
     if (!atBoundary) continue;
+    // A line-start 【...】 inside a still-open "(" (e.g. a token's own printed abilities spelled out in
+    // a parenthetical that wraps across lines) belongs to that sentence, not a new segment of this card.
+    { const before = text.slice(0, boundaryIndex); if ((before.match(/[(（]/g) || []).length > (before.match(/[)）]/g) || []).length) continue; }
     const fullMatch = m[0];
     const tags = [...fullMatch.matchAll(/【([^】]+)】/g)].map(x => x[1]);
     groups.push({ index: boundaryIndex, endOfHeader: m.index + fullMatch.length, tags, zoneMarker });
@@ -120,7 +141,7 @@ function emptyPlayer(deckKeyOrDef) {
 }
 
 export function newGame(deckKeyP1, deckKeyP2) {
-  return {
+  return s7Bound({
     turnNumber: 1,
     activePlayer: 'p1', // set properly after coin flip by caller
     firstPlayer: 'p1',
@@ -132,10 +153,22 @@ export function newGame(deckKeyP1, deckKeyP2) {
     log: [],
     pending: [], // pending effect triggers awaiting manual/auto resolution
     pendingVanishFlash: [], // names of stacks deleteStack() just sent to trash, for a one-shot UI toast
-  };
+  });
 }
 
 let pendingUid = 1;
+
+// Shard-3 extension points: cards' bespoke code (src/cards/*.js) registers watchers here instead of
+// growing more regex families in this file. EVENT_HOOKS run at the top of emitGameEvent for EVERY
+// game event (play/digivolve/delete/rest/attack/discard plus the extra kinds 'attackEnd',
+// 'attackTargetChanged', 'securityDecrease', 'securityIncrease', 'sourcePlaced').
+export const EVENT_HOOKS = [];
+// Queue an already-built pending effect item (uid is assigned here).
+export function queuePending(state, item) {
+  const it = { resolved: false, ...item, uid: 'p' + (pendingUid++) };
+  state.pending.push(it);
+  return it;
+}
 
 // Korean trigger-tag substrings (as printed in 【...】 brackets) that are
 // relevant to a given game event. A segment is queued if ANY of its tags
@@ -176,7 +209,7 @@ function tryAutoApplySegment(state, p, text, sourceCardId) {
   // 16-17 ≪딜레이≫: this segment isn't an immediate effect of using the card —
   // it's only usable later via discardForDelay (see compileToScript's matching
   // guard). Absorb it silently so it doesn't queue as an unresolvable pending item.
-  if (/^딜레이\s*\([^()]*\)/.test(t)) return true;
+  if (/^딜레이(?:\s*\([^()]*\))?(?:\s|$)/.test(t)) return true;
   if ((m = t.match(/^(\d+)\s*드로우(?:한다)?[.。]?$/))) { drawCards(state, p, Number(m[1])); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*\+\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, Number(m[1]), sourceCardId); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*-\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, -Number(m[1])); return true; }
@@ -266,6 +299,7 @@ export function cardDescPredicate(desc) { return evoTargetPredicate(desc); }
 
 // info: { owner, stack, cause }. `stack` may already be off the board (delete).
 export function emitGameEvent(state, kind, info) {
+  for (const hook of EVENT_HOOKS) hook(state, kind, info);
   const subjCard = info.stack ? card(info.stack.cardId) : null;
   for (const hp of ['p1', 'p2']) {
     const hpl = state.players[hp];
@@ -312,6 +346,7 @@ export function emitGameEvent(state, kind, info) {
       }
     }
   }
+  dispatchHookEvents(state, kind, info);
 }
 
 // Top card currently on stack `uid` (any player's area) — snapshotted on queued triggers so that
@@ -328,16 +363,19 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   const wantTags = TRIGGER_TAGS[eventKind] || [];
   const { segments } = parseEffectSegments(c.effectKo);
   for (const seg of segments) {
-    const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
+    // s8: "[시큐리티]【서로의 턴】 …" — the zone marker (not a tag) says it is the card's 【시큐리티】 effect
+    const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w))) || (eventKind === 'security' && seg.zoneMarker === '시큐리티');
     if (!hit) continue;
     if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
+    { const mk = (seg.zoneMarker || '').includes('육성'), inR = !!(stackUid && state.players[p]?.raising?.uid === stackUid); if (stackUid && ((mk && !inR) || (inR && !mk && eventKind === 'digivolve'))) continue; } // s6: [육성] segments only work in the raising area
+    if (hookDescriptorFor(cardId, seg.tags, seg.body)?.skipTrigger) continue; // queued by its own event hook instead (s3)
     const body = resolveBattleCondition(state, seg.body);
     if (body == null) continue;
     const applied = tryAutoApplySegment(state, p, body, cardId);
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid) });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, evt: { kind: eventKind } });
     }
   }
 }
@@ -354,7 +392,7 @@ function resolveBattleCondition(state, body) {
 }
 
 function isDelaySegment(body) {
-  return /^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(body.trim());
+  return /^[≪《]\s*딜레이\s*[≫》](?:\s*\([^()]*\))?(?:\s|$)/.test(body.trim());
 }
 
 // A Digimon gets the inherited (진화원) effects of EVERY card in its
@@ -376,7 +414,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
     if (applied) {
       log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid) });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, evt: { kind: eventKind } });
     }
   }
 }
@@ -387,7 +425,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
 // normal 4-3-3 inherited (진화원) text. Confirmed 14 occurrences, always
 // printed identically in both effectKo and inheritedKo of the same card.
 function fullEffectInheritTarget(effectKo) {
-  const m = (effectKo || '').match(/이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*명칭에\s*「([^」]+)」\s*(?:을|를)?\s*포함하는\s*카드의\s*효과\s*전부를\s*얻는다/);
+  const m = (effectKo || '').match(/이\s*디지몬은\s*이\s*디지몬의\s*진화원에\s*있는\s*(?:명칭에\s*)?「([^」]+)」\s*(?:을|를)?\s*(?:포함하는\s*카드)?의\s*효과\s*전부를\s*얻는다/);
   return m ? m[1] : null;
 }
 
@@ -396,13 +434,19 @@ function fullEffectInheritTarget(effectKo) {
 // evolution source's inherited effect text.
 export function queueTriggersForStack(state, p, stack, eventKind) {
   if (!stack) return;
+  if (eventKind === 'digivolve' && stack.noEvoTrigUntil != null && state.turnNumber <= stack.noEvoTrigUntil) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s8
+  if (eventKind === 'digivolve' && hookSuppressTrigger(state, p, stack, '진화 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s5
+  if (eventKind === 'play' && hookSuppressTrigger(state, p, stack, '등장 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【등장 시】 효과는 발휘하지 않음 (효과)`); return; }
+  if (eventKind === 'attack' && hookSuppressTrigger(state, p, stack, '어택 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【어택 시】 효과는 발휘하지 않음 (효과)`); return; } // shard2
+  S2.queueGranted(state, p, stack, eventKind);
   queueTriggersFor(state, p, stack.cardId, eventKind, stack.uid);
-  for (const sourceCardId of stack.sources) {
+  for (const sourceCardId of stack.sources.slice(fdCount(stack))) {
     queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
+    if (S2.fullInherit(stack, sourceCardId)) queueTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
   }
   const nameIncludes = fullEffectInheritTarget(card(stack.cardId).effectKo);
   if (nameIncludes) {
-    for (const sourceCardId of stack.sources) {
+    for (const sourceCardId of stack.sources.slice(fdCount(stack))) {
       if (card(sourceCardId).nameKo.includes(nameIncludes)) {
         queueTriggersFor(state, p, sourceCardId, eventKind, stack.uid);
       }
@@ -454,6 +498,8 @@ export function findCounterOptions(state, p) {
 // findRedirectOptions: makes an ATTACKING stack immune to target-redirect
 // effects. Same continuous 자신/상대/서로의 턴 family.
 function isAttackTargetImmune(state, p, stack) {
+  if (hookRedirectImmune(state, p, stack)) return true;
+  if (stack.noRedirectUntil != null && state.turnNumber <= stack.noRedirectUntil) return true; // s8: "어택의 대상은 변경되지 않는다" (effect-applied)
   for (const { id, own } of stackContributors(stack)) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
@@ -547,6 +593,7 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
       }
     }
   }
+  if (attackerP != null) options.push(...s1HookCollect(state, 's1redirect', { p, attackerP, attackerUid })); // shard1
   return options;
 }
 
@@ -559,7 +606,8 @@ export function absorbEvolveOption(state, p, evolvingStack, targetCardId) {
   if (!m) return null;
   const candidates = state.players[p].battle
     .filter(s => s !== evolvingStack && !s.suspended && card(s.cardId).category === 'digimon').map(s => s.uid);
-  return candidates.length ? { delta: Number(m[1]), candidates } : null;
+  const oppCandidates = s1HookAny(state, 's1absorbOpp', { p }) ? state.players[opponentOf(p)].battle.filter(s => !s.suspended && card(s.cardId).category === 'digimon').map(s => s.uid) : []; // shard1 BT3-056
+  return (candidates.length || oppCandidates.length) ? { delta: Number(m[1]), candidates, oppCandidates } : null;
 }
 
 // ≪트레이닝≫: "메인 중, 이 디지몬을 레스트시키는 것으로, 자신의 덱 위에서부터 1장을
@@ -575,6 +623,7 @@ export function useTraining(state, p, uid) {
   stack.sources.unshift(id);
   recomputeStackGrants(stack);
   log(state, `${p} ${card(stack.cardId).nameKo} 《트레이닝》 — 덱 위 1장을 진화원 아래에 놓음`);
+  emitGameEvent(state, 'faceDownSource', { owner: p, stack, cause: null }); // s8: "진화원에 뒷면인 카드가 놓였을 때"
   return true;
 }
 
@@ -590,13 +639,20 @@ export function activatableMainAbilities(state, p, stack, zoneKind) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
     for (const seg of parseEffectSegments(text).segments) {
-      if (!seg.tags.includes('메인') || seg.tags.length !== 1 || isDelaySegment(seg.body)) continue;
+      { const hdA = hookDescriptorFor(id, seg.tags, seg.body); if (hdA && hdA.activate) { // s7: descriptor.activate -> a printed non-【메인】 ability usable as a main-phase action
+        const lmA = seg.body.trim().match(/^[[〔]턴s*에?s*(d+)s*회[]〕]/);
+        if (!(lmA && turnUsesRemaining(stack, onceLimitKey(id, seg.tags), Number(lmA[1])) <= 0)) out.push({ cardId: id, tags: seg.tags, text: seg.body.trim() });
+        continue; } }
+      if (!seg.tags.includes('메인') || seg.tags.some(t => !['메인', '등장 시', '진화 시'].includes(t)) || isDelaySegment(seg.body) || (() => { const hd = hookDescriptorFor(id, seg.tags, seg.body); return !!hd && !hd.events; })()) continue;
+      if (seg.zoneMarker && (seg.zoneMarker.includes('패') || seg.zoneMarker.includes('트래시'))) continue; // hand/trash abilities: see zoneMainAbilities
       if (seg.zoneMarker && !((seg.zoneMarker.includes('육성') && zoneKind === 'raising') || (seg.zoneMarker.includes('배틀') && zoneKind === 'battle'))) continue;
       const lm = seg.body.trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
       if (lm && turnUsesRemaining(stack, onceLimitKey(id, seg.tags), Number(lm[1])) <= 0) continue;
       out.push({ cardId: id, tags: seg.tags, text: seg.body.trim() });
     }
   }
+  // s6: descriptor.extraMain(state, hp, holder) -> [{cardId, tags, text}]: 【메인】 effects the holder gains from elsewhere (e.g. its evolution sources).
+  for (const { hp, holder, d } of activeHooks(state)) if (d.extraMain && hp === p && holder === stack) out.push(...(d.extraMain(state, hp, holder) || []));
   return out;
 }
 
@@ -617,6 +673,7 @@ export function useChain(state, p, attackerUid, otherUid) {
   if (!a || !o || o.suspended || !hasKeyword(a, '연계')) return false;
   const dp = effectiveDP(state, p, o);
   restStack(state, p, otherUid);
+  emitGameEvent(state, 'chainRest', { owner: p, stack: o, cause: 'effect' }); // shard2
   modifyDP(state, p, attackerUid, dp, 'turn');
   grantKeyword(state, p, attackerUid, '시큐리티어택', 1, 'turn');
   log(state, `${p} ${card(a.cardId).nameKo} 《연계》 — ${card(o.cardId).nameKo} 레스트, DP+${dp}, S 어택 +1`);
@@ -633,7 +690,7 @@ export function chargeRedirectTarget(state, attackerP, attackerUid) {
   if (!aStack || !hasKeyword(aStack, '돌진') || isAttackTargetImmune(state, attackerP, aStack)) return null;
   const opp = opponentOf(attackerP);
   const cands = state.players[opp].battle
-    .filter(s => !s.suspended && card(s.cardId).category === 'digimon' && !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED));
+    .filter(s => !s.suspended && card(s.cardId).category === 'digimon' && !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED) && !s3Flag(state, s, 'unattackable'));
   if (!cands.length) return null;
   let best = cands[0], bestDp = effectiveDP(state, opp, best);
   for (const c of cands.slice(1)) { const d = effectiveDP(state, opp, c); if (d > bestDp) { best = c; bestDp = d; } }
@@ -651,6 +708,7 @@ export function resolvePending(state, uid) {
   const t = state.pending.find(x => x.uid === uid);
   if (t) t.resolved = true;
   state.pending = state.pending.filter(x => !x.resolved);
+  purgeTokens(state);
 }
 
 export function log(state, msg) {
@@ -697,7 +755,7 @@ export function drawCards(state, p, n, isDrawPhase = false) {
 export function trashFromHand(state, p, handIndex) {
   const pl = state.players[p];
   const [id] = pl.hand.splice(handIndex, 1);
-  if (id) { pl.trash.push(id); log(state, `${p} 핸드 파기: ${card(id).nameKo}`); emitGameEvent(state, 'discard', { owner: p, stack: null, cause: 'effect' }); }
+  if (id) { pl.trash.push(id); log(state, `${p} 핸드 파기: ${card(id).nameKo}`); emitGameEvent(state, 'discard', { owner: p, stack: null, cause: 'effect', cardId: id }); }
   return id;
 }
 
@@ -738,20 +796,21 @@ export function addToSecurity(state, p, cardId, position = 'top') {
   const pl = state.players[p];
   if (position === 'top') pl.security.unshift(cardId); else pl.security.push(cardId);
   log(state, `${p} 시큐리티 ${position === 'top' ? '맨 위' : '맨 밑'}에 추가: ${card(cardId).nameKo}`);
+  emitGameEvent(state, 'securityIncrease', { owner: p, stack: null, cause: 'effect' });
 }
 
 // Remove top security card by a non-attack EFFECT (not a check). Returns removed id.
 export function trashTopSecurityByEffect(state, p) {
   const pl = state.players[p];
   const id = pl.security.shift();
-  if (id) { log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`); pl.trash.push(id); }
+  if (id) { log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect' }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
   return id;
 }
 
 export function trashBottomSecurityByEffect(state, p) {
   const pl = state.players[p];
   const id = pl.security.pop();
-  if (id) { log(state, `${p} 시큐리티 맨 밑 카드가 효과로 파기: ${card(id).nameKo}`); pl.trash.push(id); }
+  if (id) { log(state, `${p} 시큐리티 맨 밑 카드가 효과로 파기: ${card(id).nameKo}`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect' }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
   return id;
 }
 
@@ -818,8 +877,9 @@ export function grantMemory(state, p, amount, sourceCardId) {
 // endTurn unless there is a pending triggered effect still resolving).
 export function isTurnAutoEnding(state) {
   const active = state.activePlayer;
-  if (active === 'p1') return state.memory < 0;
-  return state.memory > 0;
+  const th = hookTurnEndThreshold(state, active); // e.g. "턴 종료 조건이, 메모리가 상대 쪽의 3 이상이 된다"
+  if (active === 'p1') return state.memory <= -th;
+  return state.memory >= th;
 }
 
 // ---- evolution stacks ----
@@ -854,17 +914,17 @@ export function grantColor(state, p, uid, color) {
 }
 
 // Bare 《키워드》 lines the engine has a real consumer for (static grants).
-const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌', '트레이닝'];
+const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌', '트레이닝', '볼텍스', '에그제큐트', '천승'];
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
 export function securityAttackBonus(stack) {
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
   const inherited = stack.inheritedKeywords?.['시큐리티어택'] ? Number(stack.inheritedKeywords['시큐리티어택']) || 0 : 0;
-  return own + inherited;
+  return own + inherited + s7ContSAttack(stack);
 }
 
 export function hasKeyword(stack, name) {
-  return !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]);
+  return !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]) || s7ContKw(stack, name);
 }
 
 // "특징으로 「X」를 가진 이 디지몬은 《KEYWORD》를 얻는다." / the bare
@@ -998,6 +1058,16 @@ function parseStaticGrants(text) {
 // recomputeStackGrants (cached, unconditional grants) and
 // turnConditionalDP (live, re-evaluated every call since it depends on
 // whose turn it currently is).
+// s6: synthetic card "<id>~<tag>" whose effect text is only the source's single-tag 【tag】 segments (so continuous scanners see just those).
+function gainedEffectsId(id, tag) {
+  const sid = `${id}~${tag}`;
+  if (CARDS[sid]) return CARDS[sid].effectKo ? sid : null;
+  const segs = parseEffectSegments(card(id).effectKo).segments.filter(sg => sg.tags.length === 1 && sg.tags[0] === tag);
+  const c = card(id);
+  CARDS[sid] = { ...c, id: sid, effectKo: segs.map(sg => `【${tag}】 ${sg.body}`).join('\n'), inheritedKo: '' };
+  CARD_HOOKS[sid] = (CARD_HOOKS[id] || []).filter(d => d.tag === tag && (d.src || 'effectKo') === 'effectKo');
+  return CARDS[sid].effectKo ? sid : null;
+}
 function stackContributors(stack) {
   // "이 디지몬은 ... 명칭에 「X」을 포함하는 카드의 효과 전부를 얻는다." — a
   // matching-name source contributes its OWN effectKo (own:true) instead of
@@ -1006,9 +1076,17 @@ function stackContributors(stack) {
   // not just the one-shot trigger pipeline queueTriggersForStack handles
   // separately.
   const fullInheritName = fullEffectInheritTarget(card(stack.cardId).effectKo);
+  // s6: descriptor.gainFrom(sourceCardId) [+ gainTag]: this top card also gains the printed 【gainTag】 effects of matching sources (EX10-059).
+  const gained = [];
+  for (const d of CARD_HOOKS[stack.cardId] || []) {
+    if (!d.gainFrom || (d.src || 'effectKo') !== 'effectKo') continue;
+    for (const id of stack.sources.slice(fdCount(stack))) if (d.gainFrom(id)) { const sid = gainedEffectsId(id, d.gainTag || '서로의 턴'); if (sid) gained.push({ id: sid, own: true }); }
+  }
   return [
     { id: stack.cardId, own: true },
-    ...stack.sources.map(id => ({ id, own: fullInheritName != null && card(id).nameKo.includes(fullInheritName) })),
+    ...gained,
+    // shard5: face-down (뒷면) sources sit at the bottom (index 0..fdCount-1) and lend no effects.
+    ...stack.sources.slice(fdCount(stack)).map(id => ({ id, own: (fullInheritName != null && card(id).nameKo.includes(fullInheritName)) || S2.fullInherit(stack, id) })),
     ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
   ];
 }
@@ -1072,7 +1150,20 @@ const KOR_COLOR_NAME = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로
 // family as parseTurnConditionalDP, restricting what this stack is allowed
 // to evolve into rather than its DP. Returns the first active restriction
 // found ({colors:[...]} or {nameExact}/{nameIncludes}), or null.
+// s8: wraps the printed-text restriction with (1) an effect-applied "진화할 수 없다" timer and (2) hook-provided
+// ALTERNATIVE evolution rules ("진화 조건을 무시하고 진화 코스트 N으로 …로 진화할 수 있다"): restriction.alt = [{cost, test(tgtCard, srcCard)}].
 export function evolveTargetRestriction(state, p, stack) {
+  for (const lk of state.evolveLocks || []) if (lk.player === p && state.turnNumber <= lk.until && (card(stack.cardId).level || 0) <= lk.levelMax && card(stack.cardId).category === 'digimon') return { cannotEvolve: true };
+  if (stack.cannotEvolveUntil != null && state.turnNumber <= stack.cannotEvolveUntil) return { cannotEvolve: true };
+  if (S2.evolveBan(state, p, stack)) return { cannotEvolve: true }; // shard2
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noEvolve && hp === p && holder === stack && d.noEvolve(state, hp, holder)) return { cannotEvolve: true }; // s5
+  const base = evolveTargetRestrictionBase(state, p, stack);
+  if (base && base.cannotEvolve) return base;
+  const alt = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (hp === p && d.evoAlt) { const a = d.evoAlt(state, hp, holder, stack); if (a) alt.push(a); }
+  return alt.length ? { ...(base || {}), alt } : base;
+}
+function evolveTargetRestrictionBase(state, p, stack) {
   for (const { id, own } of stackContributors(stack)) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
@@ -1095,7 +1186,9 @@ export function evolveTargetRestriction(state, p, stack) {
 }
 
 export function effectiveDP(state, p, stack) {
-  return (card(stack.cardId).dp || 0) + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack);
+  const ov = stack.dpBaseOverride; // "원래 DP를 N으로 변경" (until: last turn number it applies)
+  const base = ov && state.turnNumber <= ov.until ? ov.value : (card(stack.cardId).dp || 0);
+  return s7DpFloor(state, p, stack, base + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack) + hookDP(state, p, stack) + s7DpSum(state, stack));
 }
 
 // "이 디지몬은 액티브 상태의 상대 디지몬에게도 어택할 수 있다." (no "no
@@ -1103,6 +1196,7 @@ export function effectiveDP(state, p, stack) {
 // keyword) — same continuous-condition family, usually printed under
 // 【자신의 턴】 rather than as a one-shot trigger.
 export function canAttackAnyActive(state, p, stack) {
+  if (hookAttackAnyActive(state, p, stack)) return true;
   for (const { id, own } of stackContributors(stack)) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
@@ -1111,7 +1205,8 @@ export function canAttackAnyActive(state, p, stack) {
       if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
       const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
       if (!active) continue;
-      if (/이\s*디지몬은?[,]?\s*액티브\s*상태의?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다/.test(seg.body) && !/진화원을?\s*갖지\s*않는/.test(seg.body)) {
+      if (hookDescriptorFor(id, seg.tags, seg.body)) continue; // conditional variants are evaluated by their bespoke descriptor (hookAttackAnyActive)
+      if (/이\s*디지몬은?[,]?\s*액티브\s*상태(?:의|인)?\s*상대(?:의)?\s*디지몬에게도\s*어택할\s*수\s*있다/.test(seg.body) && !/진화원을?\s*갖지\s*않는/.test(seg.body)) {
         return true;
       }
     }
@@ -1179,6 +1274,14 @@ function queueLinkTriggers(state, p, stack, linkCardId) {
     if (applied) log(state, `(자동 처리, 링크: ${lc.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
     else state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: linkCardId, stackUid: stack.uid, tags: seg.tags, text: seg.body, resolved: false, linked: true });
   }
+  // s8: the link card's OWN inherited 【링크 시】 (printed in inheritedKo on most link-capable Digimon) fires when it becomes the link card.
+  if (lc.inheritedKo) for (const seg of parseEffectSegments(lc.inheritedKo).segments) {
+    if (!seg.tags.some(tag => tag.includes('링크 시') || tag.includes('링크했을 때'))) continue;
+    if (seg.tags.length === 1 && ['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+    const applied = tryAutoApplySegment(state, p, seg.body);
+    if (applied) log(state, `(자동 처리, 링크 진화원효과: ${lc.nameKo}) 【${seg.tags.join('】【')}】: ${seg.body}`);
+    else state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: linkCardId, stackUid: stack.uid, tags: seg.tags, text: seg.body, resolved: false, linked: true, inherited: true });
+  }
   // The host's own printed "이 디지몬이 링크했을 때" reaction (see BT21-009/018/023)
   queueTriggersFor(state, p, stack.cardId, 'linked', stack.uid);
   for (const srcId of stack.sources) queueInheritedTriggersFor(state, p, srcId, 'linked', stack.uid);
@@ -1211,6 +1314,7 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   ruleCheckDP(state, p, stack);
   log(state, `${p} ${card(stack.cardId).nameKo}에 ${card(linkCardId).nameKo} 링크 (코스트 ${cost})`);
   queueLinkTriggers(state, p, stack, linkCardId);
+  dispatchHookEvents(state, 'linked', { owner: p, stack, linkCardId }); // s8: "이/자신의 디지몬이 링크되었을 때" watchers
   return stack;
 }
 
@@ -1236,7 +1340,7 @@ export function grantKeyword(state, p, uid, keyword, value, duration = 'turn') {
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
   const expiresAfterTurn = duration === 'permanent' ? 'permanent'
-    : duration === 'opponentTurn' ? state.turnNumber + 2
+    : duration === 'opponentTurn' ? state.turnNumber + 1
     : state.turnNumber; // 'turn' — clears at end of this same turn
   // 16-4-2/16-4-3: separate Security Attack grants on the same Digimon are
   // additive (two +1 grants check +2) — unlike most keywords, where
@@ -1258,12 +1362,14 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (amount < 0 && s1Flag(state, stack, 'noNegDP')) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP가 마이너스되지 않음`); return; } // shard1
+  if (amount < 0 && effectBlocked(state, p, stack, 'dpDown')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과로 DP가 감소하지 않음`); return; }
   if (amount < 0 && hasKeyword(stack, 'DP감소무효')) {
     log(state, `${p} ${card(stack.cardId).nameKo}는 DP 감소 무효 — ${amount} 무시됨`);
     return;
   }
   stack.tempDP = (stack.tempDP || 0) + amount;
-  stack.dpExpiry = duration === 'permanent' ? 'permanent' : (duration === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber);
+  stack.dpExpiry = duration === 'permanent' ? 'permanent' : (duration === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber);
   log(state, `${p} ${card(stack.cardId).nameKo} DP ${amount >= 0 ? '+' : ''}${amount} (${duration})`);
   ruleCheckDP(state, p, stack);
 }
@@ -1285,14 +1391,20 @@ export function unsuspendStack(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (hookNoUnsuspend(state, p, stack)) return;
+  if (stack.cannotUnsuspendUntil != null && state.turnNumber <= stack.cannotUnsuspendUntil) { log(state, `${p} ${card(stack.cardId).nameKo}는 액티브되지 않는 상태`); return; } // s8: 액티브 봉인
+  const wasRested = stack.suspended;
   stack.suspended = false;
   log(state, `${p} ${card(stack.cardId).nameKo} 액티브`);
+  if (wasRested) emitGameEvent(state, 'active', { owner: p, stack, cause: 'effect' });
 }
 
-export function restStack(state, p, uid) {
+export function restStack(state, p, uid, cause = 'effect') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (effectBlocked(state, p, stack, 'rest')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 레스트되지 않음`); return; }
+  if (hookCannotRest(state, p, stack) || hookNoRest(state, p, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 효과로 레스트할 수 없음`); return; }
   if (stack.cannotBeRestedUntil === 'permanent' || (typeof stack.cannotBeRestedUntil === 'number' && state.turnNumber <= stack.cannotBeRestedUntil)) {
     log(state, `${p} ${card(stack.cardId).nameKo}는 레스트 불가 상태라 레스트되지 않음`);
     return;
@@ -1300,7 +1412,7 @@ export function restStack(state, p, uid) {
   const wasActive = !stack.suspended;
   stack.suspended = true;
   log(state, `${p} ${card(stack.cardId).nameKo} 레스트`);
-  if (wasActive) emitGameEvent(state, 'rest', { owner: p, stack, cause: 'effect' });
+  if (wasActive) emitGameEvent(state, 'rest', { owner: p, stack, cause });
 }
 
 // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — a ONE-TIME skip of
@@ -1311,6 +1423,7 @@ export function setSkipNextUnsuspend(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (effectBlocked(state, p, stack, 'other')) return;
   stack.skipNextUnsuspend = true;
   log(state, `${p} ${card(stack.cardId).nameKo} 다음 액티브 페이즈에 액티브 되지 않음`);
 }
@@ -1322,6 +1435,8 @@ export function setSkipNextUnsuspend(state, p, uid) {
 // "read tags from the ability's own controller" pattern as isEvoCostLocked/
 // isMemoryGainLocked).
 export function isPreventedFromUnsuspending(state, p, stack) {
+  if (hookNoUnsuspend(state, p, stack)) return true;
+  if (s1UnsuspendGate(state, p, stack)) return true; // shard1
   if (card(stack.cardId).category !== 'tamer') return false;
   const abilityOwner = opponentOf(p);
   const pl = state.players[abilityOwner];
@@ -1346,6 +1461,7 @@ export function preventRest(state, p, uid, expiresAfterTurn = 'permanent') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (effectBlocked(state, p, stack, 'other')) return;
   stack.cannotBeRestedUntil = expiresAfterTurn;
   log(state, `${p} ${card(stack.cardId).nameKo} 레스트 불가 상태 부여`);
 }
@@ -1354,6 +1470,7 @@ export function preventRest(state, p, uid, expiresAfterTurn = 'permanent') {
 // keyword mechanic.
 export function recoverTopOfDeckToSecurity(state, p) {
   const pl = state.players[p];
+  if (s1SecIncreaseBlocked(state, p)) { log(state, `${p} 시큐리티를 늘릴 수 없음 (효과 제한)`); return null; } // shard1
   const id = pl.deck.shift();
   if (id) { pl.security.unshift(id); log(state, `${p} 리커버리: 덱 위 카드 시큐리티로 (${card(id).nameKo})`); }
   return id;
@@ -1413,7 +1530,7 @@ function isEvoCostLocked(state, p) {
 // ST13-08/EX7-015, all 서로의 턴) — symmetric play-cost-discount lock, unlike
 // isEvoCostLocked's opponent-only form. Scans BOTH players' boards since
 // either side's copy of this ability locks everyone equally.
-function isPlayCostLocked(state) {
+export function isPlayCostLocked(state) {
   for (const owner of ['p1', 'p2']) {
     const pl = state.players[owner];
     for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
@@ -1639,7 +1756,7 @@ export function traitPlayCostDiscount(state, p, targetCardId) {
 // (the shared gauge is positive = p1's side, so p2 reads it negated).
 export function dpDestroyCapBoost(state, p, stackUid) {
   const pl = state.players[p];
-  let total = 0;
+  let total = s1HookSum(state, 's1dpCap', { p }); // shard1
   for (const stack of [pl.raising, ...pl.battle].filter(Boolean)) {
     for (const { id, own } of stackContributors(stack)) {
       const text = own ? card(id).effectKo : card(id).inheritedKo;
@@ -1652,6 +1769,8 @@ export function dpDestroyCapBoost(state, p, stackUid) {
         let m = seg.body.trim().match(/^자신이?\s*발휘하는\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
         if (m) { total += Number(m[1]); continue; }
         if (stack.uid !== stackUid) continue;
+        m = seg.body.trim().match(/^이\s*디지몬의\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
+        if (m) { total += Number(m[1]); continue; }
         m = seg.body.trim().match(/^메모리가\s*(-?\d+)\s*이하인\s*동안,?\s*이\s*디지몬의\s*DP\s*소멸\s*효과의?\s*상한\s*\+(\d+)\.?$/);
         if (m) {
           const effMemory = p === 'p1' ? state.memory : -state.memory;
@@ -1706,13 +1825,29 @@ export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx =
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return [];
+  if (effectBlocked(state, p, stack, 'other') || effectBlocked(state, p, stack, 'srcTrash')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 진화원이 파기되지 않음`); return []; }
+  { const alt = pickIdx == null ? S2.sourceTrashRedirect(state, p, stack) : null; if (alt) return trashEvoSources(state, p, alt.uid, count, from, null); } // shard2 (BT10-084)
+  if (state._fxSrc) { // shard1 (BT9-109): protected sources can't be trashed by effects
+    const prot = stack.sources.map((id, i) => (s1ProtectedSource(state, p, stack, id) ? i : -1)).filter(i => i >= 0);
+    if (prot.length) {
+      const free = stack.sources.map((id, i) => i).filter(i => !prot.includes(i));
+      const nn = count === 'all' ? free.length : Math.min(count, free.length);
+      pickIdx = pickIdx ? pickIdx.filter(i => !prot.includes(i)) : (from === 'top' ? free.slice(free.length - nn) : free.slice(0, nn));
+      count = pickIdx.length;
+    }
+  }
   const n = count === 'all' ? stack.sources.length : Math.min(count, stack.sources.length);
   // sources[] is oldest-first: "from the bottom" = earliest pushed, "from the top" = latest.
   let removed;
-  if (pickIdx) { removed = []; for (const i of [...pickIdx].sort((a, b) => b - a)) removed.unshift(...stack.sources.splice(i, 1)); }
-  else removed = from === 'top' ? stack.sources.splice(stack.sources.length - n, n) : stack.sources.splice(0, n);
+  const fd0 = fdCount(stack); // shard5: keep the face-down bottom block count in sync
+  let fdGone = 0;
+  if (pickIdx) { removed = []; for (const i of [...pickIdx].sort((a, b) => b - a)) { if (i < fd0) fdGone++; removed.unshift(...stack.sources.splice(i, 1)); } }
+  else if (from === 'top') { removed = stack.sources.splice(stack.sources.length - n, n); fdGone = Math.max(0, fd0 - stack.sources.length); }
+  else { removed = stack.sources.splice(0, n); fdGone = Math.min(fd0, n); }
+  if (fd0) stack.s5fd = Math.max(0, fd0 - fdGone);
   pl.trash.push(...removed);
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
+  if (removed.length) emitGameEvent(state, 'sourcesTrashed', { owner: p, stack, cause: state._fxSrc ? 'effect' : null, from, ids: removed, srcPlayer: state._fxSrc?.player });
   for (const id of removed) applyOverflowIfAny(state, p, id);
   recomputeStackGrants(stack);
   ruleCheckDP(state, p, stack);
@@ -1784,7 +1919,9 @@ export function planDigiXros(state, p, handIndex) {
   const xr = cardId ? parseDigiXros(cardId) : null;
   if (!xr) return null;
   const usedHand = new Set([handIndex]), usedStacks = new Set(), materials = [];
-  const matches = (req, c) => req.name ? (c.nameKo === req.name && (!req.color || (c.colors || []).includes(req.color)))
+  const extras = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (hp === p && d.xrosExtra && !holder.suspended) { const e = d.xrosExtra(state, hp, holder, cardId); if (e) extras.push({ holder, underLeft: e.under ?? 0, trashLeft: e.trash ?? 0 }); }
+  const matches =(req, c) => req.name ? (c.nameKo === req.name && (!req.color || (c.colors || []).includes(req.color)))
     : req.keyword ? (c.category === 'digimon' && `${c.effectKo || ''}
 ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
     : (c.category === 'digimon' && (c.types || []).some(t => req.traits.some(x => req.includes ? t.includes(x) : t === x)));
@@ -1802,12 +1939,27 @@ ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
       if (need <= 0) break;
       if (usedStacks.has(st.uid) || card(st.cardId).category !== 'digimon') continue;
       const c = card(st.cardId);
-      if (!matches(req, c) || (req.distinct && names.has(c.nameKo))) continue;
+      if ((!matches(req, c) && !S2.xrosSub(state, p, st)) || (req.distinct && names.has(c.nameKo))) continue; // shard2 (BT10-111 substitute)
       usedStacks.add(st.uid); names.add(c.nameKo); need--;
       materials.push({ kind: 'stack', uid: st.uid, cardId: st.cardId });
     }
+    // s5: tamers ("이 테이머를 레스트시키는 것으로, 자신의 테이머 아래(와 트래시)의 카드도 놓을 수 있다") lend extra materials
+    for (const ex of extras) {
+      for (let i = 0; i < ex.holder.sources.length && need > 0 && ex.underLeft > 0; i++) {
+        const id = ex.holder.sources[i], c = card(id);
+        if (!matches(req, c) || (req.distinct && names.has(c.nameKo)) || materials.some(m => m.kind === 'tamer' && m.tamerUid === ex.holder.uid && m.idx === i)) continue;
+        names.add(c.nameKo); need--; ex.underLeft--; ex.used = true;
+        materials.push({ kind: 'tamer', tamerUid: ex.holder.uid, cardId: id, idx: i });
+      }
+      for (let i = 0; i < pl.trash.length && need > 0 && ex.trashLeft > 0; i++) {
+        const id = pl.trash[i], c = card(id);
+        if (!matches(req, c) || (req.distinct && names.has(c.nameKo)) || materials.some(m => m.kind === 'trash' && m.idx === i)) continue;
+        names.add(c.nameKo); need--; ex.trashLeft--; ex.used = true;
+        materials.push({ kind: 'trash', cardId: id, idx: i, tamerUid: ex.holder.uid });
+      }
+    }
   }
-  return materials.length ? { per: xr.per, materials, discount: xr.per * materials.length } : null;
+  return materials.length ? { per: xr.per, materials, discount: xr.per * materials.length, restTamers: extras.filter(e => e.used).map(e => e.holder.uid) } : null;
 }
 
 export function playDigimonFresh(state, p, handIndex, opts = {}) {
@@ -1817,17 +1969,27 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const stack = makeStack(id, state.turnNumber);
   // 디지크로스: materials go under the new card (7-2-2-3/7-2-2-7) — hand cards by id,
   // battle-area Digimon leave the area and bring their own sources with them.
-  for (const mt of opts.materials || []) {
+  const s2mat = state._s2PlayMat || []; state._s2PlayMat = null; // shard2: play-discount materials chosen via a hook (BT10-093)
+  for (const mt of [...(opts.materials || []), ...s2mat]) {
     if (mt.kind === 'hand') {
       const hi = pl.hand.indexOf(mt.cardId);
       if (hi !== -1) { pl.hand.splice(hi, 1); stack.sources.push(mt.cardId); }
+    } else if (mt.kind === 'tamer') {
+      const t = pl.battle.find(x => x.uid === mt.tamerUid);
+      const ti = t ? t.sources.lastIndexOf(mt.cardId) : -1;
+      if (ti !== -1) { t.sources.splice(ti, 1); stack.sources.push(mt.cardId); }
+    } else if (mt.kind === 'trash') {
+      const ti = pl.trash.lastIndexOf(mt.cardId);
+      if (ti !== -1) { pl.trash.splice(ti, 1); stack.sources.push(mt.cardId); }
     } else {
       const bi = pl.battle.findIndex(x => x.uid === mt.uid);
       if (bi !== -1) { const [ms] = pl.battle.splice(bi, 1); stack.sources.push(...ms.sources, ms.cardId); }
     }
   }
+  for (const tu of opts.restTamers || []) restStack(state, p, tu); // s5: tamers rested as the cost of lending materials
   if ((opts.materials || []).length) log(state, `${p} 디지크로스: ${(opts.materials).map(m => card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓음`);
   recomputeStackGrants(stack); // picks up any keyword the card innately has on its own printed text
+  stack.byEffect = { kind: 'play', effect: false, turn: state.turnNumber }; // s8: "효과로 등장했다면"
   pl.battle.push(stack);
   log(state, `${p} ${card(id).nameKo} 신규 등장 (배틀 에어리어)`);
   queueTriggersForStack(state, p, stack, 'play');
@@ -1841,12 +2003,17 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
 // card's own static keywords, and never queued its 【등장 시】 effects.
 export function playFreeFromZone(state, p, zone, index, opts = {}) {
   const pl = state.players[p];
+  if (zone === 'trash' && state.s6TrashLock && state.s6TrashLock[p] != null && state.turnNumber <= state.s6TrashLock[p] && ['digimon', 'tamer'].includes(card(pl.trash[index])?.category)) { log(state, `${p} 효과로 트래시에서 디지몬/테이머를 등장시킬 수 없음`); return null; } // s6 (BT23-014)
+  if (s1HookAny(state, 's1cannotPlay', { p })) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
+  if (pl[zone][index] && isPlayRestricted(state, p, pl[zone][index])) { log(state, `${p} ${card(pl[zone][index]).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); return null; }
   const [id] = pl[zone].splice(index, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
   if (opts.rested) stack.suspended = true;
+  stack.playedByEffect = true; // "이 디지몬이 효과로 등장하고 있었다면" (BT15-022)
   recomputeStackGrants(stack);
   pl.battle.push(stack);
+  stack.s7ByEffect = true;
   log(state, `${p} ${card(id).nameKo} 코스트 없이 등장 (효과)`);
   if (opts.noTriggers) { log(state, `${p} ${card(id).nameKo}의 【등장 시】 효과는 발휘하지 않음`); return stack; }
   queueTriggersForStack(state, p, stack, 'play');
@@ -1870,7 +2037,7 @@ export function optionColorOk(state, p, cardId) {
   if (!need.length) return true;
   const pl = state.players[p];
   const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => ['digimon', 'tamer'].includes(card(st.cardId).category));
-  const have = new Set(stacks.flatMap(st => [...(card(st.cardId).colors || []), ...(st.extraColors || [])]));
+  const have = new Set(stacks.flatMap(st => (st.extraColors && st.extraColors.replace) ? st.extraColors.replace : [...(card(st.cardId).colors || []), ...(st.extraColors || [])]));
   if (need.every(col => have.has(col))) return true;
   const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
   const ig = txt.match(/([^.\n]*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시할\s*수\s*있다/);
@@ -1883,24 +2050,27 @@ export function optionColorOk(state, p, cardId) {
   return true;
 }
 
-export function useOptionCard(state, p, handIndex) {
+export function useOptionCard(state, p, handIndex, opts = {}) {
   const pl = state.players[p];
+  if (s1HookAny(state, 's1cannotUseOption', { p })) { log(state, `${p} 옵션 카드를 사용할 수 없음 (효과)`); return null; } // shard1
   if (pl.hand[handIndex] && !optionColorOk(state, p, pl.hand[handIndex])) {
     log(state, `${p} ${card(pl.hand[handIndex]).nameKo} 사용 불가: 색 조건 미충족 (같은 색의 디지몬/테이머가 필요, 룰 4-22)`);
     return null;
   }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
-  const cost = card(id).cost || 0;
+  const cost = Math.max(0, (card(id).cost || 0) + (opts.costDelta || 0)); // s8: hook play-cost discounts (BT25-090 …)
   if (cost > 0) spendMemory(state, cost);
   pl.trash.push(id);
   log(state, `${p} ${card(id).nameKo} 사용 (코스트${cost})`);
   queueTriggersFor(state, p, id, 'use');
+  emitGameEvent(state, 'optionUsed', { owner: p, stack: null, cause: null, cardId: id, useCost: cost });
   return id;
 }
 
 export function placeThisInBattle(state, p, cardId) {
   const pl = state.players[p];
+  if (s1HookAny(state, 's1cannotPlay', { p })) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
   const idx = pl.trash.lastIndexOf(cardId);
   if (idx !== -1) pl.trash.splice(idx, 1);
   // makeStack(), not a bespoke literal — a bare {uid,cardId,sources,...}
@@ -1911,6 +2081,7 @@ export function placeThisInBattle(state, p, cardId) {
   recomputeStackGrants(stack);
   pl.battle.push(stack);
   log(state, `${p} ${card(cardId).nameKo}을(를) 배틀 에어리어에 놓음`);
+  if (card(cardId).category === 'option') emitGameEvent(state, 'optionPlaced', { owner: p, stack, cause: 'effect' }); // s6
   return stack;
 }
 
@@ -1939,6 +2110,7 @@ export function securityBottomToHand(state, p, n) {
     if (!id) break;
     pl.hand.push(id);
     log(state, `${p} 시큐리티 맨 밑 카드를 패에 추가: ${card(id).nameKo}`);
+    emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); // s5
   }
 }
 
@@ -1955,7 +2127,7 @@ export function parseDelayEffect(effectKo) {
   const { segments } = parseEffectSegments(effectKo);
   for (const seg of segments) {
     if (!seg.tags.includes('메인')) continue;
-    const m = seg.body.match(/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)\s*\n\s*(·.+)$/s);
+    const m = seg.body.match(/^[≪《]\s*딜레이\s*[≫》]\s*(?:\([^()]*\)\s*)?\n\s*(·.+)$/s);
     if (m) return m[1].replace(/^·\s*/, '').trim();
   }
   return null;
@@ -1970,6 +2142,7 @@ export function discardForDelay(state, p, uid) {
   const [stack] = pl.battle.splice(idx, 1);
   pl.trash.push(...stack.sources, stack.cardId);
   log(state, `${p} ${card(stack.cardId).nameKo} 딜레이 효과 발동 (파기)`);
+  emitGameEvent(state, 'optionTrashed', { owner: p, stack, cause: 'delay' }); // s6
   return stack.cardId;
 }
 
@@ -2033,6 +2206,7 @@ export function moveRaisingToBattle(state, p) {
   if (!pl.raising) return null;
   const c = card(pl.raising.cardId);
   if ((c.level || 0) < 3) { log(state, `${p} ${c.nameKo}는 Lv.3 미만이라 이동 불가`); return null; }
+  if (isPlayRestricted(state, p, pl.raising.cardId)) { log(state, `${p} ${c.nameKo}: 효과로 이동시킬 수 없음 (DP 제한)`); return null; }
   const stack = pl.raising;
   pl.battle.push(stack);
   pl.raising = null;
@@ -2055,7 +2229,9 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
     pl.hand.splice(idx, 1);
   }
   discardLinkCardsOnNewCard(state, p, stack); // 10-4-1: this stack is about to become a new card
+  S2.beforeDigivolve(state, p, stack); // shard2 (BT14-018 tokens)
   stack.viaFusion = false;
+  stack.byEffect = { kind: 'digivolve', effect: !!state._fxSrc, turn: state.turnNumber }; // s8: "효과로 진화했다면"
   stack.sources.push(stack.cardId);
   stack.cardId = newCardId;
   if (cost > 0) spendMemory(state, cost);
@@ -2067,7 +2243,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   // sources) only fire while the resulting card is actually in the battle
   // area — evolving a card that's still sitting in the raising area (legal,
   // just uncommon) doesn't trigger them.
-  if (pl.battle.includes(stack)) { queueTriggersForStack(state, p, stack, 'digivolve'); emitGameEvent(state, 'digivolve', { owner: p, stack, cause: null }); }
+  if (pl.battle.includes(stack) || pl.raising === stack) { queueTriggersForStack(state, p, stack, 'digivolve'); if (pl.battle.includes(stack)) emitGameEvent(state, 'digivolve', { owner: p, stack, cause: null }); } // s6: [육성] triggers fire in the raising area
   return stack;
 }
 
@@ -2108,7 +2284,10 @@ export function parseJogress(cardId) {
 export function canJogress(stackA, stackB, cardId) {
   const j = parseJogress(cardId);
   if (!j) return { ok: true, cost: null };
-  return j.test(card(stackA.cardId), card(stackB.cardId)) ? { ok: true, cost: j.cost } : { ok: false, reason: '조그레스 조건 불일치' };
+  // s5: "이 디지몬은 「A」의 조그레스 진화에서 「B」·Lv.N으로도 취급한다" (hookJogressAliases) widens what a material counts as.
+  const forms = (st) => [card(st.cardId), ...hookJogressAliases(st.cardId, cardId).map(a => ({ ...card(st.cardId), nameKo: a.nameKo, level: a.level ?? card(st.cardId).level }))];
+  for (const ca of forms(stackA)) for (const cb of forms(stackB)) if (j.test(ca, cb)) return { ok: true, cost: j.cost };
+  return { ok: false, reason: '조그레스 조건 불일치' };
 }
 
 export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand') {
@@ -2187,7 +2366,7 @@ export function grantBattleImmunity(state, p, uid) {
 }
 
 function hasBattleImmunity(state, stack) {
-  return stack.battleImmuneUntilTurn != null && state.turnNumber <= stack.battleImmuneUntilTurn;
+  return (stack.battleImmuneUntilTurn != null && state.turnNumber <= stack.battleImmuneUntilTurn) || hookBattleImmune(state, stack); // s5
 }
 
 // "이 디지몬이 소멸할 때, 명칭에 「X」을 포함하는 다른 디지몬 1마리를
@@ -2469,9 +2648,14 @@ function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
 export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   const pl = state.players[p];
   const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (peek && (cause === 'effect' || cause === 'ownEffect') && effectBlocked(state, p, peek, 'delete', cause)) { log(state, `${p} ${card(peek.cardId).nameKo}는 상대의 효과로 소멸하지 않음`); return null; }
+  if (peek && cause === 'battle' && s1BattleDeleteBlocked(state)) { log(state, `${p} ${card(peek.cardId).nameKo}는 이 턴 배틀로 소멸하지 않음`); return null; } // shard1
+  if (peek && s1Flag(state, peek, 'noEffectDelete') && cause === 'effect') { log(state, `${p} ${card(peek.cardId).nameKo}는 효과로 소멸하지 않음`); return null; } // shard1
+  if (peek && tryDecoy(state, p, peek, cause)) return null; // s5 《디코이》
   if (peek && trySurviveBySacrifice(state, p, peek)) return null;
   if (peek && trySurviveByKeyword(state, p, peek, cause)) return null;
   if (peek && trySurviveByPrintedAbility(state, p, peek, cause)) return null;
+  if (peek && hookPreventLeave(state, p, peek, cause, 'delete')) return null;
   let stack = null;
   if (pl.raising?.uid === uid) { stack = pl.raising; pl.raising = null; }
   else {
@@ -2481,16 +2665,25 @@ export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
   if (!stack) return null;
   const linkIds = (stack.linkCards || []).map(l => l.cardId);
   const all = [...stack.sources, stack.cardId, ...linkIds];
-  if (toZone === 'trash') pl.trash.push(...all);
+  if (toZone === 'trash') pl.trash.push(...all.filter(x => !CARDS[x]?.isToken));
   log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 포함, 총 ${all.length}장 트래시)`);
   (state.pendingVanishFlash ||= []).push(card(stack.cardId).nameKo);
   // Overflow (4-19-1) only covers cards leaving the area or leaving being
   // stacked underneath a card — Link Cards are neither (4-9-1/4-9-4), so
   // they're excluded here even though they're trashed alongside the stack.
   for (const id of [...stack.sources, stack.cardId]) applyOverflowIfAny(state, p, id);
-  state._deleteCause = cause;
-  try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; }
+  // last-known info for 【소멸 시】 scripts ("…이 있었다면" / "효과로 소멸하고 있었다면"): the stack is already gone by then.
+  (state.deletedInfo ||= {})[stack.uid] = { cardId: stack.cardId, sources: stack.sources.slice(), cause, player: p, viaFusion: !!stack.viaFusion };
+  hookLeaveTriggers(state, p, stack, cause);
+  stack.s7DelCause = cause; // s7
+  if (linkIds.length && (cause === 'effect' || cause === 'ownEffect')) emitGameEvent(state, 's7LinkTrashed', { owner: p, stack: null, cause: 'effect', ids: linkIds }); // s7
+  state._deleteCause = cause; state._deleteStack = stack;
+  try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; state._deleteStack = null; }
   emitGameEvent(state, 'delete', { owner: p, stack, cause });
+  // s8: ≪천승≫ "이 디지몬이 소멸했을 때, 이 카드를 시큐리티의 위에 놓을 수 있다."
+  if (toZone === 'trash' && card(stack.cardId).category === 'digimon' && (hasKeyword(stack, '천승') || hookGrantedKeywords(state, p, stack).includes('천승'))) {
+    state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: null, tags: ['__천승'], text: '《천승》 이 디지몬이 소멸했을 때, 이 카드를 시큐리티의 위에 놓을 수 있다.', resolved: false });
+  }
   // ≪불굴≫: "진화원을 가진 이 디지몬이 소멸했을 때, 이 카드를 코스트를 지불하지
   // 않고 등장시킨다" — the destroyed top card comes straight back as a fresh stack.
   if (toZone === 'trash' && stack.sources.length > 0 && (hasKeyword(stack, '불굴') || hasContinuousKeyword(state, p, stack, '불굴'))) {
@@ -2507,6 +2700,7 @@ export function retreat(state, p, uid, stages) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return [];
+  if (effectBlocked(state, p, stack, 'retreat') || effectBlocked(state, p, stack, 'srcTrash')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 퇴화하지 않음`); return []; }
   const trashed = [];
   for (let i = 0; i < stages; i++) {
     if (stack.sources.length === 0) break; // nothing left to peel
@@ -2536,6 +2730,7 @@ export function restrictAttack(state, p, uid, expiresAfterTurn = 'permanent') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (effectBlocked(state, p, stack, 'other')) return;
   stack.cannotAttackUntil = expiresAfterTurn;
   log(state, `${p} ${card(stack.cardId).nameKo} 어택 불가 상태 부여`);
 }
@@ -2547,6 +2742,7 @@ export function restrictAttackPlayer(state, p, uid, expiresAfterTurn = 'permanen
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
+  if (effectBlocked(state, p, stack, 'other')) return;
   stack.cannotAttackPlayerUntil = expiresAfterTurn;
   log(state, `${p} ${card(stack.cardId).nameKo} 플레이어 공격 불가 상태 부여`);
 }
@@ -2576,6 +2772,7 @@ export function cannotBeBlockedBy(state, p, uid, blockerStack) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return false;
+  if (s1BlockedBy(state, p, stack, opponentOf(p), blockerStack)) return true; // shard1
   for (const { id, own } of stackContributors(stack)) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
@@ -2618,6 +2815,8 @@ export function canAttackPlayer(state, p, uid) {
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return true;
   if (stack.cannotAttackPlayerUntil === 'permanent' || (typeof stack.cannotAttackPlayerUntil === 'number' && state.turnNumber <= stack.cannotAttackPlayerUntil)) return false;
+  if (s1CannotAttackPlayer(state, p, stack)) return false; // shard1
+  if (hookAttackPlayerBlocked(state, p, stack)) return false; // s7
   return !isAttackPlayerRestrictedByAbility(state, p, stack);
 }
 
@@ -2638,9 +2837,12 @@ export function legalDigimonTargets(state, attackerP, attackerUid) {
   const canHitActiveAny = aStack && (hasKeyword(aStack, '액티브공격') || canAttackAnyActive(state, attackerP, aStack));
   if (aStack && stackHasContinuousAbility(state, attackerP, aStack, RE_CANNOT_ATTACK_DIGIMON)) return [];
   return state.players[opp].battle
+    .filter(s => !s3Flag(state, s, 'unattackable'))
     .filter(s => card(s.cardId).category === 'digimon' || !card(s.cardId).category)
     .filter(s => !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED))
-    .filter(s => s.suspended || canHitActiveAny || (canHitActiveNoSource && s.sources.length === 0))
+    .filter(s => !s1HookAny(state, 's1cannotBeAttacked', { p: opp, stack: s, attackerP, attacker: aStack })) // shard1
+    .filter(s => s.suspended || canHitActiveAny || (canHitActiveNoSource && s.sources.length === 0) || (aStack && s1HookAny(state, 's1attackTarget', { attackerP, attacker: aStack, target: s })))
+    .filter(s => !hookAttackTargetBlocked(state, attackerP, aStack, opp, s)) // s5
     .map(s => s.uid);
 }
 
@@ -2700,6 +2902,7 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   log(state, `${attackerP} ${card(aStack.cardId).nameKo}(DP${aDp}) vs ${defenderP} ${card(dStack.cardId).nameKo}(DP${dDp}) → ${result}`);
   const destroyedOnlyOpponent = result === 'attackerWins';
   if (result === 'attackerWins') runBattleWinTriggers(state, attackerP, aStack);
+  if (result === 'attackerWins') s1BattleWon(state, attackerP, aStack); // shard1
   if (result === 'defenderWins' || result === 'tie') {
     if (hasBattleImmunity(state, aStack)) log(state, `${attackerP} ${card(aStack.cardId).nameKo} 배틀 소멸 면역으로 생존`);
     else deleteStack(state, attackerP, attackerUid, 'trash', 'battle');
@@ -2718,14 +2921,18 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
     log(state, `${attackerP} ${card(attackerCardId).nameKo} 《길동무》 — ${card(defenderCardId).nameKo}도 소멸`);
     deleteStack(state, defenderP, defenderUid, 'trash', 'effect');
   }
-  const piercing = hasKeyword(aStack, '관통');
+  // s8: "이 디지몬이 배틀에서 승리했을 때" — the winner (attacker or defender) that is still in the battle area.
+  if (result === 'attackerWins' && apl.battle.includes(aStack)) emitGameEvent(state, 'battleWin', { owner: attackerP, stack: aStack, cause: null, loser: dStack });
+  else if (result === 'defenderWins' && dpl.battle.includes(dStack)) emitGameEvent(state, 'battleWin', { owner: defenderP, stack: dStack, cause: null, loser: aStack });
+  const piercing = hasKeyword(aStack, '관통') || hookGrantedKeywords(state, attackerP, aStack).includes('관통');
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }
 
-export function declareAttack(state, attackerP, stackUid) {
+export function declareAttack(state, attackerP, stackUid, opts = {}) {
   const pl = state.players[attackerP];
   const stack = pl.battle.find(s => s.uid === stackUid);
-  if (!stack || stack.suspended) return { ok: false, reason: 'invalid or suspended attacker' };
+  if (!stack || (stack.suspended && !opts.allowSuspended)) return { ok: false, reason: 'invalid or suspended attacker' };
+  if (!opts.noRest && hookNoRest(state, attackerP, stack)) { log(state, `${attackerP} ${card(stack.cardId).nameKo}는 레스트할 수 없어 어택할 수 없음`); return { ok: false, reason: 'attack restricted' }; } // s5
   // 16-?: ≪속공≫ (Rush) is the printed exception to "a Digimon that
   // entered play this turn can't attack" (1-3-1 names this exact case as
   // the canonical example of card text overriding the base rule).
@@ -2737,13 +2944,17 @@ export function declareAttack(state, attackerP, stackUid) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 어택 불가 상태라 공격할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
+  if (hookNoAttack(state, attackerP, stack) || s1CannotAttack(state, attackerP, stack)) {
+    log(state, `${attackerP} ${card(stack.cardId).nameKo}는 효과로 어택할 수 없음`);
+    return { ok: false, reason: 'attack restricted' };
+  }
   if (stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON)
       && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon')) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 상대 디지몬이 없는 동안 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
-  stack.suspended = true;
-  log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp}) 공격 선언`);
+  if (!opts.noRest) stack.suspended = true; // s5: "레스트시키지 않고 어택" (BT21-072)
+  log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp}) 공격 선언${opts.noRest ? ' (레스트하지 않음)' : ''}`);
   return { ok: true, stack };
 }
 
@@ -2760,7 +2971,7 @@ export function declareAttack(state, attackerP, stackUid) {
 export function beginSecurityCheck(state, attackerP, attackerUid, defenderP) {
   const apl = state.players[attackerP];
   const attackerStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
-  return { state, attackerP, attackerUid, defenderP, total: 1 + (attackerStack ? securityAttackBonus(attackerStack) : 0), i: 0, results: [], done: false, gameOver: false };
+  return { state, attackerP, attackerUid, defenderP, total: 1 + (attackerStack ? hookSecurityAttackBonus(state, attackerP, attackerStack) : 0), i: 0, results: [], done: false, gameOver: false };
 }
 
 export function stepSecurityCheck(ctl) {
@@ -2794,7 +3005,11 @@ export function stepSecurityCheck(ctl) {
   }
   const id = pl.security.shift();
   pl.trash.push(id);
-  const suppressSecurityEffect = attackerStack && hasKeyword(attackerStack, '옵션시큐리티효과무효') && card(id).category === 'option';
+  const wasFaceUp = secFaceUpTake(pl, id); // s5
+  state.secReveal = { p: defenderP, cardId: id, up: wasFaceUp }; // s6: lets 【시큐리티】 effects ask "이 카드가 앞면이었다면"
+  emitGameEvent(state, 'securityDecrease', { owner: defenderP, stack: null, cause: 'check' }); // s5
+  if (wasFaceUp && attackerStack) emitGameEvent(state, 'faceUpChecked', { owner: attackerP, stack: attackerStack, defenderP, cardId: id }); // s5
+  const suppressSecurityEffect = attackerStack && ((hasKeyword(attackerStack, '옵션시큐리티효과무효') && card(id).category === 'option') || hookSuppressSecurity(state, attackerP, attackerStack, id) || S2.securitySuppressed(state, attackerP, defenderP, id)); // shard2
   if (!suppressSecurityEffect) {
     // A card's 【시큐리티】 text is very often printed in the SAME "not the
     // active top card" box as its 진화원(evolution-source) effects
@@ -2807,7 +3022,7 @@ export function stepSecurityCheck(ctl) {
   } else {
     log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
   }
-  const secDp = (card(id).dp || 0) + activeSecurityDPBonus(state, defenderP);
+  const secDp = (card(id).dp || 0) + activeSecurityDPBonus(state, defenderP) + s1HookSum(state, 's1securityDP', { p: defenderP });
   let result;
   if (attackerDp > secDp) result = 'attackerWins';
   else if (attackerDp < secDp) result = jamming ? 'jammedSurvive' : 'defenderWins';
@@ -2825,4 +3040,607 @@ export function resolveSecurityCheck(state, attackerP, attackerUid, defenderP) {
   const ctl = beginSecurityCheck(state, attackerP, attackerUid, defenderP);
   while (!ctl.done) stepSecurityCheck(ctl);
   return { checks: ctl.results, gameOver: ctl.gameOver };
+}
+
+// ===== per-card bespoke hooks (shard4+ HOOKS registry; see src/cards/index.js) =====
+// HOOKS['CARD-ID'] = [{ tag, has, src:'effectKo'|'inheritedKo', limit, <handlers> }]. `tag`/`has` identify the printed segment
+// (tags[0] and a body substring) so the coverage audit can count it, and gate activity (자신의/상대의/서로의 턴).
+// Handlers (all optional): dp, noAttack, attackAnyActive, redirectImmune, effectImmune, preventLeave, turnEndAt,
+// suppressTrigger, events{kind: fn -> true queues the segment as a normal pending effect}.
+export function hookDescriptorFor(cardId, tags, body) {
+  const list = CARD_HOOKS[cardId];
+  if (!list) return null;
+  return list.find(d => d.tag === tags[0] && (!d.has || (body || '').includes(d.has))) || null;
+}
+function hookActiveNow(state, hp, d) {
+  if (d.tag === '자신의 턴') return state.activePlayer === hp;
+  if (d.tag === '상대의 턴') return state.activePlayer !== hp;
+  return true;
+}
+export function* activeHooks(state) {
+  for (const hp of ['p1', 'p2']) {
+    const pl = state.players[hp];
+    // cards that act from the TRASH ("[트래시]【서로의 턴】…") — descriptor.zone === 'trash', holder is null.
+    for (const tid of new Set(pl.trash)) {
+      for (const d of CARD_HOOKS[tid] || []) if (d.zone === 'trash' && hookActiveNow(state, hp, d)) yield { hp, holder: null, id: tid, d };
+    }
+    // s7: face-up security cards acting from the security zone (descriptor.zone === 'security'), holder is null.
+    for (const sid of new Set(pl.security)) {
+      if (!((pl.secUp && pl.secUp[sid]) > 0)) continue;
+      for (const d of CARD_HOOKS[sid] || []) if (d.zone === 'security' && hookActiveNow(state, hp, d)) yield { hp, holder: null, id: sid, d };
+    }
+    for (const holder of [pl.raising, ...pl.battle].filter(Boolean)) {
+      for (const { id, own } of stackContributors(holder)) {
+        const list = CARD_HOOKS[id];
+        if (!list) continue;
+        for (const d of list) {
+          if (d.zone === 'trash' || d.zone === 'security') continue;
+          if (((d.src || 'effectKo') === 'effectKo') !== own) continue;
+          if (!hookActiveNow(state, hp, d)) continue;
+          yield { hp, holder, id, d };
+        }
+      }
+    }
+  }
+}
+export function hookDP(state, tp, target) {
+  let sum = 0;
+  for (const { hp, holder, d } of activeHooks(state)) if (d.dp) sum += d.dp(state, hp, holder, target, tp) || 0;
+  return sum;
+}
+export function hookNoAttack(state, p, stack) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noAttack && hp === p && holder === stack && d.noAttack(state, hp, holder)) return true;
+  return false;
+}
+export function hookAttackAnyActive(state, p, stack) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.attackAnyActive && hp === p && holder === stack && d.attackAnyActive(state, hp, holder)) return true;
+  return false;
+}
+export function hookRedirectImmune(state, ap, aStack) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.redirectImmune && d.redirectImmune(state, hp, holder, aStack, ap)) return true;
+  return false;
+}
+export function hookTurnEndThreshold(state, p) {
+  let t = 1;
+  for (const { hp, holder, d } of activeHooks(state)) if (d.turnEndAt && hp === p) t = Math.max(t, d.turnEndAt(state, hp, holder) || 1);
+  return t;
+}
+export function hookSuppressTrigger(state, tp, target, tag) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.suppressTrigger && d.suppressTrigger(state, hp, holder, tp, target, tag)) return true;
+  return false;
+}
+// "상대는 DP N 이하의 디지몬을 등장/이동시킬 수 없다" and "Lv.N 이하의 디지몬은 진화할 수 없다" (turn-limited, stored on the state).
+export function addPlayRestriction(state, p, dpMax, untilTurn) { (state.playRestrictions ||= []).push({ player: p, dpMax, until: untilTurn }); log(state, `${p} DP ${dpMax} 이하의 디지몬을 등장/이동시킬 수 없음`); }
+export function isPlayRestricted(state, p, cardId) {
+  const dp = card(cardId).dp || 0;
+  return (state.playRestrictions || []).some(r => r.player === p && state.turnNumber <= r.until && card(cardId).category === 'digimon' && dp <= r.dpMax);
+}
+export function addEvolveLock(state, p, levelMax, untilTurn) { (state.evolveLocks ||= []).push({ player: p, levelMax, until: untilTurn }); log(state, `${p} Lv.${levelMax} 이하의 디지몬은 진화할 수 없음`); }
+// Once-per-turn bookkeeping for hook handlers: true (and marks) if this descriptor hasn't been used this turn by `holder`.
+// Extra names/traits a stack has through printed "…명칭/특징을 얻는다" abilities (descriptor.names / descriptor.types).
+export function hookStackNames(state, p, stack) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (d.names && hp === p && holder === stack) out.push(...(d.names(state, hp, holder) || []));
+  return out;
+}
+export function hookStackTypes(state, p, stack) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (d.types && hp === p && holder === stack) out.push(...(d.types(state, hp, holder) || []));
+  return out;
+}
+// Array handed to E.canEvolveAny as `extraColors`: the stack's extra colors plus `.replace` (원래 색 변경) and `.names` (얻은 명칭).
+export function evoExtraArg(state, p, stack) {
+  const a = [...(stack.extraColors || [])];
+  if (stack.extraColors && stack.extraColors.replace) a.replace = stack.extraColors.replace;
+  const n = hookStackNames(state, p, stack);
+  if (n.length) a.names = n;
+  return a;
+}
+export function hookUseOnce(holder, id, d, limit = 1) {
+  const key = onceLimitKey(id, [d.tag, d.has || '']);
+  if (turnUsesRemaining(holder, key, limit) <= 0) return false;
+  markTurnEffectUsed(holder, key);
+  return true;
+}
+// Effect immunity ("상대의 효과를 받지 않는다" family). fx source = state._fxSrc (set by the effect runner), falling back to
+// "the opponent" when a deletion arrives with cause 'effect'. kind: delete|bounce|rest|dpDown|retreat|other.
+export function effectBlocked(state, tp, target, kind, causeHint = null) {
+  if (!target) return false;
+  let src = state._fxSrc || null;
+  if (!src) {
+    if (causeHint === 'effect') src = { player: opponentOf(tp), category: 'unknown' };
+    else return false;
+  }
+  if (src.player === tp) return false; // only OPPONENT effects are ever blocked by these abilities
+  for (const sh of target.shields || []) {
+    if (sh.until != null && state.turnNumber > sh.until) continue;
+    if (sh.fromCategory && sh.fromCategory !== src.category) continue;
+    if (sh.kinds.includes('all') || sh.kinds.includes(kind)) return true;
+  }
+  for (const { hp, holder, d } of activeHooks(state)) {
+    if (d.effectImmune && hp === tp && d.effectImmune(state, hp, holder, target, tp, { kind, src })) return true;
+  }
+  return false;
+}
+// s8: buffs applied for a single effect-triggered attack ("~한 후 그 디지몬으로 어택") are undone when that attack ends.
+export function revertAtkEndBuffs(state, p, uid) {
+  const st = findStackAny(state, p, uid);
+  if (!st || !st.s8AtkRevert) return;
+  const a = st.s8AtkRevert; st.s8AtkRevert = 0;
+  modifyDP(state, p, uid, -a, 'turn');
+}
+// s8: called when an attack ends — undo single-attack DP buffs; 《에그제큐트》 attackers are deleted afterwards.
+export function s8AttackEnded(state, p, uid) {
+  revertAtkEndBuffs(state, p, uid);
+  const st = findStackAny(state, p, uid);
+  if (st && st.s8ExecDelete) { st.s8ExecDelete = false; log(state, `${p} ${card(st.cardId).nameKo} 《에그제큐트》 — 어택 종료로 소멸`); deleteStack(state, p, uid, 'trash', 'ownEffect'); }
+}
+function findStackAny(state, p, uid) { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; }
+export function grantShield(state, p, uid, shield) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return;
+  (stack.shields = stack.shields || []).push(shield);
+  log(state, `${p} ${card(stack.cardId).nameKo} 효과 보호 부여: ${shield.kinds.join('/')}`);
+}
+// Replacement hooks ("…벗어날/소멸할 때, …하는 것으로, 벗어나지/소멸하지 않는다"). Returns true when a hook prevented it.
+export function hookPreventLeave(state, tp, target, cause, mode = 'delete') {
+  for (const { hp, holder, d, id } of [...activeHooks(state)]) {
+    if (!d.preventLeave || hp !== tp) continue;
+    if (d.preventLeave(state, hp, holder, target, tp, cause, mode, id)) return true;
+  }
+  return false;
+}
+function findSegmentFor(cardId, d) {
+  const c = card(cardId);
+  const text = (d.src || 'effectKo') === 'effectKo' ? c.effectKo : c.inheritedKo;
+  return parseEffectSegments(text).segments.find(sg => sg.tags[0] === d.tag && (!d.has || sg.body.includes(d.has))) || null;
+}
+export function queueHookSegment(state, hp, holder, id, d, info = null) {
+  const seg = findSegmentFor(id, d);
+  if (!seg) return;
+  holder.hookEvt = info || null;
+  const text = seg.body.replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
+  state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text, resolved: false, watcher: true, inherited: (d.src || 'effectKo') !== 'effectKo', evt: info || null });
+}
+export function dispatchHookEvents(state, kind, info) {
+  for (const { hp, holder, id, d } of [...activeHooks(state)]) {
+    const fn = d.events && d.events[kind];
+    if (!fn) continue;
+    if (!fn(state, hp, holder, info)) continue;
+    if (d.limit != null && !hookUseOnce(holder, id, d, d.limit)) continue;
+    queueHookSegment(state, hp, holder, id, d, { kind, ...info, stack: undefined, stackUid: info.stack?.uid });
+  }
+}
+// ---- shard-3 additions to the hooks registry ----
+// descriptor.restLock(state, hp, holder, target, tp) -> true: ability of hp's holder forbids OPPONENT stack `target` (controlled by tp) from resting.
+export function hookCannotRest(state, tp, target) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.restLock && hp !== tp && d.restLock(state, hp, holder, target, tp)) return true;
+  return false;
+}
+// descriptor.suppressSecurity(state, hp, holder, revealedCardId) -> true: this attacker's checked card's 【시큐리티】 effect is not activated.
+export function hookSuppressSecurity(state, ap, aStack, revealedId) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.suppressSecurity && hp === ap && holder === aStack && d.suppressSecurity(state, hp, holder, revealedId)) return true;
+  return false;
+}
+// Security Attack bonus with descriptor.sAttackFlip ("《S 어택 -》 전부를 《S 어택 +》로 변경"): a NEGATIVE net bonus flips positive.
+export function hookSecurityAttackBonus(state, ap, aStack) {
+  const raw = securityAttackBonus(aStack);
+  let base = raw;
+  if (raw < 0) for (const { hp, d } of activeHooks(state)) if (d.sAttackFlip && hp === ap) { base = -raw; break; }
+  for (const { hp, holder, d } of activeHooks(state)) if (d.sAtk && hp === ap) base += d.sAtk(state, hp, holder, aStack) || 0; // shard2
+  return base;
+}
+// descriptor.noUnsuspend(state, hp, holder) -> true: this stack never becomes active (unsuspend phase / effects).
+export function hookNoUnsuspend(state, p, stack) {
+  if (stack.s2NoActiveUntil != null && state.turnNumber <= stack.s2NoActiveUntil) return true; // shard2
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noUnsuspend && hp === p && holder === stack && d.noUnsuspend(state, hp, holder)) return true;
+  // s6: descriptor.noUnsuspendOthers(state, hp, holder, target, targetOwner) -> true: the holder's ability keeps EVERY OTHER stack (either side) from becoming active.
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noUnsuspendOthers && holder !== stack && d.noUnsuspendOthers(state, hp, holder, stack, p)) return true;
+  return false;
+}
+// descriptor.playDiscount(state, hp, holder, cardId) -> { label, apply() -> negative delta } | null. UI confirms then applies (cost paid inside apply).
+export function hookPlayCostOptions(state, p, cardId) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) {
+    if (!d.playDiscount || hp !== p || state.activePlayer !== p || isPlayCostLocked(state)) continue;
+    const o = d.playDiscount(state, hp, holder, cardId);
+    if (o) out.push(o);
+  }
+  return out;
+}
+// descriptor.evoDiscount(state, hp, holder, evolvingStack, targetCardId) -> number (auto, applied once) ; descriptor.evoOption(...) -> { label, apply() } (confirmed).
+export function hookEvoCostDiscount(state, p, stack, targetCardId) {
+  let sum = 0;
+  for (const { hp, holder, d } of activeHooks(state)) if (d.evoDiscount && hp === p) sum += d.evoDiscount(state, hp, holder, stack, targetCardId) || 0;
+  return sum;
+}
+export function hookEvoCostOptions(state, p, stack, targetCardId) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) {
+    if (!d.evoOption || hp !== p) continue;
+    const o = d.evoOption(state, hp, holder, stack, targetCardId);
+    if (o) out.push(o);
+  }
+  return out;
+}
+// descriptor.attackerRedirect(state, hp, holder, attackerStack, curTargetUid) -> [{ targetUid|null, toPlayer, label, pay(choose) }]: the ATTACKING
+// player's own reaction ("자신의 디지몬이 상대의 디지몬에게 어택했을 때, …어택의 대상을 …로 변경한다").
+export function hookAttackerRedirectOptions(state, attackerP, aStack, curTargetUid) {
+  const out = [];
+  for (const { hp, holder, id, d } of [...activeHooks(state)]) {
+    if (!d.attackerRedirect || hp !== attackerP || !holder) continue;
+    for (const o of d.attackerRedirect(state, hp, holder, aStack, curTargetUid) || []) out.push({ cardId: id, stackUid: holder.uid, ...o });
+  }
+  return out;
+}
+// descriptor.redirectOptions(state, hp, holder, attackerP, attackerStack) -> [{ targetUid|null, toPlayer, limit, label, pay(choose) }]
+export function hookRedirectOptions(state, defenderP, attackerP, aStack) {
+  const out = [];
+  for (const { hp, holder, id, d } of activeHooks(state)) {
+    if (!d.redirectOptions || hp !== defenderP) continue;
+    for (const o of d.redirectOptions(state, hp, holder, attackerP, aStack) || []) out.push({ cardId: id, stackUid: holder.uid, ...o });
+  }
+  return out;
+}
+// Per-stack turn-limited flags used by shard-3 effects: stack.s3[flag] = last turn number (inclusive).
+export function s3Flag(state, stack, flag) { return !!(stack && stack.s3 && stack.s3[flag] != null && state.turnNumber <= stack.s3[flag]); }
+export function setS3Flag(stack, flag, untilTurn) { (stack.s3 ||= {})[flag] = untilTurn; }
+// Tokens (no printed card): ids start with TOKEN- and vanish when they leave the battle area.
+export const isTokenId = (id) => !!CARDS[id]?.isToken;
+export function purgeTokens(state) {
+  for (const p of ['p1', 'p2']) {
+    const pl = state.players[p];
+    for (const z of ['hand', 'trash', 'deck', 'security']) if (pl[z].some(isTokenId)) pl[z] = pl[z].filter(id => !isTokenId(id));
+  }
+}
+// Zone-printed 【메인】 abilities ("[패]【메인】"/"[트래시]【메인】") — usable from that zone during the owner's main phase.
+export function zoneMainAbilities(state, p, zone) {
+  if (p !== state.activePlayer || state.phase !== 'main') return [];
+  const marker = zone === 'hand' ? '패' : '트래시';
+  const out = [];
+  state.players[p][zone].forEach((id, idx) => {
+    const c = card(id);
+    for (const seg of parseEffectSegments(c.effectKo).segments) {
+      if (!seg.tags.includes('메인') || !seg.zoneMarker || !seg.zoneMarker.includes(marker)) continue;
+      out.push({ idx, cardId: id, tags: seg.tags, text: seg.body.trim() });
+    }
+  });
+  return out;
+}
+
+// descriptor.onLeave(state, hp, holder, cause) -> truthy: queue this segment when its holder LEAVES the battle area (holder is already off the board;
+// pending.evt = { leaving: true, cause, sources: [ids the stack had], cardId }). Called from deleteStack and bounce ops.
+export function hookLeaveTriggers(state, p, stack, cause) {
+  for (const { id, own } of stackContributors(stack)) {
+    const list = CARD_HOOKS[id];
+    if (!list) continue;
+    for (const d of list) {
+      if (!d.onLeave || ((d.src || 'effectKo') === 'effectKo') !== own) continue;
+      if (!hookActiveNow(state, p, d)) continue;
+      if (!d.onLeave(state, p, stack, cause)) continue;
+      queueHookSegment(state, p, stack, id, d, { leaving: true, cause, sources: stack.sources.slice(), cardId: stack.cardId });
+    }
+  }
+}
+// "【자신의 메인 페이즈 개시 시】 이 디지몬으로 어택한다." granted by an effect: stack.s3.forceAtkMain = { until, src }
+export function queueForcedAttacks(state, p) {
+  for (const st of state.players[p].battle) {
+    const f = st.s3 && st.s3.forceAtkMain;
+    if (f && state.turnNumber <= f.until) queuePending(state, { player: p, cardId: f.src, stackUid: st.uid, tags: ['s3ForceAttack'], text: '【자신의 메인 페이즈 개시 시】 이 디지몬으로 어택한다.', watcher: true });
+  }
+}
+
+// Internals exposed for shard modules (kept in one bag so shards never need to touch state.js again).
+// ===== shard5 additions (face-down sources, face-up security, extra continuous hooks, 《디코이》) =====
+// Face-down (뒷면) evolution sources: they always form the bottom block sources[0..fdCount-1] and lend no effects.
+export function fdCount(stack) { return Math.min((stack && stack.s5fd) || 0, stack ? stack.sources.length : 0); }
+// Face-up (앞면) security cards, tracked as a multiset by card id on the owner (lazily clamped to what is still in security).
+export function secFaceUpCount(pl) {
+  let n = 0;
+  for (const [id, c] of Object.entries(pl.secUp || {})) n += Math.min(c, pl.security.filter(x => x === id).length);
+  return n;
+}
+// Call right after `id` left the security stack: true when the removed copy was a face-up one (and clamps the multiset).
+export function secFaceUpTake(pl, id) {
+  const up = (pl.secUp && pl.secUp[id]) || 0;
+  if (!up) return false;
+  const remain = pl.security.filter(x => x === id).length;
+  pl.secUp[id] = Math.min(up, remain);
+  return up > remain;
+}
+export function secFlipTopFaceUp(state, p) {
+  const pl = state.players[p];
+  for (const id of pl.security) {
+    const up = (pl.secUp && pl.secUp[id]) || 0;
+    if (up < pl.security.filter(x => x === id).length) { (pl.secUp ||= {})[id] = up + 1; log(state, `${p} 시큐리티 위에서 ${card(id).nameKo} 앞면으로`); return id; }
+  }
+  return null;
+}
+export function secAddFaceUp(state, p, cardId, position = 'top') {
+  addToSecurity(state, p, cardId, position);
+  const pl = state.players[p];
+  (pl.secUp ||= {})[cardId] = (pl.secUp[cardId] || 0) + 1;
+}
+function hookOwnerOf(state, stack) { return ['p1', 'p2'].find(pp => state.players[pp].raising === stack || state.players[pp].battle.includes(stack)) || null; }
+// descriptor.noRest(state, hp, holder, target) -> the holder's own ability forbids `target` (same player) from resting.
+export function hookNoRest(state, p, target) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noRest && hp === p && d.noRest(state, hp, holder, target)) return true;
+  return false;
+}
+// descriptor.noBlock(state, hp, holder, target) -> `target` (hp's stack) may not block.
+export function hookNoBlock(state, p, target) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.noBlock && hp === p && d.noBlock(state, hp, holder, target)) return true;
+  return false;
+}
+// descriptor.battleImmune(state, hp, holder, target) -> `target` is not deleted by battle.
+export function hookBattleImmune(state, target) {
+  const p = hookOwnerOf(state, target);
+  if (!p) return false;
+  for (const { hp, holder, d } of activeHooks(state)) if (d.battleImmune && hp === p && d.battleImmune(state, hp, holder, target)) return true;
+  return false;
+}
+// descriptor.atkTargetBlocked(state, hp, holder, attackerP, attacker, target) -> attacker may NOT target `target` (hp's digimon).
+export function hookAttackTargetBlocked(state, attackerP, attacker, defP, target) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.atkTargetBlocked && hp === defP && d.atkTargetBlocked(state, hp, holder, attackerP, attacker, target)) return true;
+  return false;
+}
+// descriptor.grantKw(state, hp, holder, target) -> array of keyword names the holder's ability grants to `target`.
+export function hookGrantedKeywords(state, p, target) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (d.grantKw && hp === p) out.push(...(d.grantKw(state, hp, holder, target) || []));
+  return out;
+}
+// Static "이 디지몬은 「A」의 조그레스 진화에서 「B」·Lv.N으로도 취급한다" (descriptor.jogressAlias(targetCardId) -> [{nameKo, level}]).
+export function hookJogressAliases(materialCardId, targetCardId) {
+  const out = [];
+  for (const d of CARD_HOOKS[materialCardId] || []) if (d.jogressAlias) out.push(...(d.jogressAlias(targetCardId) || []));
+  return out;
+}
+// 《디코이《색》》: "X인 다른 자신의 디지몬이 상대의 효과로 소멸할 때, 이 디지몬을 소멸시키는 것으로, 그 디지몬 1마리는 소멸하지 않는다."
+function decoyColors(state, stack) {
+  if (stack.keywords && stack.keywords['디코이']) return Array.isArray(stack.keywords['디코이']) ? stack.keywords['디코이'] : null;
+  const cols = [];
+  for (const { id, own } of stackContributors(stack)) {
+    if (id === 'BT8-060' || id === 'P-045' || id === 'ST12-12') continue; // shard1: conditional decoys live in HOOKS (preventLeave)
+    const t = own ? card(id).effectKo : card(id).inheritedKo;
+    for (const m of (t || '').matchAll(/디코이((?:\s*《[^》]+》\s*\/?)+)》/g)) for (const c of m[1].matchAll(/《([^》]+)》/g)) if (KOR_COLOR_NAME[c[1]]) cols.push(KOR_COLOR_NAME[c[1]]);
+  }
+  return cols.length ? cols : null;
+}
+function tryDecoy(state, p, stack, cause) {
+  if (cause !== 'effect') return false;
+  const pl = state.players[p];
+  const cs = [...(card(stack.cardId).colors || []), ...(stack.extraColors || [])];
+  for (const other of pl.battle) {
+    if (other === stack || card(other.cardId).category !== 'digimon') continue;
+    const cols = decoyColors(state, other);
+    if (!cols || !cs.some(c => cols.includes(c))) continue;
+    log(state, `${p} ${card(other.cardId).nameKo} 《디코이》 — 자신이 소멸하여 ${card(stack.cardId).nameKo}는 소멸하지 않음`);
+    deleteStack(state, p, other.uid, 'trash', 'ownEffect');
+    return true;
+  }
+  return false;
+}
+
+// s5: keyword/granted effects that fire at fixed engine moments. Pending items use pseudo-tags '__…' resolved via the
+// wildcard key '*::__…' (see effects.lookupCardSpecific).
+// s6: "[트래시]【자신의 턴 종료 시】…" abilities printed on cards sitting in the trash.
+export function queueTrashTurnEnd(state, p) {
+  for (const id of new Set(state.players[p].trash)) {
+    for (const seg of parseEffectSegments(card(id).effectKo).segments) {
+      if (!(seg.zoneMarker || '').includes('트래시') || !seg.tags.some(t => t.includes('자신의 턴 종료 시'))) continue;
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: id, stackUid: null, tags: seg.tags, text: seg.body, resolved: false });
+    }
+  }
+}
+export function queueTurnEndKeywords(state, p) {
+  const pl = state.players[p];
+  for (const st of [...pl.battle]) { // s8: 《에그제큐트》 — turn end: may attack (even active opposing Digimon), then this Digimon is deleted
+    if (card(st.cardId).category !== 'digimon') continue;
+    if (hasKeyword(st, '에그제큐트') || hookGrantedKeywords(state, p, st).includes('에그제큐트')) {
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: st.cardId, stackUid: st.uid, tags: ['__에그제큐트'], text: '《에그제큐트》 자신의 턴 종료 시, 이 디지몬으로 어택할 수 있다. 이 어택 종료 시, 이 디지몬은 소멸한다. 이 효과로는 액티브 상태인 상대의 디지몬에게도 어택할 수 있다.', resolved: false });
+    }
+  }
+  for (const st of [...pl.battle]) {
+    if (card(st.cardId).category !== 'digimon') continue;
+    if (hasKeyword(st, '볼텍스') || hookGrantedKeywords(state, p, st).includes('볼텍스')) {
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: st.cardId, stackUid: st.uid, tags: ['__볼텍스'], text: '《볼텍스》 자신의 턴 종료 시, 이 디지몬으로 상대의 디지몬에게 어택할 수 있다. 이 효과로는 등장한 턴에도 어택할 수 있다.', resolved: false });
+    }
+  }
+}
+export function queueMainStartGranted(state, p) {
+  const pl = state.players[p];
+  for (const st of [...pl.battle]) {
+    if (st.s5forceAtkUntil != null && state.turnNumber <= st.s5forceAtkUntil && card(st.cardId).category === 'digimon') {
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: st.cardId, stackUid: st.uid, tags: ['__강제어택'], text: '【자신의 메인 페이즈 개시 시】 이 디지몬으로 어택한다.', resolved: false });
+    }
+  }
+}
+
+export const _s4 = { makeStack, nextUid, ruleCheckDP, discardLinkCardsOnNewCard, stackContributors, evoTargetPredicate, queueInheritedTriggersFor, KOR_COLOR_NAME, findSegmentFor };
+
+// ===== shard7 engine additions (continuous keyword hook, DP-mod list, effect hatch, battle-win / security events) =====
+let S7_BOUND = null; // the live game state, so stack-only helpers (hasKeyword) can consult hooks
+let S7_KW_GUARD = false;
+function s7Bound(state) { S7_BOUND = state; return state; }
+// descriptor.kw(state, hp, holder, keywordName) -> true: this holder itself continuously has that keyword.
+// descriptor.grantKw (shard5) is honoured here too so hasKeyword() sees continuous grants everywhere.
+function s7ContKw(stack, name) {
+  const state = S7_BOUND;
+  if (!state || !stack || S7_KW_GUARD) return false;
+  const p = hookOwnerOf(state, stack);
+  if (!p) return false;
+  S7_KW_GUARD = true;
+  try {
+    for (const { hp, holder, d } of activeHooks(state)) {
+      if (hp !== p) continue;
+      if (d.kw && holder === stack && d.kw(state, hp, holder, name)) return true;
+      if (d.grantKw && (d.grantKw(state, hp, holder, stack) || []).includes(name)) return true;
+    }
+  } finally { S7_KW_GUARD = false; }
+  return false;
+}
+// descriptor.kwNum(state, hp, holder) -> extra 《S 어택 +N》 continuously granted to the holder.
+function s7ContSAttack(stack) {
+  const state = S7_BOUND;
+  if (!state || !stack || S7_KW_GUARD) return 0;
+  const p = hookOwnerOf(state, stack);
+  if (!p) return 0;
+  let n = 0;
+  S7_KW_GUARD = true;
+  try {
+    for (const { hp, holder, d } of activeHooks(state)) if (hp === p && holder === stack && d.kwNum) n += Number(d.kwNum(state, hp, holder)) || 0;
+  } finally { S7_KW_GUARD = false; }
+  return n;
+}
+// Timed DP modifiers that don't fight over the single tempDP/dpExpiry pair: stack.s7Dp = [{amount, until}] (until = last turn number inclusive).
+export function s7DpSum(state, stack) {
+  let t = 0;
+  for (const m of stack.s7Dp || []) if (state.turnNumber <= m.until) t += m.amount;
+  return t;
+}
+export function s7AddDpMod(state, p, uid, amount, until) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack) return false;
+  if (amount < 0 && effectBlocked(state, p, stack, 'dpDown')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과로 DP가 감소하지 않음`); return false; }
+  if (amount < 0 && hasKeyword(stack, 'DP감소무효')) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP 감소 무효 — ${amount} 무시됨`); return false; }
+  stack.s7Dp = (stack.s7Dp || []).filter(m => state.turnNumber <= m.until);
+  stack.s7Dp.push({ amount, until });
+  log(state, `${p} ${card(stack.cardId).nameKo} DP ${amount >= 0 ? '+' : ''}${amount}`);
+  ruleCheckDP(state, p, stack);
+  return true;
+}
+// "자신의 육성 에어리어를 부화할 수 있다" as a card effect: not the once-per-breeding-phase action, only needs an empty raising area.
+export function s7HatchByEffect(state, p) {
+  const pl = state.players[p];
+  if (pl.raising) { log(state, `${p} 육성 에어리어에 이미 카드가 있어 부화 불가`); return null; }
+  const id = pl.digitamaDeck.shift();
+  if (!id) return null;
+  pl.raising = makeStack(id, state.turnNumber);
+  recomputeStackGrants(pl.raising);
+  log(state, `${p} 디지타마 부화 (효과): ${card(id).nameKo}`);
+  return pl.raising;
+}
+// descriptor.dpFloor(state, hp, holder) -> N: the holder's DP never drops below N ("DP는 1000보다 낮아지지 않고").
+function s7DpFloor(state, p, stack, total) {
+  let floor = null;
+  for (const { hp, holder, d } of activeHooks(state)) {
+    if (!d.dpFloor || hp !== p || holder !== stack) continue;
+    const f = d.dpFloor(state, hp, holder);
+    if (f != null) floor = floor == null ? f : Math.max(floor, f);
+  }
+  return floor != null && total < floor ? floor : total;
+}
+
+// s7: trash one face-up copy of `id` from the security stack (paying a security-zone ability's cost).
+export function s7TrashFaceUpSecurity(state, p, id) {
+  const pl = state.players[p];
+  const i = pl.security.indexOf(id);
+  if (i < 0) return false;
+  pl.security.splice(i, 1);
+  pl.trash.push(id);
+  secFaceUpTake(pl, id);
+  log(state, `${p} 시큐리티의 ${card(id).nameKo} 파기`);
+  emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' });
+  return true;
+}
+// descriptor.linkCost(state, hp, holder, hostStack, linkCardId) -> negative delta (auto-applied, once-limited by the descriptor).
+export function s7LinkCostDelta(state, p, host, linkCardId) {
+  let sum = 0;
+  for (const { hp, holder, id, d } of [...activeHooks(state)]) {
+    if (!d.linkCost || hp !== p) continue;
+    const v = d.linkCost(state, hp, holder, host, linkCardId);
+    if (!v) continue;
+    if (d.limit != null && !hookUseOnce(holder, id, d, d.limit)) continue;
+    sum += v;
+  }
+  return sum;
+}
+
+// ===== shard-1 additions: s1* hook dispatch (descriptor handlers named s1*, see src/cards/shard1.js) =====
+import * as S1 from './cards/shard1.js';
+import * as S2 from './cards/shard2.js'; // shard2: fixData / fullInherit / xros pools / granted effects / evolve ban
+let s1PendingUid = 1;
+export function s1HookAny(state, name, info) {
+  for (const { hp, holder, id, d } of activeHooks(state)) if (d[name] && d[name](state, hp, holder, info)) return true;
+  return false;
+}
+export function s1HookSum(state, name, info) {
+  let t = 0;
+  for (const { hp, holder, d } of activeHooks(state)) if (d[name]) t += Number(d[name](state, hp, holder, info)) || 0;
+  return t;
+}
+export function s1HookFirst(state, name, info) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d[name]) { const r = d[name](state, hp, holder, info); if (r) return r; }
+  return null;
+}
+export function s1HookCollect(state, name, info) {
+  const out = [];
+  for (const { hp, holder, d } of activeHooks(state)) if (d[name]) { const r = d[name](state, hp, holder, info); if (r) out.push(...(Array.isArray(r) ? r : [r])); }
+  return out;
+}
+export function s1Flag(state, st, flag) { return !!(st && st.s1 && st.s1[flag] != null && state.turnNumber <= st.s1[flag]); }
+export function s1PushPending(state, item) { state.pending.push({ uid: 's1p' + (s1PendingUid++), resolved: false, watcher: true, ...item }); }
+// per-player timed rules set by scripts (BT9-103): { kind, until, ... }
+function s1Rules(state, kind) { return (state.s1Rules || []).filter(r => r.kind === kind && r.until >= state.turnNumber); }
+export function s1SecIncreaseBlocked(state, who) {
+  const src = state._fxSrc;
+  return !!src && s1Rules(state, 'noSecurityIncrease').some(r => r.blocked === src.player);
+}
+export function s1CannotAttack(state, p, stack) { return s1Flag(state, stack, 'noAttack') || s1HookAny(state, 's1cannotAttack', { p, stack }); }
+export function s1CannotAttackPlayer(state, p, stack) {
+  if (s1HookAny(state, 's1cannotAttackPlayer', { p, stack })) return true;
+  return s1Rules(state, 'noPlayerAttack').some(r => r.owner === p && (card(stack.cardId).cost ?? 0) <= r.maxCost);
+}
+export function s1BlockedBy(state, attackerP, attacker, blockerP, blocker) {
+  return s1Flag(state, blocker, 'noBlock') || s1Flag(state, attacker, 'unblockable') || s1HookAny(state, 's1blocked', { attackerP, attacker, blockerP, blocker });
+}
+export function s1BattleDeleteBlocked(state) { return state.s1NoBattleDelete === state.turnNumber; }
+export function s1EvolveAlt(state, p, stack, targetId) { return S1.evolveAlt(state, p, stack, targetId); }
+export function s1EvoAuto(state, p, stack, targetId) { return S1.evoAutoDelta(state, p, stack, targetId, 'hand'); }
+export function s1EvoOptions(state, p, stack, targetId) { return S1.evoOptionList(state, p, stack, targetId, 'hand'); }
+export function s1PlayDiscount(state, p, targetId) { return s1HookSum(state, 's1playDiscount', { p, targetId }); }
+export function s1UnsuspendGate(state, p, stack) { return s1HookAny(state, 's1unsuspendGate', { p, stack }); }
+export function s1AttackTargeted(state, attackerP, attacker, targetKind, targetUid) {
+  emitGameEvent(state, 'attackTarget', { owner: attackerP, stack: attacker, cause: null, targetKind, targetUid });
+  const defP = opponentOf(attackerP);
+  if (attacker && targetKind === 'digimon' && s1Flag(state, attacker, 'killNoSrc')) {
+    const t = state.players[defP].battle.find(s => s.uid === targetUid);
+    if (t && t.sources.length === 0) { log(state, `${attackerP} ${card(attacker.cardId).nameKo} 효과: 진화원이 없는 ${card(t.cardId).nameKo} 소멸`); deleteStack(state, defP, t.uid, 'trash', 'effect'); }
+  }
+}
+export function s1BattleWon(state, p, stack) { emitGameEvent(state, 'battleWin', { owner: p, stack, cause: null }); }
+// unsuspend-phase events (EX2-037 etc.): call after `stack` went rested -> active
+export function s1Unsuspended(state, p, stack) { emitGameEvent(state, 'unsuspend', { owner: p, stack, cause: 'phase' }); }
+export function s1ProtectedSource(state, p, stack, id) { return s1HookAny(state, 's1protectSource', { p, stack, id }); }
+
+// descriptor.atkPlayerBlocked(state, hp, holder, attackerP, attacker) -> true: that attacker may not attack the player.
+export function hookAttackPlayerBlocked(state, attackerP, attacker) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.atkPlayerBlocked && hp !== attackerP && d.atkPlayerBlocked(state, hp, holder, attackerP, attacker)) return true;
+  return false;
+}
+// descriptor.vortexPlayer(state, hp, holder) -> true: this player's 《볼텍스》 digimon may attack the PLAYER at turn end (EX11-062).
+export function hookVortexPlayer(state, p) {
+  for (const { hp, holder, d } of activeHooks(state)) if (d.vortexPlayer && hp === p && d.vortexPlayer(state, hp, holder)) return true;
+  return false;
+}
+
+// s7: printed "[트래시]/[시큐리티]【자신/상대/서로의 턴 종료 시】" abilities of cards sitting in the trash / face-up in security.
+export function s7QueueZoneTurnEnd(state, finishing) {
+  for (const p of ['p1', 'p2']) {
+    const pl = state.players[p];
+    const kinds = p === finishing ? ['자신의 턴 종료 시', '서로의 턴 종료 시'] : ['상대의 턴 종료 시', '서로의 턴 종료 시'];
+    const zones = [['트래시', [...new Set(pl.trash)]], ['시큐리티', [...new Set(pl.security)].filter(id => (pl.secUp && pl.secUp[id]) > 0)]];
+    for (const [marker, ids] of zones) {
+      for (const id of ids) {
+        for (const seg of parseEffectSegments(card(id).effectKo).segments) {
+          if (!seg.zoneMarker || !seg.zoneMarker.includes(marker)) continue;
+          if (!seg.tags.some(tg => kinds.some(k => tg.includes(k)))) continue;
+          state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: id, stackUid: null, tags: seg.tags, text: seg.body.trim(), resolved: false, zoneTurnEnd: marker });
+        }
+      }
+    }
+  }
 }

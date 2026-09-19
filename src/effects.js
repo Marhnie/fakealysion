@@ -1,3 +1,4 @@
+import { SCRIPTS as CARD_SCRIPTS, OPS as CARD_OPS } from './cards/index.js';
 // Structured effect DSL interpreter.
 // A "script" is an array of instructions. Each instruction is a plain object
 // with an `op`. Instructions that need a target the player must pick return
@@ -80,13 +81,96 @@ function parseCardFilter(phrase) {
   return Object.keys(f).length ? f : null;
 }
 
-export async function runScript(script, ctx) {
-  for (const instr of script || []) {
-    await runOne(instr, ctx);
+// ---- effect-runner infrastructure shared by all card scripts ----
+// * state._fxSrc = who/what is resolving an effect right now (for "상대의 효과를 받지 않는다" immunity checks in state.js)
+// * pickStack choices over the OPPONENT's stacks drop targets that are immune to the running op (state._fxOp)
+// * after each top-level op, hand/evolution-source growth is emitted as game events ('handIncrease', 'sourcesAdded')
+const FX_KIND_OF_OP = { destroy: 'delete', destroySum: 'delete', retreat: 'retreat', returnToHandStripSources: 'bounce', bounceToDeckBottomStripSources: 'bounce', rest: 'rest', restAll: 'rest', modifyDP: 'dpDown', modifyDPAll: 'dpDown', setDP: 'dpDown', trashEvoSources: 'other' };
+let fxDepth = 0;
+function fxSourceOf(ctx) {
+  const { state, S } = ctx;
+  let cat = S.card(ctx.sourceCardId)?.category;
+  for (const pp of ['p1', 'p2']) {
+    const pl = state.players[pp];
+    const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === ctx.sourceStackUid);
+    if (st) cat = S.card(st.cardId)?.category;
+  }
+  return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' };
+}
+function wrapChoose(ctx) {
+  if (ctx._fxWrapped) return;
+  ctx._fxWrapped = true;
+  const orig = ctx.choose;
+  ctx.choose = async (kind, payload) => {
+    const { state, S } = ctx;
+    if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && payload.player && payload.player !== ctx.self) {
+      const fk = payload.fxKind || FX_KIND_OF_OP[state._fxOp] || 'other';
+      const pl = state.players[payload.player];
+      const uids = payload.uids.filter(u => { const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === u); return !st || !S.effectBlocked(state, payload.player, st, fk); });
+      if (payload.uids.length && !uids.length) { S.log(state, '대상이 될 수 있는 디지몬이 없음 (상대의 효과를 받지 않음)'); return null; }
+      payload = { ...payload, uids };
+    }
+    if (kind === 'pickStackAnySide' && payload && Array.isArray(payload.entries)) {
+      const fk = FX_KIND_OF_OP[state._fxOp] || 'other';
+      const entries = payload.entries.filter(e => { if (e.player === ctx.self) return true; const pl = state.players[e.player]; const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === e.uid); return !st || !S.effectBlocked(state, e.player, st, fk); });
+      payload = { ...payload, entries };
+    }
+    return orig(kind, payload);
+  };
+}
+function fxSnapshot(state) {
+  const snap = {};
+  for (const pp of ['p1', 'p2']) {
+    const pl = state.players[pp];
+    snap[pp] = { hand: pl.hand.length, deck: pl.deck.length, stacks: new Map([pl.raising, ...pl.battle].filter(Boolean).map(st => [st.uid, { cardId: st.cardId, sources: st.sources.slice() }])) };
+  }
+  return snap;
+}
+function fxEmit(ctx, instr, snap) {
+  const { state, S } = ctx;
+  const skipHand = /evolve|jogress|digivolve|fuse/i.test(instr.op);
+  const cat = fxSourceOf(ctx).category;
+  for (const pp of ['p1', 'p2']) {
+    const pl = state.players[pp];
+    if (pl.deck.length > snap[pp].deck) S.emitGameEvent(state, 'deckIncrease', { owner: pp, stack: null, cause: 'effect', srcPlayer: ctx.self }); // s8: "덱이 (자신의 효과로) 늘어났을 때"
+    if (!skipHand && pl.hand.length > snap[pp].hand) S.emitGameEvent(state, 'handIncrease', { owner: pp, stack: null, cause: 'effect', srcPlayer: ctx.self, srcCategory: cat, added: pl.hand.length - snap[pp].hand });
+    for (const st of [pl.raising, ...pl.battle].filter(Boolean)) {
+      const before = snap[pp].stacks.get(st.uid);
+      if (!before || before.cardId !== st.cardId || st.sources.length <= before.sources.length) continue;
+      const pool = before.sources.slice();
+      const added = [];
+      for (const id of st.sources) { const i = pool.indexOf(id); if (i >= 0) pool.splice(i, 1); else added.push(id); }
+      if (added.length) S.emitGameEvent(state, 'sourcesAdded', { owner: pp, stack: st, cause: 'effect', added, srcPlayer: ctx.self, srcCategory: cat });
+    }
   }
 }
 
+export async function runScript(script, ctx) {
+  const { state, S } = ctx;
+  wrapChoose(ctx);
+  const prevSrc = state._fxSrc;
+  state._fxSrc = fxSourceOf(ctx);
+  try {
+    for (const instr of script || []) {
+      await runOne(instr, ctx);
+    }
+  } finally { state._fxSrc = prevSrc; }
+}
+
 async function runOne(instr, ctx) {
+  const { state } = ctx;
+  wrapChoose(ctx);
+  const top = fxDepth === 0;
+  const snap = top ? fxSnapshot(state) : null;
+  const prevOp = state._fxOp;
+  state._fxOp = instr.op;
+  fxDepth++;
+  try { await runOneCore(instr, ctx); }
+  finally { fxDepth--; state._fxOp = prevOp; }
+  if (top) fxEmit(ctx, instr, snap);
+}
+
+async function runOneCore(instr, ctx) {
   const { state, S } = ctx;
   const who = instr.who === 'opponent' ? ctx.opp : instr.who === 'self' ? ctx.self : instr.who || ctx.self;
   switch (instr.op) {
@@ -100,6 +184,7 @@ async function runOne(instr, ctx) {
       S.grantMemory(state, who, instr.n, ctx.sourceCardId);
       break;
     case 'addSecurity': {
+      if (S.s1SecIncreaseBlocked(state, who)) { S.log(state, `${who} 시큐리티를 늘릴 수 없음 (효과 제한)`); break; } // shard1
       let cardId = instr.cardId;
       if (instr.from === 'thisCard') cardId = ctx.sourceCardId;
       if (instr.from === 'hand') {
@@ -285,7 +370,7 @@ async function runOne(instr, ctx) {
       // same check the drag-drop digivolve path uses. Only stacks that
       // actually satisfy some printed condition are offered as choices.
       const pl = state.players[ctx.self];
-      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, s.extraColors || [], S.evolveTargetRestriction(state, ctx.self, s)).ok);
+      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, S.evoExtraArg(state, ctx.self, s), S.evolveTargetRestriction(state, ctx.self, s)).ok);
       if (!eligible.length) break;
       const targetUid = eligible.length === 1 ? eligible[0].uid
         : await ctx.choose('pickStack', { player: ctx.self, uids: eligible.map(s => s.uid), prompt: `《블래스트 진화》 — ${S.card(ctx.sourceCardId).nameKo}로 진화시킬 디지몬 선택` });
@@ -334,7 +419,7 @@ async function runOne(instr, ctx) {
     case 'restrictAttack': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.expiresAfterTurn;
-      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
       if (instr.thisStack) { S.restrictAttack(state, targetPlayer, ctx.sourceStackUid, expiresAfterTurn); break; }
       if (instr.allMatching) {
         for (const s of state.players[targetPlayer].battle) {
@@ -355,7 +440,7 @@ async function runOne(instr, ctx) {
       // Narrower than restrictAttack — can still attack a Digimon directly.
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.expiresAfterTurn;
-      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
       const matching = () => state.players[targetPlayer].battle.filter(s => !instr.filter || matchesFilter(S, s.cardId, instr.filter));
       if (instr.all) {
         for (const s of matching()) S.restrictAttackPlayer(state, targetPlayer, s.uid, expiresAfterTurn);
@@ -397,7 +482,7 @@ async function runOne(instr, ctx) {
     case 'evolveEffect': {
       if (!ctx.E || !ctx.E.canEvolveAny) break;
       const pl = state.players[who];
-      const evoOk = (stack, id) => instr.ignoreCond || ctx.E.canEvolveAny(stack.cardId, id, stack.extraColors || [], S.evolveTargetRestriction(state, who, stack)).ok;
+      const evoOk = (stack, id) => (instr.ignoreCond && !S.s1HookAny(state, 's1evoIgnoreLocked', {})) || ctx.E.canEvolveAny(stack.cardId, id, S.evoExtraArg(state, who, stack), S.evolveTargetRestriction(state, who, stack)).ok;
       const cardsFor = (stack) => (instr.zone === 'trash' ? pl.trash : pl.hand).map((id, i) => i).filter(i => {
         const id = (instr.zone === 'trash' ? pl.trash : pl.hand)[i];
         return matchesFilter(S, id, instr.cardFilter) && evoOk(stack, id);
@@ -507,7 +592,7 @@ async function runOne(instr, ctx) {
     case 'preventRest': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.expiresAfterTurn;
-      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
       const matching = () => state.players[targetPlayer].battle.filter(s => !instr.filter || matchesFilter(S, s.cardId, instr.filter));
       if (instr.all) {
         for (const s of matching()) S.preventRest(state, targetPlayer, s.uid, expiresAfterTurn);
@@ -533,6 +618,7 @@ async function runOne(instr, ctx) {
       const dest = instr.dest || 'hand'; // 'hand' | 'deckBottom'
       const bounce = (stack) => {
         const pl = state.players[targetPlayer];
+        if (S.effectBlocked(state, targetPlayer, stack, 'bounce') || S.hookPreventLeave(state, targetPlayer, stack, targetPlayer === ctx.self ? 'ownEffect' : 'effect', 'bounce')) return;
         pl.battle.splice(pl.battle.indexOf(stack), 1);
         const linkIds = (stack.linkCards || []).map(l => l.cardId);
         if (dest === 'deckBottom') pl.deck.push(stack.cardId); else pl.hand.push(stack.cardId);
@@ -616,13 +702,13 @@ async function runOne(instr, ctx) {
     case 'securityDPMod': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.duration;
-      const expiresAfterTurn = dur === 'permanent' ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const expiresAfterTurn = dur === 'permanent' ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
       S.addSecurityDPMod(state, targetPlayer, instr.amount, expiresAfterTurn);
       break;
     }
     case 'evoCostMod': {
       const dur = instr.duration;
-      const expiresAfterTurn = dur === 'permanent' ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 2 : state.turnNumber;
+      const expiresAfterTurn = dur === 'permanent' ? 'permanent' : dur === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
       S.addEvoCostMod(state, ctx.self, instr.delta, instr.filter, expiresAfterTurn);
       break;
     }
@@ -633,6 +719,7 @@ async function runOne(instr, ctx) {
         if (!id) break;
         pl.hand.push(id);
         S.log(state, `${who} 시큐리티 맨 위 카드를 패에 추가: ${S.card(id).nameKo}`);
+        S.emitGameEvent(state, 'securityDecrease', { owner: who, stack: null, cause: 'effect' }); // s5
       }
       break;
     }
@@ -690,6 +777,7 @@ async function runOne(instr, ctx) {
       break;
     }
     default:
+      if (CARD_OPS[instr.op]) await CARD_OPS[instr.op](instr, ctx, { runScript, runOne });
       break;
   }
 }
@@ -748,7 +836,7 @@ function compileInner(text) {
   // use, double-counting it on top of the dedicated discardForDelay flow
   // (state.js's parseDelayEffect) — this segment contributes NOTHING to
   // the normal trigger/use pipeline.
-  if (/^[≪《]\s*딜레이\s*[≫》]\s*\([^()]*\)/.test(t.trim())) return script;
+  if (/^[≪《]\s*딜레이\s*[≫》](?:\s*\([^()]*\))?(?:\s|$)/.test(t.trim())) return script;
 
   {
     const ev = parseEvolveEffect(t);
@@ -1491,7 +1579,17 @@ const CARD_SPECIFIC = {
   'EX1-073::서로의 턴': [{ op: 'noop', note: '대체 배리어(진화원 Lv.5 2장 파기로 생존) — 일반 배리어처럼 소멸 판정 시 수동으로 대가를 지불해서 생존 처리하세요.' }],
 };
 
-export function lookupCardSpecific(cardId, tags) {
+// Keys of the form 'CARD::tag@needle' disambiguate several same-tag segments on one card: they match only when the
+// effect text (`text`, when the caller passes it) contains `needle`.
+let AT_INDEX = null; // built lazily (cards/*.js import cycles make top-level access to CARD_SCRIPTS unsafe)
+function atIndex() {
+  if (AT_INDEX) return AT_INDEX;
+  AT_INDEX = {};
+  for (const [k, v] of Object.entries(CARD_SCRIPTS)) { const i = k.indexOf('@'); if (i > 0) (AT_INDEX[k.slice(0, i)] ||= []).push([k.slice(i + 1), v]); }
+  return AT_INDEX;
+}
+export function lookupCardSpecific(cardId, tags, text) {
   const key = `${cardId}::${tags[0]}`;
-  return CARD_SPECIFIC[key] || null;
+  if (text != null && atIndex()[key]) { const hit = atIndex()[key].find(([needle]) => text.includes(needle)); if (hit) return hit[1]; }
+  return CARD_SCRIPTS[key] || CARD_SPECIFIC[key] || (String(tags[0]).startsWith('__') ? CARD_SCRIPTS['*::' + tags[0]] || null : null);
 }

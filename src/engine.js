@@ -67,11 +67,15 @@ export function nextPhase(state) {
     // normally again from the NEXT cycle onward. "상대의 테이머 전부는
     // 액티브가 되지 않는다." is the continuous version instead — re-checked
     // every cycle, never consumed.
+    const wokeUp = [];
     pl.battle.forEach(s => {
       if (s.skipNextUnsuspend) { s.skipNextUnsuspend = false; return; }
+      if (s.cannotUnsuspendUntil != null && state.turnNumber <= s.cannotUnsuspendUntil) return; // s8: 액티브 봉인 (~상대의 턴 종료까지)
       if (S.isPreventedFromUnsuspending(state, active, s)) return;
+      if (s.suspended) wokeUp.push(s); // shard1: 'unsuspend' events (EX2-037)
       s.suspended = false;
     });
+    for (const s of wokeUp) S.s1Unsuspended(state, active, s);
     // 16-11-1/16-11-5: a ≪재기동≫ (Reboot) Digimon also becomes Active during
     // the OPPONENT's Active Phase, on top of its own controller's — not just
     // whichever player's own unsuspend step this is.
@@ -96,6 +100,7 @@ export function nextPhase(state) {
     const pl = state.players[active];
     const stacks = [pl.raising, ...pl.battle].filter(Boolean);
     for (const s of stacks) S.queueTriggersForStack(state, active, s, 'mainPhaseStart');
+    S.queueForcedAttacks(state, active);
     const opp = S.opponentOf(active);
     const opl = state.players[opp];
     for (const s of [opl.raising, ...opl.battle].filter(Boolean)) S.queueTriggersForStack(state, opp, s, 'mainPhaseStartOpp');
@@ -160,6 +165,9 @@ export function endTurn(state, viaMemoryCondition = false) {
     const kinds = pp === finishing ? ['turnEndOwn', 'turnEndBoth'] : ['turnEndOpp', 'turnEndBoth'];
     for (const s of [ppl.raising, ...ppl.battle].filter(Boolean)) for (const k of kinds) S.queueTriggersForStack(state, pp, s, k);
   }
+  S.s7QueueZoneTurnEnd(state, finishing); // s7: [트래시]/[시큐리티] turn-end abilities
+  S.queueTurnEndKeywords(state, finishing); // s5: 《볼텍스》
+  S.queueTrashTurnEnd(state, finishing); // s6: [트래시]【자신의 턴 종료 시】
   const next = S.opponentOf(finishing);
   state.activePlayer = next;
   state.turnNumber += 1;
@@ -245,7 +253,20 @@ function parseEvoConditions(targetCardId) {
 // canNormalEvolve, a failed result here means the drop should be BLOCKED,
 // not silently allowed for free — there's no condition left that could
 // justify it.
+// s8: restriction.alt = [{cost, test(tgtCard, srcCard)}] — hook-granted alternative evolution ("진화 조건을 무시하고 진화 코스트 N으로 …로
+// 진화할 수 있다"); it competes with the printed conditions and the cheaper legal option wins.
 export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restriction = null) {
+  const base = canEvolveAnyBase(sourceCardId, targetCardId, extraColors, restriction);
+  if (restriction && restriction.alt && !restriction.cannotEvolve) {
+    const src = S.card(sourceCardId), tgt = S.card(targetCardId);
+    for (const a of restriction.alt) {
+      if (!a.test(tgt, src)) continue;
+      if (!base.ok || a.cost < base.cost) return { ok: true, cost: a.cost, raw: '진화 조건 무시(효과)' };
+    }
+  }
+  return base;
+}
+function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restriction = null) {
   const src = S.card(sourceCardId);
   const tgt = S.card(targetCardId);
   // A continuous "이 디지몬은 (X색)/「X」으로만 진화할 수 있다." restriction on
@@ -265,11 +286,12 @@ export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restr
   }
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
-  const srcColors = [...(src.colors || []), ...extraColors];
+  const srcColors = extraColors.replace ? extraColors.replace : [...(src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과
+  const srcNames = [src.nameKo, ...(extraColors.names || [])]; // .names: 「이 디지몬은 …의 명칭 전부를 얻는다」
   for (const cond of conditions) {
     if (typeof cond.level === 'number' && src.level !== cond.level) continue;
-    if (cond.nameExact && src.nameKo !== cond.nameExact) continue;
-    if (cond.nameIncludes && !src.nameKo.includes(cond.nameIncludes)) continue;
+    if (cond.nameExact && !srcNames.includes(cond.nameExact)) continue;
+    if (cond.nameIncludes && !srcNames.some(n => n.includes(cond.nameIncludes))) continue;
     if (cond.trait && !(src.types || []).some(t => t.includes(cond.trait))) continue;
     if (cond.colors && cond.colors.length) {
       const isAny = cond.colors.length >= 7;

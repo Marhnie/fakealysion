@@ -35,7 +35,7 @@ async function drainPending(state) {
     const t = state.pending.find(x => !x.resolved);
     if (!t) return;
     try {
-      const specific = Fx.lookupCardSpecific(t.cardId, t.tags);
+      const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text);
       let script = specific || Fx.compileToScript(t.text);
       const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, startAttack() {},
         choose: async (k, o) => { if (k === 'pickStack') return o.uids?.[rnd(o.uids.length || 1)] ?? null; if (k === 'pickStackAnySide') return o.entries?.[0] ?? null; if (k === 'pickFromZoneIndex') return o.eligibleIdxs?.[0] ?? null; if (k === 'pickFromHandIndexes') return (o.eligibleIdxs || []).slice(0, o.n || 1); if (k === 'pickFromRevealed') return o.eligible?.slice(0, o.max || 1).map(x => x.i) || []; if (k === 'confirmEffect') return Math.random() < 0.7; return null; } };
