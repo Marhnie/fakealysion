@@ -84,12 +84,23 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple
 .player-header b { color: var(--text); flex-shrink: 0; }
 .player-header span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 
-/* memory number-line, shared between the two panels — printed chalk-line style */
-.mem-track { position: relative; padding: 6px 0; }
-.mem-numbers { display: flex; justify-content: space-between; background: rgba(0,0,0,0.35); border: 1px solid var(--holo-line); border-radius: 999px; padding: 4px 10px; }
-.mem-num { font-size: 10px; color: var(--muted); flex: 1; text-align: center; }
-.mem-num.mem-zero { color: var(--holo-accent); font-weight: 700; }
-.mem-marker { position: absolute; top: 0; bottom: 0; width: 12px; height: 12px; margin-top: 6px; background: var(--holo-accent); border-radius: 50%; border: 2px solid #0a0806; transform: translateX(-50%); transition: left 0.2s ease; }
+/* memory number-line, shared between the two panels — bottom player = plus (left), top player = minus (right) */
+.mem-track { position: relative; padding: 8px 0; }
+.mem-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.mem-readout { font-size: 20px; font-weight: 800; color: var(--holo-accent); text-shadow: 0 0 8px rgba(0,0,0,0.6); text-align: center; flex: 1; letter-spacing: 0.5px; }
+.mem-side { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid transparent; opacity: 0.6; }
+.mem-side b { font-size: 22px; line-height: 1; }
+.mem-side-bottom { color: #7fc4ff; }
+.mem-side-top { color: #ffb37a; }
+.mem-side.on { opacity: 1; background: rgba(255,255,255,0.08); border-color: currentColor; }
+.mem-numbers { display: flex; justify-content: space-between; background: rgba(0,0,0,0.45); border: 1px solid var(--holo-line); border-radius: 12px; padding: 5px 6px; gap: 2px; }
+.mem-num { font-size: 14px; font-weight: 600; color: var(--muted); flex: 1; text-align: center; padding: 4px 0; border-radius: 8px; }
+.mem-num.mem-bottom { background: rgba(80,150,255,0.14); color: #a8d2ff; }
+.mem-num.mem-top { background: rgba(255,150,70,0.14); color: #ffcca0; }
+.mem-num.mem-zero { background: rgba(255,255,255,0.10); color: #fff; font-weight: 800; }
+.mem-num.mem-active { font-size: 18px; font-weight: 900; color: #001018; background: var(--holo-accent); box-shadow: 0 0 10px 2px var(--holo-accent); transform: scale(1.18); position: relative; z-index: 1; }
+.mem-top.plus { color: #7fc4ff; font-weight: 800; }
+.mem-top.minus { color: #ffb37a; font-weight: 800; }
 
 /* field composition: play zones on the left, pile counters rail on the right */
 .field-row { display: flex; gap: 8px; align-items: stretch; }
@@ -413,4 +424,33 @@ button, .card-chip, .pile-chip, .link-badge { touch-action: manipulation; -webki
   .panel-tab { padding: 4px 12px; }
   .actions-collapsed { min-height: 0; }
   .player-header { min-height: 24px; }
+}
+
+/* ---------- desktop: card effect info opens as a side panel next to the log ---------- */
+@media (min-width: 901px) and (pointer: fine) {
+  .topbar-info {
+    position: fixed; top: 48px; bottom: 0; right: 32px; width: 340px; z-index: 30;
+    flex-direction: column; align-items: stretch; gap: 10px;
+    max-height: none; overflow-y: auto; padding: 12px 14px;
+    border-top: 0; border-left: 1px solid var(--border); background: #14161b;
+    box-shadow: -6px 0 14px rgba(0,0,0,0.35);
+  }
+  #app.log-open .topbar-info { right: 300px; }
+  .topbar-info-text { flex: none; max-height: none; overflow: visible; font-size: 13px; line-height: 1.5; color: var(--fg, #d8dde6); cursor: default; }
+  .topbar-info-text::after { content: none !important; }
+  .topbar-info .info-actions { order: -1; width: 100%; justify-content: flex-start; position: sticky; top: -12px; background: #14161b; padding: 4px 0 8px; z-index: 1; }
+  .topbar-info .info-actions .info-close { margin-left: auto; }
+  #app.sheet-open .board { margin-right: 372px; }
+  #app.sheet-open.log-open .board { margin-right: 640px; }
+  #app.sheet-open .actions { margin-right: 372px; }
+  #app.sheet-open.log-open .actions { margin-right: 640px; }
+}
+
+@media (max-width: 900px), (pointer: coarse) {
+  .mem-head { flex-wrap: wrap; justify-content: space-between; }
+  .mem-readout { order: -1; flex: 1 0 100%; font-size: 18px; white-space: nowrap; }
+  .mem-side { font-size: 11px; padding: 2px 8px; }
+  .mem-side b { font-size: 18px; }
+  .mem-num { font-size: 12px; padding: 3px 0; }
+  .mem-num.mem-active { font-size: 15px; }
 }
