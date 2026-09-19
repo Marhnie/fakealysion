@@ -9,8 +9,9 @@ import * as s5 from './shard5.js';
 import * as s6 from './shard6.js';
 import * as s7 from './shard7.js';
 import * as s8 from './shard8.js';
+import * as s10 from './shard10.js';
 
-const shards = [s1, s2, s3, s4, s5, s6, s7, s8];
+const shards = [s1, s2, s3, s4, s5, s6, s7, s8, s10];
 export const SCRIPTS = Object.assign({}, ...shards.map(s => s.SCRIPTS));
 export const OPS = Object.assign({}, ...shards.map(s => s.OPS));
 // Optional per-shard continuous/replacement/event hooks (consumed by state.js): { 'CARD-ID': [descriptor, ...] }.

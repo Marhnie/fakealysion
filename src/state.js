@@ -2055,7 +2055,7 @@ function evoTargetPredicate(desc) {
     }
     if ((m = c.match(/특징(?:으로|에|은)?\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*(가진|가지|포함하는|포함하|갖는)?/))) {
       const list = quoted(m[1]), incl = /포함/.test(m[2] || '');
-      cons.push(t => (t.types || []).some(ty => list.some(x => incl ? ty.includes(x) : ty === x)));
+      cons.push(t => (t.types || []).some(ty => list.some(x => incl ? ty.includes(x) && !(x === '수' && ['수장룡형', '수생형', '수생포유류형', '정보수집 타입', '정보수집 유형'].includes(ty)) : ty === x)));
     }
     if ((m = c.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) {
       const list = quoted(m[1]);

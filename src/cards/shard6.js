@@ -1127,6 +1127,15 @@ SC('BT23-086', '자신의 턴 종료 시', '플레이어에게 어택할 수 있
   ctx.startAttack(me, st.uid, 'PLAYER');
 }));
 
+// BT23-101 등장/진화: 패의 「CS」 등장 코스트 5 이하 카드 1장을 코스트 없이 등장. 그 후, 턴 종료까지 상대의 디지몬 1마리를 「후디에」를 가진 자신의 디지몬 1마리마다 DP -3000
+SC('BT23-101', '등장 시', '특징 「후디에」를 가진 자신의 디지몬 1마리마다', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, o = opp(me);
+  await playFreeChoose(ctx, { zones: ['hand'], card: { cat: undefined, or: [{ cat: 'digimon' }, { cat: 'tamer' }], trait: ['CS'], costMax: 5 }, prompt: '코스트를 지불하지 않고 등장시킬 「CS」 카드 선택 (선택 안 함 가능)' });
+  const n = cnt(digimonsOf(state, me), stM({ trait: ['후디에'] }));
+  if (!n) return;
+  const t = await pickStackOf(ctx, o, digimonsOf(state, o), 'DP를 낮출 상대 디지몬 선택', 'dpDown');
+  if (t) dpMod(state, o, t, -3000 * n, state.turnNumber);
+}));
 // #124 BT23-101 어택 시
 SC('BT23-101', '어택 시', '특징 「CS」를 가진 자신의 테이머 1명을 패로 되돌리는 것으로', RUN(async (ctx, R) => {
   const { state } = ctx, me = ctx.self;
@@ -1134,12 +1143,27 @@ SC('BT23-101', '어택 시', '특징 「CS」를 가진 자신의 테이머 1명
   if (!tams.length || !(await optional(ctx, me, 'CS 테이머 1명을 패로 되돌리고 【등장 시】 효과 1개를 발휘'))) return;
   const t = await pickStackOf(ctx, me, tams, '패로 되돌릴 CS 테이머 선택');
   if (!t) return;
-  const top = detachStack(state, me, t, 'trash');
+  const top = detachStack(state, me, t, 'trash'); // returning a stack to hand: only the top card goes to hand, the cards under it are trashed
   const pl = state.players[me];
-  for (const sid of t.sources) { const k = pl.trash.lastIndexOf(sid); if (k !== -1) pl.trash.splice(k, 1); }
-  pl.hand.push(top, ...t.sources);
+  const k = pl.trash.lastIndexOf(top);
+  if (k !== -1) pl.trash.splice(k, 1);
+  pl.hand.push(top);
   await runSegmentsOf(ctx, ctx.sourceCardId, '등장 시', R, C(ctx.sourceCardId).nameKo);
 }));
+
+// ST22-07 【자신의 메인 페이즈 개시 시】【등장 시】 패의 음양술/플러그인 옵션 카드 1장을 이 테이머 아래에 놓는 것으로 《1 드로우》, 메모리 +1
+SC('ST22-07', '자신의 메인 페이즈 개시 시', '이 테이머의 아래에 놓는 것으로', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me], self = srcSt(ctx);
+  const om = M({ cat: 'option', trait: ['음양술', '플러그인'] });
+  const idx = self ? await pickZoneCard(ctx, me, 'hand', om, '이 테이머 아래에 놓을 음양술/플러그인 옵션 카드 선택 (선택 안 함 가능)') : null;
+  if (idx == null) return;
+  const id = takeFrom(state, me, 'hand', idx);
+  placeSources(state, me, self, [id], 'bottom');
+  S.emitGameEvent(state, 'underTamer', { owner: me, stack: self, cards: [id], cause: 'effect' });
+  S.drawCards(state, me, 1);
+  S.grantMemory(state, me, 1, ctx.sourceCardId);
+}));
+HK('ST22-07', { tag: '자신의 턴', has: '이 테이머를 레스트시키는 것으로, 이 테이머의 아래에 있는 그 디지몬의 Lv. 이하의 코스트의', events: { attack: (state, hp, holder, info) => isTam(holder) && !holder.suspended && info.owner === hp && !!info.stack && isDig(info.stack) && ['레나몬', '구미호몬', '도사몬', '샤크라몬'].some(x => C(info.stack.cardId).nameKo.includes(x)) && holder.sources.some(id => C(id).category === 'option') } });
 
 // #125 ST22-07 (tamer)
 SC('ST22-07', '자신의 턴', '이 테이머의 아래에 있는 그 디지몬의 Lv. 이하의 코스트의', RUN(async (ctx) => {
@@ -1172,6 +1196,12 @@ SC('BT23-074', '등장 시', '육성 에어리어에 자신의 「마더 이터�
     left -= C(pl.hand[idx]).cost || 0;
     S.playFreeFromZone(state, me, 'hand', idx);
   }
+}));
+
+// BT23-075 【서로의 턴】 이 디지몬이 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 자신의 패에서 특징 「이터」를 가진 디지몬 카드 1장을 코스트 없이 등장시킬 수 있다.
+HK('BT23-075', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', onLeave: (state, hp, stack, cause) => cause !== 'ownEffect' });
+SC('BT23-075', '서로의 턴', '자신의 효과 이외로 배틀 에어리어를 벗어날 때', RUN(async (ctx) => {
+  await playFreeChoose(ctx, { zones: ['hand'], card: { trait: ['이터'] }, prompt: '코스트를 지불하지 않고 등장시킬 「이터」 디지몬 선택 (선택 안 함 가능)' });
 }));
 
 // #130 BT23-075
@@ -1213,6 +1243,41 @@ SC('BT23-014', '등장 시', '상대는 트래시에서, 디지몬과 테이머�
   S.log(state, `${o}: 상대의 턴 종료까지 트래시에서 디지몬/테이머를 효과로 등장시킬 수 없음`);
 }));
 
+// BT23-046 등장/진화: 디지몬/테이머 1마리(명)를 레스트시키는 것으로, 상대의 턴 종료까지 상대의 디지몬/테이머 1마리(명)는 액티브가 되지 않는다.
+SC('BT23-046', '등장 시', '상대의 디지몬/테이머 1마리(명)는 액티브가 되지 않는다', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, o = opp(me);
+  const cands = anyDigimonEntries(state, (s) => !s.suspended);
+  for (const p of ['p1', 'p2']) for (const s of tamersOf(state, p)) if (!s.suspended) cands.push({ player: p, uid: s.uid });
+  if (!cands.length || !(await optional(ctx, me, '디지몬/테이머 1마리(명)를 레스트시키고 상대의 디지몬/테이머 1마리(명)를 액티브가 되지 않게 함'))) return;
+  const pick = await pickAnySide(ctx, cands, '레스트시킬 디지몬/테이머 선택');
+  if (!pick) return;
+  S.restStack(state, pick.player, pick.uid);
+  const t = await pickStackOf(ctx, o, [...digimonsOf(state, o), ...tamersOf(state, o)], '액티브가 되지 않게 할 상대 디지몬/테이머 선택', 'other');
+  if (t) { t.cannotUnsuspendUntil = untilOppTurnEnd(state, me); S.log(state, `${o} ${C(t.cardId).nameKo}: 상대의 턴 종료까지 액티브가 되지 않음`); }
+}));
+
+// BT23-047 등장/진화: 상대의 디지몬/테이머 5마리(명)를 레스트시킨다. 다음 상대의 액티브 페이즈에는 상대의 디지몬 전부는 액티브가 되지 않는다. 그 후, 이 디지몬으로 어택할 수 있다.
+SC('BT23-047', '등장 시', '상대의 디지몬/테이머 5마리(명)를 레스트시킨다', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, o = opp(me), st = srcSt(ctx);
+  const chosen = [];
+  for (let i = 0; i < 5; i++) {
+    const t = await pickStackOf(ctx, o, [...digimonsOf(state, o), ...tamersOf(state, o)].filter(s => !chosen.includes(s.uid)), `레스트시킬 상대 디지몬/테이머 선택 (${i + 1}/5)`, 'rest');
+    if (!t) break;
+    chosen.push(t.uid);
+    S.restStack(state, o, t.uid);
+  }
+  for (const d of digimonsOf(state, o)) d.skipNextUnsuspend = true; // consumed by engine.nextPhase at the opponent's next active phase
+  S.log(state, `${o}: 다음 액티브 페이즈에 디지몬 전부 액티브가 되지 않음`);
+  if (st && !st.suspended && await optional(ctx, me, `${C(st.cardId).nameKo}(으)로 어택`)) ctx.startAttack(me, st.uid);
+}));
+
+// BT23-014 등장/진화/어택: DP 8000 이하의 상대의 디지몬 1마리를 소멸시킨다. 상대의 디지몬과 테이머 1마리(명)마다 이 DP 소멸 효과의 상한 +2000.
+SC('BT23-014', '등장 시', 'DP 8000 이하의 상대의 디지몬 1마리를 소멸시킨다', RUN(async (ctx, R) => {
+  const { state } = ctx, o = opp(ctx.self);
+  const limit = 8000 + 2000 * (digimonsOf(state, o).length + tamersOf(state, o).length);
+  await R.runScript([{ op: 'destroy', target: 'opponent', mode: 'choose', filter: { dpMax: limit } }], ctx);
+}));
+
 // #142 ST22-14
 SC('ST22-14', '등장 시', '상대는 자신의 패가 6장이 되도록 파기한다', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, o = opp(me), opl = state.players[o];
@@ -1223,6 +1288,16 @@ SC('ST22-14', '등장 시', '상대는 자신의 패가 6장이 되도록 파기
     return;
   }
   await playFreeChoose(ctx, { zones: ['trash'], card: { trait: ['타천사형'], lvMax: 5 } });
+}));
+
+// ST22-14 【자신의 턴 종료 시】[턴에 1회] 상대의 패가 6장 이상이라면 상대는 자신의 패 1장을 파기한다. 그 후, 상대의 패가 5장 이하라면 가장 Lv.이 낮은 상대 디지몬 1마리를 소멸시킨다.
+SC('ST22-14', '자신의 턴 종료 시', '상대는 자신의 패 1장을 파기한다', RUN(async (ctx, R) => {
+  const { state } = ctx, o = opp(ctx.self), opl = state.players[o];
+  if (opl.hand.length >= 6) {
+    const idxs = await ctx.choose('pickFromHandIndexes', { player: o, eligibleIdxs: opl.hand.map((_, i) => i), n: 1, prompt: '패 1장 파기' });
+    (idxs || []).slice().sort((a, b) => b - a).forEach(i => S.trashFromHand(state, o, i));
+  }
+  if (opl.hand.length <= 5) await R.runScript([{ op: 'destroy', target: 'opponent', mode: 'choose', filter: { extreme: { stat: 'level', dir: 'min' } } }], ctx);
 }));
 
 // #145 ST22-13 inh 어택 시
@@ -1383,6 +1458,24 @@ HK('BT23-046', { tag: '상대의 턴', has: '레스트 상태인, 특징으로',
   return digimonsOf(state, hp).filter(s => s.suspended && pm(s)).map(s => ({ targetUid: s.uid, limit: 1, label: `레스트 상태인 ${C(s.cardId).nameKo}(으)로 어택 대상 변경` }));
 } });
 
+// ---- BT23 Appmon link cards (link block: 【링크 시】 / 【자신의 턴 종료 시】 effects apply to the HOST digimon, ctx.sourceStackUid = host)
+SC('BT23-028', '링크 시', '상대의 디지몬 1마리의 【진화 시】 효과는 발휘하지 않는다', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, o = opp(me);
+  const t = await pickStackOf(ctx, o, digimonsOf(state, o), '【진화 시】 효과를 봉인할 상대 디지몬 선택', 'other');
+  if (t) { t.noEvoTrigUntil = untilOppTurnEnd(state, me); S.log(state, `${o} ${C(t.cardId).nameKo}: 상대의 턴 종료까지 【진화 시】 효과 발휘 불가`); }
+}));
+SC('BT23-033', '링크 시', '패/덱으로 되돌아가지 않고', RUN(async (ctx) => {
+  const st = srcSt(ctx);
+  if (!st) return;
+  const until = untilOppTurnEnd(ctx.state, ctx.self);
+  S.grantShield(ctx.state, ctx.self, st.uid, { kinds: ['bounce', 'retreat'], until });
+}));
+SC('BT23-009', '자신의 턴 종료 시', '이 디지몬으로 플레이어에게 어택할 수 있다', RUN(async (ctx) => {
+  const st = srcSt(ctx);
+  if (!st || st.suspended || !(await optional(ctx, ctx.self, `${C(st.cardId).nameKo}(으)로 플레이어에게 어택`))) return;
+  ctx.startAttack(ctx.self, st.uid, 'PLAYER');
+}));
+
 // ---- #34 BT22-092 (tamer): own 화염형/CS digimon played/evolved -> use its 【메인】 effect
 const onOwnPlayEvo = (state, hp, holder, info) => isTam(holder) && !holder.suspended && info.owner === hp && !!info.stack && isDigimon(info.stack.cardId) && (hasTr(info.stack, '화염형') || hasTr(info.stack, 'CS'));
 HK('BT22-092', { tag: '자신의 턴', has: '이 테이머를 레스트시키는 것으로, 그 디지몬의 【메인】 효과 1개를 발휘한다', events: { play: onOwnPlayEvo, digivolve: onOwnPlayEvo } });
@@ -1426,6 +1519,12 @@ HK('P-202', { tag: '자신의 턴', has: '레스트 상태의 자신의 디지�
   return -1;
 } });
 
+// BT22-095 【자신의 턴】 특징 「이터」를 가진 자신의 디지몬이 등장했을 때, 이 테이머를 레스트시키는 것으로(= watcher queue), 메모리 +1. 또한, 자신의 패가 7장 이하라면 《1 드로우》.
+SC('BT22-095', '자신의 턴', '또한, 자신의 패가 7장 이하라면', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self;
+  S.grantMemory(state, me, 1, ctx.sourceCardId);
+  if (state.players[me].hand.length <= 7) S.drawCards(state, me, 1);
+}));
 // ---- #36 BT22-095 (tamer) 메인: place this tamer under own 「마더 이터」
 SC('BT22-095', '메인', '이 테이머를 자신의 「마더 이터」의 진화원 아래에 놓는다', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, self = srcSt(ctx);
@@ -1704,9 +1803,9 @@ SC('BT22-080', '자신의 턴', '이 디지몬이 상대의 시큐리티를 체�
   HK('BT22-080', d);
 }
 
-// ---- inherited "이 디지몬이 배틀에서 상대의 디지몬을 소멸시켰을 때" watchers (BT22-068 / BT22-070 메모리 +1, BT23-044 시큐리티 파기; scripts = the generic compile)
+// ---- inherited "이 디지몬이 배틀에서 상대의 디지몬을 소멸시켰을 때" watchers (BT22-068 / BT22-070 메모리 +1; BT23-044's 시큐리티 파기 variant is handled by state.runBattleWinTriggers)
 const KILLED_IN_BATTLE = (state, hp, holder, info) => info.stack === holder && info.owner === hp && !!info.loser && !state.players[opp(hp)].battle.includes(info.loser);
-for (const id of ['BT22-068', 'BT22-070', 'BT23-044']) HK(id, { tag: '서로의 턴', src: 'inheritedKo', has: '배틀에서 상대의 디지몬을 소멸시켰을 때', limit: 1, events: { battleWin: KILLED_IN_BATTLE } });
+for (const id of ['BT22-068', 'BT22-070']) HK(id, { tag: '서로의 턴', src: 'inheritedKo', has: '배틀에서 상대의 디지몬을 소멸시켰을 때', limit: 1, events: { battleWin: KILLED_IN_BATTLE } });
 
 // ---- #117 BT23-026: alternative evolution into 「안티라몬」
 HK('BT23-026', { tag: '자신의 턴', has: '패의 「안티라몬」으로 진화 조건을 무시하고 진화 코스트 3으로 진화할 수 있다', evoAlt: (state, hp, holder, stack) => {
