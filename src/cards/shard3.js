@@ -20,7 +20,7 @@ const traitsOf = (id) => { const c = C(id); return [...(c.types || []), c.attrib
 const traitAny = (id, list) => traitsOf(id).some(t => list.includes(t));
 const nameHas = (id, list) => list.some(n => C(id).nameKo.includes(n));
 const colorHas = (id, col) => (C(id).colors || []).includes(col);
-const stackHasColor = (st, col) => colorHas(st.cardId, col) || (st.extraColors || []).includes(col);
+const stackHasColor = (st, col) => S.stackColors(st).includes(col);
 const dp = (ctx, p, st) => S.effectiveDP(ctx.state, p, st);
 const lvl = (id) => C(id).level ?? 0;
 const memSelf = (ctx) => (ctx.self === 'p1' ? ctx.state.memory : -ctx.state.memory); // >0: own side
@@ -60,7 +60,7 @@ function bounceStack(ctx, p, st, dest = 'hand') {
   const pl = PL(ctx, p);
   const i = pl.battle.indexOf(st);
   if (i < 0) return false;
-  if (S.effectBlocked(ctx.state, p, st, 'bounce') || S.hookPreventLeave(ctx.state, p, st, p === ctx.self ? 'ownEffect' : 'effect', 'bounce')) return false;
+  if (S.effectBlocked(ctx.state, p, st, 'bounce') || S.leaveGate(ctx.state, p, st, p === ctx.self ? 'ownEffect' : 'effect', 'bounce', () => bounceStack(ctx, p, st, dest))) return false;
   pl.battle.splice(i, 1);
   const linkIds = (st.linkCards || []).map(l => l.cardId);
   pl.trash.push(...st.sources, ...linkIds);
@@ -69,7 +69,7 @@ function bounceStack(ctx, p, st, dest = 'hand') {
   else if (dest === 'securityTop') pl.security.unshift(st.cardId);
   else if (dest === 'securityBottom') pl.security.push(st.cardId);
   S.log(ctx.state, `${p} ${C(st.cardId).nameKo} → ${dest} (진화원 ${st.sources.length}장 파기)`);
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(ctx.state, p, id);
+  S.applyOverflowBatch(ctx.state, p, [...st.sources, st.cardId]);
   S.hookLeaveTriggers(ctx.state, p, st, p === ctx.self ? 'ownEffect' : 'effect');
   if (dest.startsWith('security')) S.emitGameEvent(ctx.state, 'securityIncrease', { owner: p, stack: null, cause: 'effect' });
   return true;
@@ -286,9 +286,9 @@ sc('BT14-097::시큐리티', [fn(async (ctx) => {
   const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(isDig), '원래 명칭 「스카몬」·화이트·DP 3000으로 바꿀 디지몬 선택');
   if (!t) return;
   const until = untilOwnTurnEnd(ctx);
-  const cur = dp(ctx, ctx.opp, t);
-  dpTemp(ctx, ctx.opp, t, 3000 - cur, until);
-  if (findStack(ctx.state, ctx.opp, t.uid)) { if (!t.extraColors.includes('white')) t.extraColors.push('white'); t.s3Orig = { name: '스카몬', colors: ['white'], until }; }
+  if (S.effectBlocked(ctx.state, ctx.opp, t, 'other')) return;
+  S.setBaseInfo(ctx.state, ctx.opp, t, { name: '스카몬', colors: ['white'], dp: 3000, until }); // 15-8-2-5: timestamped 원래 명칭/색/DP 변경
+  S._s4.ruleCheckDP(ctx.state, ctx.opp, t);
 })]);
 // BT14-102
 sc('BT14-102::소멸 시@이 카드를 시큐리티 아래에', [fn(async (ctx) => {
@@ -1107,7 +1107,7 @@ sc('EX6-061::서로의 턴@진화원을 아래에서부터 3장', [fn(async (ctx
   if (i < 0) return;
   S.trashFromHand(ctx.state, ctx.self, i);
   const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && s.sources.length), '진화원을 덱 아래로 되돌릴 상대 디지몬 선택');
-  if (t) { const ids = t.sources.splice(0, 3); PL(ctx, ctx.opp).deck.push(...ids); S.recomputeStackGrants(t); S.log(ctx.state, `${ctx.opp} ${C(t.cardId).nameKo} 진화원 ${ids.length}장 덱 아래로`); }
+  if (t) { const ids = await S.orderPlacement(ctx.choose, ctx.self, t.sources.splice(0, 3), '덱 아래로 되돌릴 진화원 3장의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)'); PL(ctx, ctx.opp).deck.push(...ids); S.recomputeStackGrants(t); S.log(ctx.state, `${ctx.opp} ${C(t.cardId).nameKo} 진화원 ${ids.length}장 덱 아래로`); }
   if (boardCount(ctx, ctx.opp) <= boardCount(ctx, ctx.self)) {
     const d = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && !s.sources.length), '소멸시킬 진화원이 없는 상대 디지몬 선택', { fxKind: 'delete' });
     if (d) destroy(ctx, ctx.opp, d);

@@ -18,7 +18,7 @@ const digimonStacks = (state, p) => state.players[p].battle.filter(s => C(s.card
 const tamerStacks = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'tamer');
 const hasTrait = (c, t) => (c.types || []).includes(t);
 const hasTraitIncl = (c, t) => (c.types || []).some(x => x.includes(t));
-const colorsOf = (st) => [...(C(st.cardId).colors || []), ...(st.extraColors || [])];
+const colorsOf = (st) => S.stackColors(st);
 const hasColor = (st, col) => colorsOf(st).includes(col);
 const hasSave = (c) => `${c.effectKo || ''}\n${c.inheritedKo || ''}`.includes('《세이브');
 const isX = (c) => hasTrait(c, 'X항체') || (c.nameKo || '').includes('X항체');
@@ -94,7 +94,7 @@ function leaveArea(state, stack, p, dest, cause) {
   }
   pl.trash.push(...stack.sources.filter(id => !C(id).isToken), ...linkIds);
   S.log(state, `${p} ${C(top).nameKo} 배틀 에어리어를 벗어남 (${dest}), 진화원 ${stack.sources.length}장 파기`);
-  for (const id of [...stack.sources, top]) S.applyOverflowIfAny(state, p, id);
+  S.applyOverflowBatch(state, p, [...stack.sources, top]);
   S.hookLeaveTriggers(state, p, stack, cause);
   return true;
 }
@@ -205,7 +205,7 @@ const thisStackOf = (ctx) => stackByUid(ctx.state, ctx.self, ctx.sourceStackUid)
 // bounces `stack` (owner p) honoring guards; returns whether it left
 function bounceStack(ctx, p, stack, dest) {
   const cause = causeFor(ctx, p);
-  if (S.effectBlocked(ctx.state, p, stack, 'bounce') || S.hookPreventLeave(ctx.state, p, stack, cause, 'bounce')) return false;
+  if (S.effectBlocked(ctx.state, p, stack, 'bounce') || S.leaveGate(ctx.state, p, stack, cause, 'bounce', () => bounceStack(ctx, p, stack, dest))) return false;
   return leaveArea(ctx.state, stack, p, dest, cause);
 }
 function destroyStack(ctx, p, stack) {
@@ -342,8 +342,9 @@ OPS.s2_costSource = async (instr, ctx, helpers) => {
     if (picked.length < n) return;
     chosen = picked;
   } else if (instr.optional && !(await confirmCtx(ctx, instr.confirm || '진화원을 지불하고 효과를 발휘할까요?'))) return;
-  const ids = chosen.slice().sort((a, b) => b - a).flatMap(i => st.sources.splice(i, 1));
+  let ids = chosen.slice().sort((a, b) => b - a).flatMap(i => st.sources.splice(i, 1));
   const dest = instr.dest || 'trash';
+  if (dest === 'deckBottom') ids = await S.orderPlacement(ctx.choose, who, ids, '덱 아래로 되돌릴 진화원의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)');
   const pl = state.players[who];
   if (dest === 'deckBottom') pl.deck.push(...ids); else if (dest === 'trash') pl.trash.push(...ids);
   S.recomputeStackGrants(st);
@@ -454,12 +455,16 @@ OPS.s2_bounceWithSources = async (instr, ctx) => {
   const st = await pickStackOf(ctx, opp, digimonStacks(state, opp), '덱 아래로 되돌릴 상대 디지몬 선택');
   if (!st) return;
   const cause = causeFor(ctx, opp);
-  if (S.effectBlocked(state, opp, st, 'bounce') || S.hookPreventLeave(state, opp, st, cause, 'bounce')) return;
-  const pl = state.players[opp];
-  pl.deck.push(...st.sources.filter(id => !C(id).isToken));
-  st.sources = [];
-  S.recomputeStackGrants(st);
-  leaveArea(state, st, opp, 'deckBottom', cause);
+  const doLeave = async () => {
+    if (!state.players[opp].battle.includes(st)) return;
+    if (S.effectBlocked(state, opp, st, 'bounce') || S.leaveGate(state, opp, st, cause, 'bounce', doLeave)) return;
+    const pl = state.players[opp];
+    pl.deck.push(...await S.orderPlacement(ctx.choose, ctx.self, st.sources.filter(id => !C(id).isToken), '덱 아래로 되돌릴 진화원의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)'));
+    st.sources = [];
+    S.recomputeStackGrants(st);
+    leaveArea(state, st, opp, 'deckBottom', cause);
+  };
+  await doLeave();
 };
 // DP-per-count debuffs (EX4-031, BT12-043): amount * count(ctx) on one Digimon (+ optionally all security Digimon)
 OPS.s2_dpPerCount = async (instr, ctx) => {
@@ -609,10 +614,9 @@ OPS.s2_overrideBase = async (instr, ctx) => { // BT11-043: 원래 명칭/색/DP 
   const { state } = ctx;
   const st = await pickStackOf(ctx, ctx.opp, digimonStacks(state, ctx.opp), '원래 명칭·색·DP를 변경할 상대 디지몬 선택');
   if (!st) return;
-  const base = C(st.cardId).dp || 0;
-  S.modifyDP(state, ctx.opp, st.uid, instr.dp - base - (st.tempDP || 0) - (st.inheritedDP || 0), 'turn');
-  st.dpExpiry = untilOppTurnEnd(state, ctx.self);
-  st.s2Override = { name: instr.name, colors: [instr.color], until: st.dpExpiry };
+  if (S.effectBlocked(state, ctx.opp, st, 'other')) return;
+  S.setBaseInfo(state, ctx.opp, st, { name: instr.name, colors: [instr.color], dp: instr.dp, until: untilOppTurnEnd(state, ctx.self) }); // 15-8-2-5: timestamped, later override wins
+  S._s4.ruleCheckDP(state, ctx.opp, st);
   S.log(state, `${ctx.opp} ${C(st.cardId).nameKo}: 상대의 턴 종료까지 원래 명칭 「${instr.name}」·${instr.color}·DP ${instr.dp}`);
 };
 OPS.s2_battleImmune = async (instr, ctx) => { // BT14-028: 상대의 턴 종료까지 배틀에서 소멸하지 않는다
@@ -680,10 +684,11 @@ OPS.s2_moveUnder = async (instr, ctx) => { // BT11-088 / BT12-083
   const targets = [...digs.filter(s => s !== mv), ...(instr.allowTamer ? tamerStacks(state, opp) : [])];
   if (!targets.length) { S.log(state, `${opp} 아래에 놓을 대상이 없음`); return; }
   const cause = causeFor(ctx, opp);
-  if (S.effectBlocked(state, opp, mv, 'bounce') || S.hookPreventLeave(state, opp, mv, cause, 'bounce')) return;
+  if (S.effectBlocked(state, opp, mv, 'bounce')) return;
   const tg = await pickStackOf(ctx, ctx.self, targets, '아래에 놓을 대상(디지몬/테이머) 선택');
   if (!tg) return;
-  moveStackUnder(state, opp, mv, tg);
+  const doMove = () => { if (!state.players[opp].battle.includes(mv)) return; if (S.leaveGate(state, opp, mv, cause, 'bounce', doMove)) return; moveStackUnder(state, opp, mv, tg); };
+  doMove();
 };
 OPS.s2_lookHandTrash = async (instr, ctx) => { // BT11-088 / BT13-092: look at the whole opponent hand, trash one
   const { state } = ctx; const opl = state.players[ctx.opp];

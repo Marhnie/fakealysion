@@ -45,7 +45,7 @@ const nameIs = (id, ...l) => namesOf(id).some((n) => l.includes(n));
 const nameIncl = (id, ...l) => namesOf(id).some((n) => l.some((x) => n.includes(x)));
 const lv = (id) => C(id).level || 0;
 const isDig = (id) => C(id).category === 'digimon';
-const colorsOfStack = (st) => [...(C(st.cardId).colors || []), ...(st.extraColors || [])];
+const colorsOfStack = (st) => S.stackColors(st);
 const stackHasType = (st, ...l) => hasType(st.cardId, ...l);
 const BIRD = (id) => typeIncl(id, '조', '새', '병아리') || hasType(id, '볼텍스 워리어');
 
@@ -106,10 +106,10 @@ const oppEffectCause = (ctx, who) => (who === ctx.self ? 'ownEffect' : 'effect')
 function bounceIt(ctx, who, st, dest = 'hand') {
   const { state } = ctx;
   if (S.effectBlocked(state, who, st, 'bounce')) return false;
-  if (S.hookPreventLeave(state, who, st, oppEffectCause(ctx, who), 'bounce')) return false;
   const pl = state.players[who];
   const i = pl.battle.indexOf(st);
   if (i < 0) return false;
+  if (S.leaveGate(state, who, st, oppEffectCause(ctx, who), 'bounce', () => bounceIt(ctx, who, st, dest))) return false;
   pl.battle.splice(i, 1);
   const linkIds = (st.linkCards || []).map((l) => l.cardId);
   const real = (x) => !S.isTokenId(x);
@@ -122,7 +122,7 @@ function bounceIt(ctx, who, st, dest = 'hand') {
   }
   pl.trash.push(...st.sources.filter(real), ...linkIds.filter(real));
   S.log(state, `${who} ${C(st.cardId).nameKo} 배틀 에어리어를 벗어남 (${dest})`);
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(state, who, id);
+  S.applyOverflowBatch(state, who, [...st.sources, st.cardId]);
   return true;
 }
 
@@ -155,7 +155,7 @@ function linkCostFor(state, hp, host, cardId, delta) {
   return Math.max(0, cost);
 }
 // take a card out of hand / trash / host's sources and link it
-function linkFrom(ctx, who, host, zone, cardId, delta) {
+async function linkFrom(ctx, who, host, zone, cardId, delta) {
   const { state } = ctx;
   const pl = state.players[who];
   if (zone === 'hand') { const i = pl.hand.indexOf(cardId); if (i < 0) return false; }
@@ -163,7 +163,9 @@ function linkFrom(ctx, who, host, zone, cardId, delta) {
   else if (zone === 'sources') { const i = host.sources.lastIndexOf(cardId); if (i < 0) return false; host.sources.splice(i, 1); S.recomputeStackGrants(host); }
   const cost = linkCostFor(state, who, host, cardId, delta);
   if (cost > 0) payMemory(state, who, cost);
-  S.linkCardTo(state, who, host.uid, cardId, cardId, 0, zone === 'hand' ? 'hand' : 'none');
+  // 4-9-5: at the Link cap the player chooses which existing Link Card is discarded (asynchronous picker)
+  const dIdx = await S.linkDiscardIdx(state, who, host.uid, ctx.choose);
+  S.linkCardTo(state, who, host.uid, cardId, cardId, 0, zone === 'hand' ? 'hand' : 'none', dIdx);
   return true;
 }
 
@@ -296,7 +298,7 @@ async function linkThisOption(ctx) {
   if (!(await confirm(ctx, `${C(id).nameKo}: 자신의 디지몬에 코스트 없이 링크할까요?`))) return null;
   const host = await pickStack(ctx, self, hosts, '링크할 디지몬 선택');
   if (!host) return null;
-  return linkFrom(ctx, self, host, 'trash', id, 'free') ? host : null;
+  return (await linkFrom(ctx, self, host, 'trash', id, 'free')) ? host : null;
 }
 SCRIPTS['ST22-08::메인'] = [F(async (ctx) => {
   const { state, self } = ctx;
@@ -457,7 +459,7 @@ SCRIPTS['BT24-038::등장 시'] = [F(async (ctx) => {
   if (!cands.length) return;
   const k = await pickFromList(ctx, self, cands.map((c) => c.id), '링크할 Lv.4 이하 디지몬 카드 선택');
   if (k == null) return;
-  linkFrom(ctx, self, st, cands[k].zone, cands[k].id, 'free');
+  await linkFrom(ctx, self, st, cands[k].zone, cands[k].id, 'free');
 })];
 // ---- shared helpers (part 2)
 function once(holder, id, key, limit = 1) {
@@ -479,7 +481,7 @@ function moveOut(state, who, st, dest) {
     else if (dest === 'secBottom') pl.security.push(st.cardId);
   }
   pl.trash.push(...st.sources.filter(real), ...(st.linkCards || []).map((l) => l.cardId).filter(real));
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(state, who, id);
+  S.applyOverflowBatch(state, who, [...st.sources, st.cardId]);
   return true;
 }
 // mind link: this tamer goes under a digimon that has no tamer card among its sources
@@ -665,8 +667,8 @@ SCRIPTS['BT24-077::진화 시'] = [F(async (ctx) => {
   const c = cands[k];
   const host = await pickStack(ctx, self, hosts.filter((h) => canLink(c.id, h)), '링크할 디지몬 선택', { mandatory: true });
   if (!host) return;
-  if (c.zone === 'sources') { const i = st.sources.lastIndexOf(c.id); st.sources.splice(i, 1); S.recomputeStackGrants(st); linkFrom(ctx, self, host, 'none', c.id, 'free'); }
-  else linkFrom(ctx, self, host, 'trash', c.id, 'free');
+  if (c.zone === 'sources') { const i = st.sources.lastIndexOf(c.id); st.sources.splice(i, 1); S.recomputeStackGrants(st); await linkFrom(ctx, self, host, 'none', c.id, 'free'); }
+  else await linkFrom(ctx, self, host, 'trash', c.id, 'free');
 })];
 SCRIPTS['BT24-080::자신의 턴 종료 시'] = [F(async (ctx) => {
   const { state, self } = ctx;
@@ -856,8 +858,8 @@ async function doLink(ctx, o) {
     const c = cands[k];
     const host = await pickStack(ctx, self, hosts.filter((h) => canLink(c.id, h)), '링크할 디지몬 선택', { mandatory: true });
     if (!host) return;
-    if (c.zone === 'sources') { me.sources.splice(me.sources.lastIndexOf(c.id), 1); S.recomputeStackGrants(me); linkFrom(ctx, self, host, 'none', c.id, o.delta ?? 'free'); }
-    else linkFrom(ctx, self, host, c.zone, c.id, o.delta ?? 'free');
+    if (c.zone === 'sources') { me.sources.splice(me.sources.lastIndexOf(c.id), 1); S.recomputeStackGrants(me); await linkFrom(ctx, self, host, 'none', c.id, o.delta ?? 'free'); }
+    else await linkFrom(ctx, self, host, c.zone, c.id, o.delta ?? 'free');
   }
 }
 // pick an own digimon that has an eligible evolution card, then evolve it

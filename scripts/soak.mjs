@@ -10,6 +10,12 @@ import * as E from '../src/engine.js';
 import * as Fx from '../src/effects.js';
 global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url.replace(/^\.\//, './'), 'utf8')) });
 await S.loadData();
+// SOAK_INTERACTIVE=1: play with the browser's replacement gate (S.REPL.interactive) and answer every parked prompt (random candidate / decline).
+let CUR = null, PARKED = 0, SOAK_TIMER = null;
+if (process.env.SOAK_INTERACTIVE) {
+  S.REPL.interactive = true;
+  SOAK_TIMER = setInterval(() => { const pr = CUR && CUR.pendingReplacements; if (!pr || !pr.length) return; const e = pr[0]; PARKED++; try { S.resumeReplacement(CUR, e, Math.random() < 0.3 ? -1 : Math.floor(Math.random() * e.cands.length)); } catch (er) { note('resume', er); pr.shift(); } }, 1);
+}
 const cards = Object.values(S.CARDS);
 const cats = {};
 for (const c of cards) cats[c.category] = (cats[c.category] || 0) + 1;
@@ -67,7 +73,7 @@ function invariants(state, tag) {
 let games = 0, turns = 0, actions = 0;
 const G = Number(process.argv[2] || 30);
 for (let g = 0; g < G && true; g++) {
-  const state = S.newGame(randomDeck('A'), randomDeck('B'));
+  const state = S.newGame(randomDeck('A'), randomDeck('B')); CUR = state;
   try {
     E.drawOpeningHand(state, 'p1'); E.drawOpeningHand(state, 'p2'); E.setSecurityStacks(state); E.beginGame(state, E.coinFlip());
   } catch (e) { note('setup', e); continue; }
@@ -119,6 +125,8 @@ for (let g = 0; g < G && true; g++) {
     } catch (e) { note('turn', e); break; }
   }
 }
+if (SOAK_TIMER) clearInterval(SOAK_TIMER);
+if (process.env.SOAK_INTERACTIVE) console.log('replacement prompts answered:', PARKED);
 console.log('games', games, 'turns', turns, 'actions', actions, 'cats', JSON.stringify(cats));
 const keys = Object.keys(errors);
 console.log('distinct errors:', keys.length);

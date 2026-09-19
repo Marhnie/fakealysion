@@ -118,7 +118,7 @@ function detachStack(state, p, st, to = 'trash') {
   pl.battle.splice(i, 1);
   const linkIds = (st.linkCards || []).map(l => l.cardId);
   pl[to].push(...st.sources, ...linkIds);
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(state, p, id);
+  S.applyOverflowBatch(state, p, [...st.sources, st.cardId]);
   return st.cardId;
 }
 // Expiry turn number for "…상대의 턴 종료까지" when resolved by `who` (turn numbers increase per player-turn).
@@ -448,7 +448,7 @@ SC('BT22-021', '등장 시', '진화원 아래에 놓을 수 있다', RUN(async 
 // #9 BT22-023 (turn end, blue unsuspend)
 SC('BT22-023', '자신의 턴 종료 시', '블루인 자신의 디지몬/테이머 1마리(명)를 액티브로 할 수 있다', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self;
-  const cands = [...digimonsOf(state, me), ...tamersOf(state, me)].filter(s => s.suspended && ([...(C(s.cardId).colors || []), ...(s.extraColors || [])]).includes('blue'));
+  const cands = [...digimonsOf(state, me), ...tamersOf(state, me)].filter(s => s.suspended && S.stackColors(s).includes('blue'));
   const st = await pickStackOf(ctx, me, cands, '액티브로 할 블루 디지몬/테이머 선택');
   if (st) S.unsuspendStack(state, me, st.uid);
 }));
@@ -1297,7 +1297,7 @@ HK('P-202', { tag: '자신의 턴', has: '레스트 상태의 자신의 디지�
 // ---- #36 BT22-095 (tamer) 메인: place this tamer under own 「마더 이터」
 SC('BT22-095', '메인', '이 테이머를 자신의 「마더 이터」의 진화원 아래에 놓는다', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, self = srcSt(ctx);
-  const cands = stackList(state, me).filter(s => s !== self && C(s.cardId).nameKo === '마더 이터');
+  const cands = state.players[me].battle.filter(s => s !== self && C(s.cardId).nameKo === '마더 이터'); // 3-4-7-3: not the raising area
   if (!self || !cands.length) { S.log(state, '자신의 「마더 이터」가 없어 발휘할 수 없음'); return; }
   const to = cands.length === 1 ? cands[0] : await pickStackOf(ctx, me, cands, '카드를 놓을 「마더 이터」 선택');
   if (to) moveStackUnder(state, me, self, to);
@@ -1381,7 +1381,7 @@ for (const [id, cols] of [['LM-056', ['purple', 'blue']], ['LM-055', ['green', '
 }
 SC('P-206', '메인', '지불하는 등장 코스트 -4로 등장 시킬 수 있다', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me];
-  const cols = new Set(digimonsOf(state, me).flatMap(s => [...(C(s.cardId).colors || []), ...(s.extraColors || [])]));
+  const cols = new Set(digimonsOf(state, me).flatMap(s => S.stackColors(s)));
   const cm = (id) => C(id).category === 'tamer' && (C(id).colors || []).some(c => cols.has(c));
   const idx = await pickZoneCard(ctx, me, 'hand', cm, '등장 코스트 -4로 등장시킬 테이머 선택 (선택 안 함 가능)');
   if (idx == null) return;

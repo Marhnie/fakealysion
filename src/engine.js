@@ -346,8 +346,8 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
   if (!rc.ok) return rc;
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
-  const srcColors = extraColors.replace ? extraColors.replace : [...(src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과
-  const srcNames = [src.nameKo, ...(extraColors.names || [])]; // .names: 「이 디지몬은 …의 명칭 전부를 얻는다」
+  const srcColors = [...(extraColors.replace || src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과(얻은 색은 그대로 추가)
+  const srcNames = [extraColors.nameReplace || src.nameKo, ...(extraColors.names || [])]; // .nameReplace: 원래 명칭 변경, .names: 「이 디지몬은 …의 명칭 전부를 얻는다」
   let best = null; // 8-1-2-1: several applicable conditions -> the cheapest one
   for (const cond of conditions) {
     if (typeof cond.level === 'number' && src.level !== cond.level) continue;

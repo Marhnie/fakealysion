@@ -34,7 +34,7 @@ const isNamedAny = (cid, ns) => ns.some(n => isNamed(cid, n));
 const nameHas = (cid, n) => namesOfCard(cid).some(x => x.includes(n));
 const hasColor = (cid, cols) => (C(cid).colors || []).some(c => cols.includes(c));
 const lvOf = (cid) => C(cid).level ?? 0;
-const stackColors = (s) => { const ex = s.extraColors; return ex && ex.replace ? ex.replace : [...(C(s.cardId).colors || []), ...(ex || [])]; };
+const stackColors = (s) => S.stackColors(s);
 const stackHasColor = (s, cols) => stackColors(s).some(c => cols.includes(c));
 const stackTraits = (st, s) => [...typesOf(s.cardId), ...(S.hookStackTypes(st, ownerOf(st, s), s) || [])];
 const stackHasTrait = (st, s, t) => stackTraits(st, s).some(x => x.toLowerCase() === String(t).toLowerCase());
@@ -71,13 +71,13 @@ function bounceStack(ctx, p, stack, dest = 'hand') {
   const pl = st.players[p];
   if (!pl.battle.includes(stack)) return false;
   const cause = p === ctx.self ? 'ownEffect' : 'effect';
-  if (S.effectBlocked(st, p, stack, 'bounce') || S.hookPreventLeave(st, p, stack, cause, 'bounce')) return false;
+  if (S.effectBlocked(st, p, stack, 'bounce') || S.leaveGate(st, p, stack, cause, 'bounce', () => bounceStack(ctx, p, stack, dest))) return false;
   pl.battle.splice(pl.battle.indexOf(stack), 1);
   const linkIds = (stack.linkCards || []).map(l => l.cardId);
   if (!S.isTokenId(stack.cardId)) { if (dest === 'deckBottom') pl.deck.push(stack.cardId); else pl.hand.push(stack.cardId); }
   pl.trash.push(...stack.sources, ...linkIds);
   S.log(st, `${p} ${C(stack.cardId).nameKo} ${dest === 'deckBottom' ? '덱 아래로' : '패로'} (진화원 ${stack.sources.length}장 파기)`);
-  for (const id of [...stack.sources, stack.cardId]) S.applyOverflowIfAny(st, p, id);
+  S.applyOverflowBatch(st, p, [...stack.sources, stack.cardId]);
   return true;
 }
 // Removes a whole stack (top card + its sources + links) from the battle area; returns it (no trigger, no trash).
@@ -483,6 +483,7 @@ OPS.s4_moveToRaising = async (instr, ctx) => {
   const st = ctx.state, p = ctx.self, pl = st.players[p], me = thisStack(ctx);
   if (!me || pl.raising || !pl.battle.includes(me)) return;
   if (!(await confirm(ctx, p, `${C(me.cardId).nameKo}을(를) 육성 에어리어로 이동시킬까요?`))) return;
+  S.cancelWaitingEffectsOf(st, me.uid); // 4-17-5
   pl.battle.splice(pl.battle.indexOf(me), 1);
   pl.raising = me;
   log(ctx, `${p} ${C(me.cardId).nameKo} 육성 에어리어로 이동`);
@@ -786,7 +787,7 @@ OPS.s4_setBaseDP6000 = async (instr, ctx) => {
   const t = stackByUid(st, pk.player, pk.uid);
   if (!t) return;
   S.trashTopSecurityByEffect(st, p);
-  t.dpBaseOverride = { value: instr.value, until: untilOppTurnEnd(st) };
+  S.setBaseInfo(st, pk.player, t, { dp: instr.value, until: untilOppTurnEnd(st) }); // 15-8-2-5 timestamped
   log(ctx, `${pk.player} ${C(t.cardId).nameKo}의 원래 DP가 ${instr.value}(으)로 변경됨`);
   S._s4.ruleCheckDP(st, pk.player, t);
 };
@@ -1171,13 +1172,29 @@ OPS.s4_changeColor = async (instr, ctx) => {
   const names = ['레드', '블루', '옐로', '그린', '블랙', '퍼플'], cols = ['red', 'blue', 'yellow', 'green', 'black', 'purple'];
   const c = await ctx.choose('multipleChoice', { options: names, prompt: '변경할 색 선택 (화이트 이외)' });
   if (c == null) return;
-  t.extraColors = Object.assign([], { replace: [cols[c]] });
-  const uid = t.uid, until = st.turnNumber + 1;
-  (st.endOfTurnEffects ||= []).push({ turnNumber: until, expire: true, fn: () => { const x = stackByUid(st, ctx.opp, uid); if (x) x.extraColors = []; } });
+  if (S.effectBlocked(st, ctx.opp, t, 'other')) return;
+  S.setBaseInfo(st, ctx.opp, t, { colors: [cols[c]], until: st.turnNumber + 1 }); // 원래 색만 교체(얻은 색은 유지), 만료는 clearExpiredModifiers
   log(ctx, `${ctx.opp} ${C(t.cardId).nameKo}의 원래 색이 ${names[c]}(으)로 변경됨 (상대의 턴 종료까지)`);
 };
 SCRIPTS['BT18-078::등장 시'] = [{ op: 's4_changeColor' }];
 OPS.s4_oppMayTrashSec = async (instr, ctx) => {
   const st = ctx.state; V(ctx).oppTrashed = false;
   if (st.players[ctx.opp].security.length && await confirm(ctx, ctx.opp, `${ctx.opp}: 자신의 시큐리티를 위에서부터 1장 파기할까요?`)) V(ctx).oppTrashed = !!S.trashTopSecurityByEffect(st, ctx.opp);
+};
+
+// BT22-093 【자신의 턴】 자신의 디지몬이 특징 「CS」를 가진 디지몬으로 진화했을 때, 그 디지몬의 진화원에 진화한 디지몬과 Lv.이 같은 카드가 있다면, 이 테이머를 레스트시키는 것으로,
+// 그 디지몬을 패의 특징 「CS」를 가진 디지몬 카드로 코스트를 지불하지 않고 진화시킬 수 있다.
+// 15-8-3-8: "진화한 디지몬의 Lv." is the level AT TRIGGER TIME (ctx.trigger.evtSnap), not whatever the stack has become by the time this resolves.
+SCRIPTS['BT22-093::자신의 턴'] = [{ op: 's4_bt22_093' }];
+OPS.s4_bt22_093 = async (instr, ctx) => {
+  const st = ctx.state, p = ctx.self, pl = st.players[p];
+  const snap = ctx.trigger?.evtSnap, uid = ctx.trigger?.evtStackUid;
+  const target = uid && stackByUid(st, p, uid);
+  const me = thisStack(ctx);
+  if (!snap || !target || !me || me.suspended) return;
+  if (!target.sources.some(id => C(id).level != null && C(id).level === snap.level)) { log(ctx, '진화원에 진화한 디지몬과 Lv.이 같은 카드가 없어 발휘하지 않음'); return; }
+  const ok = (id, c, s) => isDigimonCard(id) && hasTrait(id, 'CS');
+  if (!pl.hand.some(id => ok(id) && canEvolveInto(st, p, target, id, false).ok) || !(await confirm(ctx, p, `${C(me.cardId).nameKo}를 레스트시켜 ${C(target.cardId).nameKo}을(를) 패의 「CS」 디지몬으로 코스트 없이 진화시킬까요?`))) return;
+  S.restStack(st, p, me.uid);
+  await OPS.s4_evolve({ subject: { pred: (s) => s.uid === uid }, zone: 'hand', pred: (id) => ok(id), cost: { mode: 'free' } }, ctx);
 };

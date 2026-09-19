@@ -233,6 +233,7 @@ function startNewGame() {
     if (!v.ok) { setupError = `${p.toUpperCase()} 덱 "${d?.name || setupPick[p]}"은(는) 게임에 사용할 수 없습니다: ` + v.errors.join(' / '); renderSetup(); return; }
   }
   setupError = '';
+  sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' };
   state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
   E.drawOpeningHand(state, 'p1');
   E.drawOpeningHand(state, 'p2');
@@ -306,10 +307,19 @@ function pumpReplacementPrompt() {
   if (!pr || !pr.length || state.uiChoice) return;
   const e = pr[0];
   const nm = e.cardId ? S.card(e.cardId).nameDisplayKo || S.card(e.cardId).nameKo : '';
+  const verb = e.kind === 'leave' ? '배틀 에어리어를 벗어나려' : '소멸하려';
+  if (e.cands.length > 1) { // 18-2: several replacements could be used — the player picks which one (or none)
+    state.uiChoice = {
+      kind: 'multipleChoice',
+      payload: { player: e.p, prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 사용할 효과를 선택하세요 (룰 18-2, 즉시형 15-8-5)`, options: [...e.cands.map((c, i) => `${i + 1}. ${c.lines.filter(l => !/스택 소멸/.test(l)).join(' / ') || c.lines[0] || '(생존 효과)'}`), '사용하지 않는다'] },
+      resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, val == null || val >= e.cands.length ? -1 : val); render(); },
+    };
+    return;
+  }
   state.uiChoice = {
     kind: 'confirmEffect',
-    payload: { player: e.p, yesLabel: '사용한다', noLabel: '사용하지 않는다', prompt: `${e.p}: ${nm}이(가) 소멸하려 합니다 — 대신 다음 효과를 사용할 수 있습니다: ${e.lines.join(' / ') || '(생존 효과)'}` },
-    resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, !!val); render(); },
+    payload: { player: e.p, yesLabel: '사용한다', noLabel: '사용하지 않는다', prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 다음 효과를 사용할 수 있습니다: ${e.lines.join(' / ') || '(생존 효과)'}` },
+    resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, val ? 0 : -1); render(); },
   };
 }
 
@@ -365,7 +375,10 @@ function renderTopbar() {
   bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? '50%' : `${pct}%`;
   bar.querySelector('.gauge-fill').style.width = `${Math.abs(state.memory) / 20 * 100}%`;
   if (state.winner) {
-    return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [h('b', {}, state.winner === 'draw' ? '게임 종료 — 무승부 (영구 순환, 18-3-2)' : `게임 종료 — 승자: ${state.winner}`)])]);
+    return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
+      h('b', {}, state.winner === 'draw' ? '게임 종료 — 무승부 (영구 순환, 18-3-2)' : `게임 종료 — 승자: ${state.winner}`),
+      h('button', { className: 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+    ])]);
   }
   const mainRow = h('div', { className: 'topbar-row' }, [
     h('b', {}, `턴 ${state.turnNumber}`),
@@ -378,7 +391,7 @@ function renderTopbar() {
       className: 'danger', disabled: state.phase !== 'main',
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
     }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
-    ...['p1', 'p2'].map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: () => { if (window.confirm(`${pp.toUpperCase()} 투항하시겠습니까?`)) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+    ...['p1', 'p2'].map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
   ]);
   const rows = [mainRow];
   // Selected-card info (including 진화원효과) lives here — part of the
@@ -516,7 +529,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       // line on the target — a failure here means NO printed condition
       // justifies this evolution, so the drop must be rejected outright
       // rather than silently let through for cost 0.
-      if (S.card(stack.cardId).category !== 'digimon') { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
+      if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
       let check = E.canEvolveAny(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack));
       const s1alt = S.s1EvolveAlt(state, p, stack, drag.cardId); // shard1: 진화조건 무시 + 고정 코스트
       if (s1alt && (!check.ok || s1alt.cost < check.cost)) check = { ok: true, cost: s1alt.cost, raw: '특수 진화' };
@@ -546,8 +559,8 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       let evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
       evoModDelta += S.hookEvoCostDiscount(state, p, stack, drag.cardId);
       evoModDelta += S.s1EvoAuto(state, p, stack, drag.cardId); // shard1
-      for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += o.apply() || 0; }
-      for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += o.apply() || 0; }
+      for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
+      for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
       const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
       if (absorb && absorb.candidates.length && await askYN(p, `《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
         // the player picks WHICH active Digimon is rested (8-x 《흡수진화》)
@@ -615,20 +628,23 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   }, '🏋트레이닝') : null;
   // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
   const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
-  const mainBtns = mainAbilities.length ? h('div', { className: 'main-btns' }, mainAbilities.map((ab, i) => h('button', {
+  const mainBtns = mainAbilities.length ? h('div', { className: 'main-btns' }, mainAbilities.map((ab, i) => { const payable = Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text); return h('button', {
     className: 'delay-btn main-btn',
-    title: `【메인】 ${ab.text.replace(/\n/g, ' ')}`,
+    disabled: !payable, // 15-8-4-4-1: an activated ability with an optional processing condition can only be declared while that condition can be executed
+    title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
     onClick: (e) => {
       e.stopPropagation();
       if (blockIfBusy()) return;
+      if (!Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text)) { S.log(state, '처리 조건을 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'); render(); return; }
       state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
       render();
     },
-  }, mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인'))) : null;
+  }, mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인'); })) : null;
   const extraBtns = [delayBtn, trainBtn, mainBtns].filter(Boolean);
 
   // 10-1-1: the link condition/cost are printed on the card being linked (S.linkCheck); any own battle Digimon can be a host candidate.
-  const linkSlots = (zoneKind === 'battle' && S.card(stack.cardId).category === 'digimon' && p === state.activePlayer) ? [{ grantedBy: stack.cardId, conditionText: '드롭한 카드의 링크 조건', cost: '?' }] : [];
+  // 10-1-1: a raising-area Digimon can be a Link host too
+  const linkSlots = ((zoneKind === 'battle' || zoneKind === 'raising') && S.card(stack.cardId).category === 'digimon' && p === state.activePlayer) ? [{ grantedBy: stack.cardId, conditionText: '드롭한 카드의 링크 조건', cost: '?' }] : [];
   if (!linkSlots.length) return extraBtns.length ? h('div', { className: 'stack-wrap' }, [chip, ...extraBtns]) : chip;
   // Small overlay badge, separately droppable, so dragging a hand card onto
   // it links instead of digivolving — distinct from dropping on the card art.
@@ -677,7 +693,7 @@ async function playFreshFromDrag(drag, p) {
   if (category === 'digimon' && S.isPlayRestricted(state, drag.player, drag.cardId)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); dragData = null; render(); return; }
   if (category === 'option') {
     let optDelta = 0; // s8: HOOKS.playDiscount also applies to Option cards ("…옵션 카드를 사용할 때, …사용 코스트 -N")
-    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) optDelta += o.apply() || 0; }
+    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) optDelta += await o.apply(ctxChoose) || 0; }
     S.useOptionCard(state, drag.player, drag.idx, { costDelta: optDelta });
   } else {
     let discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) + S.traitPlayCostDiscount(state, drag.player, drag.cardId) : 0;
@@ -699,7 +715,7 @@ async function playFreshFromDrag(drag, p) {
       assembly = asmPlan.materials; discount -= asmPlan.discount;
     }
     // Card-specific "…등장할 때, <비용>하는 것으로 지불하는 등장 코스트 -N" abilities (HOOKS.playDiscount) — confirmed one by one.
-    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += o.apply() || 0; }
+    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += await o.apply(ctxChoose) || 0; }
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
@@ -739,13 +755,14 @@ function renderPlayerPanel(p) {
   const legalClickTargets = canAttackThisPlayerByClick ? new Set(S.legalDigimonTargets(state, sel.stack.player, sel.stack.uid)) : new Set();
   const header = h('div', {
     className: `player-header${canAttackThisPlayer ? ' attackable' : ''}`,
-    ondragover: canAttackThisPlayerByDrag ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } : undefined,
-    ondragleave: canAttackThisPlayerByDrag ? (e) => e.currentTarget.classList.remove('drop-hover') : undefined,
-    ondrop: canAttackThisPlayerByDrag ? (e) => {
-      e.preventDefault(); e.currentTarget.classList.remove('drop-hover');
-      if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle') { attackFlow(dragData.player, dragData.uid, 'PLAYER'); }
+    // dragData is only set at dragstart (no re-render), so the legality check must happen at event time, not render time.
+    ondragover: (e) => { if (dragData && dragData.kind === 'stack' && dragData.player !== p && S.canAttackPlayer(state, dragData.player, dragData.uid)) { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } },
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
+    ondrop: (e) => {
+      e.currentTarget.classList.remove('drop-hover');
+      if (dragData && dragData.kind === 'stack' && dragData.zone === 'battle' && dragData.player !== p && S.canAttackPlayer(state, dragData.player, dragData.uid)) { e.preventDefault(); attackFlow(dragData.player, dragData.uid, 'PLAYER'); }
       dragData = null;
-    } : undefined,
+    },
     onClick: canAttackThisPlayerByClick ? () => { attackFlow(sel.stack.player, sel.stack.uid, 'PLAYER'); sel.stack = null; render(); } : undefined,
   }, [
     h('b', {}, p.toUpperCase()),
@@ -1217,6 +1234,7 @@ function renderUiChoice() {
 // be scrolled/collapsed out of view. Checked in render() before the
 // regular actions panel; whichever of these exists takes over the screen.
 function renderModal() {
+  if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
   const choiceUi = renderUiChoice();
   if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
   const pendingUi = renderPendingAttack();

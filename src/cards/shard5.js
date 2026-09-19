@@ -23,7 +23,7 @@ const typeIncl = (c, ...ts) => ts.some(t => (c.types || []).some(x => x.includes
 const nameIncl = (c, ...ns) => ns.some(n => c.nameKo.includes(n));
 const mention = (c, n) => c.nameKo.includes(n) || `${c.effectKo || ''}\n${c.inheritedKo || ''}`.replace(/〈룰〉[^\n]*/g, '').includes(`「${n}」`);
 const mem = (state, p) => (p === 'p1' ? state.memory : -state.memory);
-const colorsOf = (st) => [...(C(st.cardId).colors || []), ...(st.extraColors || [])];
+const colorsOf = (st) => S.stackColors(st);
 const distinctColors = (stacks) => new Set(stacks.flatMap(colorsOf));
 const tamerColors = (state, p) => distinctColors(tams(state, p)).size;
 const oppTurnEnd = (state, self) => (state.activePlayer === opp(self) ? state.turnNumber : state.turnNumber + 1);
@@ -325,7 +325,7 @@ sc('BT19-077::소멸 시', async (ctx) => {
 });
 sc('BT19-078::등장 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
-  const mothers = stacksOf(state, ctx.self).filter(s => C(s.cardId).nameKo === '마더 디·리퍼');
+  const mothers = state.players[ctx.self].battle.filter(s => C(s.cardId).nameKo === '마더 디·리퍼');
   const m = await pickStack(ctx, ctx.self, mothers, '「마더 디·리퍼」 선택');
   if (!m || !m.sources.length) return;
   const t = await pickStack(ctx, o, digs(state, o), `DP -${m.sources.length * 1000} 받을 상대 디지몬 선택`);
@@ -913,11 +913,15 @@ SCRIPTS['BT21-030::진화 시'] = SCRIPTS['BT21-030::등장 시'];
 sc('BT21-030::어택 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self), opl = state.players[o];
   const t = await pickStack(ctx, o, digs(state, o).filter(s => s.sources.length === 0), '덱 아래로 되돌릴 상대 디지몬 선택 (취소=안 함)', true);
-  if (!t || S.effectBlocked(state, o, t, 'bounce') || S.hookPreventLeave(state, o, t, 'effect', 'bounce')) return;
-  opl.battle.splice(opl.battle.indexOf(t), 1);
-  opl.trash.push(...(t.linkCards || []).map(l => l.cardId));
-  if (!C(t.cardId).isToken) opl.deck.push(t.cardId);
-  S.log(state, `${o} ${C(t.cardId).nameKo} 덱 아래로`);
+  if (!t || S.effectBlocked(state, o, t, 'bounce')) return;
+  const doLeave = () => {
+    if (!opl.battle.includes(t) || S.leaveGate(state, o, t, 'effect', 'bounce', doLeave)) return;
+    opl.battle.splice(opl.battle.indexOf(t), 1);
+    opl.trash.push(...(t.linkCards || []).map(l => l.cardId));
+    if (!C(t.cardId).isToken) opl.deck.push(t.cardId);
+    S.log(state, `${o} ${C(t.cardId).nameKo} 덱 아래로`);
+  };
+  doLeave();
 });
 hk('BT21-050', { tag: '상대의 턴', redirectOptions: (state, hp, h, ap, aStack) => {
   if (!h.suspended || S.turnUsesRemaining(h, S.onceLimitKey('BT21-050', ['어택대상변경']), 1) <= 0) return [];

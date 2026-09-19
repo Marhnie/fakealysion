@@ -18,7 +18,7 @@ const isTamer = (st) => !!st && C(st.cardId).category === 'tamer';
 const hasTrait = (id, t) => (C(id).types || []).includes(t);
 const traitAny = (id, list) => list.some(t => hasTrait(id, t));
 const hasColor = (id, col) => (C(id).colors || []).includes(col);
-const stackColors = (st) => [...(C(st.cardId).colors || []), ...(st.extraColors || [])];
+const stackColors = (st) => S.stackColors(st);
 const digimons = (p, state) => state.players[p].battle.filter(isDigimon);
 const tamersOf = (p, state) => state.players[p].battle.filter(isTamer);
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; };
@@ -41,7 +41,7 @@ function detachStack(state, p, st) {
   pl.battle.splice(i, 1);
   const linkIds = (st.linkCards || []).map(l => l.cardId);
   pl.trash.push(...st.sources, ...linkIds);
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(state, p, id);
+  S.applyOverflowBatch(state, p, [...st.sources, st.cardId]);
   return st.cardId;
 }
 
@@ -170,7 +170,7 @@ function destroy(ctx, p, st) {
 function bounce(ctx, p, st, dest = 'hand') {
   const { state } = ctx;
   if (!st || !state.players[p].battle.includes(st)) return false;
-  if (immune(ctx, p, st, 'bounce') || S.hookPreventLeave(state, p, st, causeOf(ctx, p), 'bounce')) return false;
+  if (immune(ctx, p, st, 'bounce') || S.leaveGate(state, p, st, causeOf(ctx, p), 'bounce', () => bounce(ctx, p, st, dest))) return false;
   const id = detachStack(state, p, st);
   if (dest === 'deckBottom') state.players[p].deck.push(id);
   else if (dest === 'deckTop') state.players[p].deck.unshift(id);
@@ -1182,7 +1182,8 @@ D('ST8-04', '자신의 턴', 'Lv.6 이상', altEvo('알포스브이드라몬'));
 
 // ---- attack permissions / restrictions
 D('BT2-051', '자신의 턴', '그린인 자신의 테이머', { attackAnyActive: (state, hp) => tamersOf(hp, state).some(s => stackColors(s).includes('green')) });
-DI('BT5-017', '자신의 턴', '진격', { attackAnyActive: (state, hp, holder) => S.hasKeyword(holder, '진격') && (hp === 'p1' ? state.memory : -state.memory) <= -1 });
+// 16-16 / BT5-017 inherited: "이 디지몬이 《진격》으로 어택할 때, 액티브 상태의 상대 디지몬에게도 어택할 수 있다" — only while THIS attack was declared through 《진격》 (state._raidUid, set by declareAttack({raid:true})).
+DI('BT5-017', '자신의 턴', '진격', { attackAnyActive: (state, hp, holder) => state._raidUid === holder.uid });
 DI('EX1-061', '자신의 턴', '길동무', { s1attackTarget: (state, hp, holder, info) => nameHas(holder.cardId, '묘티스몬') && info.attackerP === hp && S.hasKeyword(info.attacker, '길동무') && lvOf(info.target.cardId) <= 4 });
 D('BT4-030', '상대의 턴', '어택당하지', { s1cannotBeAttacked: (state, hp, holder, info) => info.stack === holder && holder.sources.some(id => (C(id).category === 'digimon' && hasTrait(id, '하이브리드체')) || (C(id).category === 'tamer' && hasColor(id, 'blue'))) });
 D('BT5-032', '서로의 턴', '어택과 블록', {
@@ -1252,18 +1253,19 @@ D('BT9-044', '서로의 턴', '소멸할 때', { preventLeave: (state, hp, holde
   return true;
 } });
 // 《디코이》: delete this digimon instead of an own other digimon of the given colors that an opponent's effect would delete
+// (every eligible sacrificer is its own candidate for the player — see S.hookPreventLeave / descriptor.preventLeaveOptions)
 const decoy = (colors, sacrificers) => (state, hp, holder, target, tp, cause, mode) => {
-  if (mode !== 'delete' || cause !== 'effect') return false;
-  if (!isDigimon(target) || !stackColors(target).some(c => colors.includes(c))) return false;
-  const sac = sacrificers(state, hp, holder).find(s => s !== target && state.players[hp].battle.includes(s));
-  if (!sac) return false;
-  S.log(state, `${hp} 《디코이》 — ${C(sac.cardId).nameKo}을(를) 소멸시켜 ${C(target.cardId).nameKo}은(는) 소멸하지 않음`);
-  S.deleteStack(state, hp, sac.uid, 'trash', 'ownEffect');
-  return true;
+  if (mode !== 'delete' || cause !== 'effect') return [];
+  if (!isDigimon(target) || !stackColors(target).some(c => colors.includes(c))) return [];
+  return sacrificers(state, hp, holder).filter(s => s !== target && state.players[hp].battle.includes(s)).map(sac => ({ apply() {
+    S.log(state, `${hp} 《디코이》 — ${C(sac.cardId).nameKo}을(를) 소멸시켜 ${C(target.cardId).nameKo}은(는) 소멸하지 않음`);
+    S.deleteStack(state, hp, sac.uid, 'trash', 'ownEffect');
+    return true;
+  } }));
 };
-DI('BT8-060', '서로의 턴', '디코이', { preventLeave: decoy(['black'], (state, hp, holder) => (xAnti(holder.cardId) ? [holder] : [])) });
-DI('P-045', '서로의 턴', '디코이', { preventLeave: decoy(['black', 'white'], (state, hp, holder) => state.players[hp].battle.filter(s => s !== holder && isDigimon(s) && C(s.cardId).nameKo === C(holder.cardId).nameKo)) });
-D('ST12-12', '서로의 턴', '디코이', { preventLeave: decoy(['red', 'black'], (state, hp, holder) => (state.players[hp].battle.some(s => isDigimon(s) && (nameHas(s.cardId, '헉몬') || hasTrait(s.cardId, '로얄 나이츠'))) ? [holder] : [])) });
+DI('BT8-060', '서로의 턴', '디코이', { preventLeaveOptions: decoy(['black'], (state, hp, holder) => (xAnti(holder.cardId) ? [holder] : [])) });
+DI('P-045', '서로의 턴', '디코이', { preventLeaveOptions: decoy(['black', 'white'], (state, hp, holder) => state.players[hp].battle.filter(s => s !== holder && isDigimon(s) && C(s.cardId).nameKo === C(holder.cardId).nameKo)) });
+D('ST12-12', '서로의 턴', '디코이', { preventLeaveOptions: decoy(['red', 'black'], (state, hp, holder) => (state.players[hp].battle.some(s => isDigimon(s) && (nameHas(s.cardId, '헉몬') || hasTrait(s.cardId, '로얄 나이츠'))) ? [holder] : [])) });
 
 // ---- evolution / play cost discounts ----
 const restTamerOpt = (label, targetOk) => (state, hp, holder, info) => {
@@ -1279,9 +1281,11 @@ D('BT7-089', '자신의 턴', '진화할 때', { s1evoDiscount: (state, hp, hold
 D('BT9-077', '자신의 턴', '트래시의 디지몬 카드', { s1evoDiscount: (state, hp, holder, info) => (info.stack === holder && info.from === 'trash' ? -1 : 0) });
 D('P-074', '자신의 턴', '시큐리티를 3장까지', { s1evoOption: (state, hp, holder, info) => {
   if (info.stack !== holder || info.p !== hp || !traitAny(info.targetId, ['신인형', '마인형']) || !state.players[hp].security.length) return null;
-  return { label: '자신의 시큐리티를 3장까지 파기하여 1장마다 진화 코스트 -1?', apply() {
-    let n = Number(globalThis.prompt ? globalThis.prompt('파기할 시큐리티 장수 (0~3)', '1') : 0) || 0;
-    n = Math.max(0, Math.min(3, n, state.players[hp].security.length));
+  return { label: '자신의 시큐리티를 3장까지 파기하여 1장마다 진화 코스트 -1?', async apply(choose) { // choose = the UI's ctx.choose (no blocking prompt())
+    const max = Math.min(3, state.players[hp].security.length);
+    let n = 1;
+    if (typeof choose === 'function') { const k = await choose('multipleChoice', { player: hp, prompt: '파기할 시큐리티 장수 (위에서부터, 0~' + max + ')', options: Array.from({ length: max + 1 }, (_, i) => i + '장') }); n = k == null ? 0 : k; }
+    n = Math.max(0, Math.min(max, n));
     for (let i = 0; i < n; i++) S.trashTopSecurityByEffect(state, hp);
     return -n;
   } };

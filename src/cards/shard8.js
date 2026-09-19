@@ -78,7 +78,7 @@ function detachStack(state, p, st, dest) { // move a whole stack out of the batt
   pl.battle.splice(i, 1);
   const linkIds = (st.linkCards || []).map(l => l.cardId);
   pl.trash.push(...st.sources, ...linkIds);
-  for (const id of [...st.sources, st.cardId]) S.applyOverflowIfAny(state, p, id);
+  S.applyOverflowBatch(state, p, [...st.sources, st.cardId]);
   if (dest === 'deckBottom') pl.deck.push(st.cardId);
   else if (dest === 'securityBottom') pl.security.push(st.cardId);
   else if (dest === 'securityTop') pl.security.unshift(st.cardId);
@@ -922,9 +922,9 @@ OPS.s8_sourcesToDeckTop = async (i, ctx) => {
     const st = findStack(state, ctx.opp, uid);
     if (!st || S.effectBlocked(state, ctx.opp, st, 'bounce')) continue;
     const n = Math.min(i.n || 5, st.sources.length);
-    const taken = st.sources.splice(st.sources.length - n, n); // top-most overlaid cards
+    const taken = await S.orderPlacement(ctx.choose, ctx.self, st.sources.splice(st.sources.length - n, n), `덱 위로 되돌릴 ${C(st.cardId).nameKo}의 겹쳐진 카드 ${n}장의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)`); // top-most overlaid cards
     pl.deck.unshift(...taken);
-    for (const id of taken) S.applyOverflowIfAny(state, ctx.opp, id);
+    S.applyOverflowBatch(state, ctx.opp, taken);
     S.recomputeStackGrants(st);
     log(ctx, `${ctx.opp} ${C(st.cardId).nameKo}의 겹쳐진 카드 ${n}장이 덱 위로 되돌아감`);
   }
