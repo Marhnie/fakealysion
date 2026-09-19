@@ -476,13 +476,18 @@ button.jg-btn.jg-none { opacity: 0.6; }
 
 /* ---------- desktop: centre the whole UI ---------- */
 @media (min-width: 901px) and (pointer: fine) {
-  .table-surface { max-width: 1120px; margin: 0 auto; }
+  .table-surface { max-width: none; margin: 0; }
+  .table-surface .player-panel { max-width: 1120px; width: 100%; }
   .topbar-row { justify-content: center; flex-wrap: wrap; }
   .topbar-row .gauge-track { max-width: 260px; }
   .actions { max-width: 1120px; margin-left: auto; margin-right: auto; }
   .player-panel { margin-left: auto; margin-right: auto; }
   .zone-row, .hand-row, .field-zones { justify-content: center; }
-  .mem-track { max-width: 1120px; margin: 0 auto; }
+  .mem-track { max-width: none; width: 100%; margin: 0; padding-left: 8px; padding-right: 8px; box-sizing: border-box; }
+  .mem-numbers { padding: 8px 10px; }
+  .mem-num { font-size: 17px; padding: 6px 0; }
+  .mem-num.mem-active { font-size: 24px; }
+  .mem-readout { font-size: 26px; }
 }
 
 /* ---- effect visibility: resolution card, chip, ghost tiles, markers, history tab ---- */
