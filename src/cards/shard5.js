@@ -511,11 +511,11 @@ sc('*::__볼텍스', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st) return;
   const targets = S.legalDigimonTargets(state, ctx.self, st.uid);
   // s7 (EX11-062): 액티브 상태의 상대 디지몬이 없는 동안 《볼텍스》로 플레이어에게도 어택할 수 있다.
-  if (!st.suspended && S.hookVortexPlayer && S.hookVortexPlayer(state, ctx.self) && S.canAttackPlayer(state, ctx.self, st.uid) && (await ask(ctx, '《볼텍스》 — 플레이어에게 어택할까요?'))) { ctx.startAttack(ctx.self, st.uid, 'PLAYER'); return; }
+  if (!st.suspended && S.hookVortexPlayer && S.hookVortexPlayer(state, ctx.self) && S.canAttackPlayer(state, ctx.self, st.uid) && (await ask(ctx, '《볼텍스》 — 플레이어에게 어택할까요?'))) { ctx.startAttack(ctx.self, st.uid, 'PLAYER', { ignoreEntry: true }); return; }
   if (!targets.length || st.suspended) return;
   if (!(await ask(ctx, '《볼텍스》 — 상대의 디지몬에게 어택할까요?'))) return;
   const t = await pickStack(ctx, opp(ctx.self), state.players[opp(ctx.self)].battle.filter(s => targets.includes(s.uid)), '어택할 상대 디지몬 선택');
-  if (t) ctx.startAttack(ctx.self, st.uid, t.uid);
+  if (t) ctx.startAttack(ctx.self, st.uid, t.uid, { ignoreEntry: true });
 });
 const scTrait = (c, ...t) => hasType(c, ...t);
 

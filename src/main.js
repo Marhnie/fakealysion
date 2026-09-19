@@ -222,6 +222,7 @@ function startNewGame() {
   E.drawOpeningHand(state, 'p2');
   mulliganDecided = { p1: false, p2: false };
   mulliganDealFlash = { p1: true, p2: true };
+  state.firstPlayer = E.coinFlip(); // 5-2-1-3: first player is decided BEFORE hands/mulligans (rock-paper-scissors); 5-2-1-4: mulligan goes first player first
   renderMulliganStage();
 }
 
@@ -238,11 +239,13 @@ function renderMulliganStage() {
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
+          : (p !== state.firstPlayer && !mulliganDecided[state.firstPlayer])
+          ? h('span', {}, `선공(${state.firstPlayer.toUpperCase()})이 먼저 멀리건 여부를 결정합니다 (룰 5-2-1-4)`)
           : h('button', {
               className: 'primary',
               onClick: () => { E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); },
             }, '멀리건 (새로 5장)'),
-        !mulliganDecided[p] && h('button', {
+        !mulliganDecided[p] && (p === state.firstPlayer || mulliganDecided[state.firstPlayer]) && h('button', {
           onClick: () => { mulliganDecided[p] = true; afterMulliganCheck(); },
         }, '이 핸드 유지'),
       ].filter(Boolean)),
@@ -254,8 +257,7 @@ function renderMulliganStage() {
 function afterMulliganCheck() {
   if (mulliganDecided.p1 && mulliganDecided.p2) {
     E.setSecurityStacks(state);
-    const first = E.coinFlip();
-    E.beginGame(state, first);
+    E.beginGame(state, state.firstPlayer);
     render();
   } else {
     renderMulliganStage();
@@ -330,11 +332,12 @@ function renderTopbar() {
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
-    h('button', { disabled: state.phase === 'main', title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { disabled: state.phase === 'main', title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
       className: 'danger', disabled: state.phase !== 'main',
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
     }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
+    ...['p1', 'p2'].map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: () => { if (window.confirm(`${pp.toUpperCase()} 투항하시겠습니까?`)) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
   ]);
   const rows = [mainRow];
   // Selected-card info (including 진화원효과) lives here — part of the
@@ -405,6 +408,7 @@ const KEYWORD_BADGE_LABEL = {
   블로커: '🛡블로커', 재밍: '🌀재밍', 관통: '🗡관통', 재기동: '🔄재기동',
   속공: '⚡속공', 진격: '⚔진격', 길동무: '🤝길동무', 방벽: '🧱방벽', 아머퍼지: '🛡아머퍼지', 회피: '💨회피', 스케이프고트: '🐐스케이프고트', 불굴: '🔥불굴', 돌진: '🐗돌진', 연계: '🔗연계', 빙장: '🧊빙장', 트레이닝: '🏋트레이닝', 프래그먼트: '🧩프래그먼트', DP감소무효: '🚫DP감소무효',
   무진화원액티브공격: '🎯무진화원액티브공격', 액티브공격: '🎯액티브공격',
+  수호: '🛡수호', 급습: '🗡급습', 프로그레스: '⏩프로그레스',
 };
 function activeKeywordBadges(stack) {
   const badges = [];
@@ -457,7 +461,10 @@ function renderStack(p, stack, zoneKind, opts = {}) {
           dragData = null; render();
           return;
         }
-        S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, val('costInput'), 'hand');
+        // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
+        let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
+        if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
+        S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand');
         sel.stack = null; sel.stack2 = null;
         E.checkAutoEndTurn(state);
         dragData = null; render();
@@ -467,6 +474,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       // line on the target — a failure here means NO printed condition
       // justifies this evolution, so the drop must be rejected outright
       // rather than silently let through for cost 0.
+      if (S.card(stack.cardId).category !== 'digimon') { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
       let check = E.canEvolveAny(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack));
       const s1alt = S.s1EvolveAlt(state, p, stack, drag.cardId); // shard1: 진화조건 무시 + 고정 코스트
       if (s1alt && (!check.ok || s1alt.cost < check.cost)) check = { ok: true, cost: s1alt.cost, raw: '특수 진화' };
@@ -556,7 +564,8 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   }, mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인'))) : null;
   const extraBtns = [delayBtn, trainBtn, mainBtns].filter(Boolean);
 
-  const linkSlots = zoneKind !== 'raising' ? S.availableLinkSlots(stack) : [];
+  // 10-1-1: the link condition/cost are printed on the card being linked (S.linkCheck); any own battle Digimon can be a host candidate.
+  const linkSlots = (zoneKind === 'battle' && S.card(stack.cardId).category === 'digimon' && p === state.activePlayer) ? [{ grantedBy: stack.cardId, conditionText: '드롭한 카드의 링크 조건', cost: '?' }] : [];
   if (!linkSlots.length) return extraBtns.length ? h('div', { className: 'stack-wrap' }, [chip, ...extraBtns]) : chip;
   // Small overlay badge, separately droppable, so dragging a hand card onto
   // it links instead of digivolving — distinct from dropping on the card art.
@@ -569,8 +578,11 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover');
       const drag = dragData;
       if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
-      const slot = linkSlots[0];
-      S.linkCardTo(state, p, stack.uid, drag.cardId, slot.grantedBy, Math.max(0, slot.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0)), 'hand');
+      if (blockIfBusy()) return; // 6-5-1: no link while something is unresolved
+      if (blockIfBusy()) return;
+      const lk = S.linkCheck(state, p, stack, drag.cardId);
+      if (!lk.ok) { S.log(state, `${p} 링크 거부: ${S.card(drag.cardId).nameKo} → ${S.card(stack.cardId).nameKo} (${lk.reason})`); dragData = null; render(); return; }
+      S.linkCardTo(state, p, stack.uid, drag.cardId, drag.cardId, Math.max(0, lk.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0)), 'hand');
       E.checkAutoEndTurn(state);
       dragData = null; render();
     },
@@ -599,6 +611,7 @@ function playFreshFromDrag(drag, p) {
     for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (window.confirm(o.label)) discount += o.apply() || 0; }
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
+    if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
     if (cost > 0) S.spendMemory(state, cost);
     S.playDigimonFresh(state, drag.player, drag.idx, { materials, restTamers });
   }
@@ -654,19 +667,21 @@ function renderPlayerPanel(p) {
   const pileRail = h('div', { className: 'pile-rail' }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
-    pileChip('트래시', pl.trash.length, 'pile-trash'),
-  ]);
+    // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
+    pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
+    panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, {})) : [h('span', {}, '(비어 있음)')]) : null,
+  ].filter(Boolean));
 
-  const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
+  const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && pl.raising && S.canMoveFromRaising(pl.raising);
   const raisingZone = h('div', { className: 'zone hex-field' }, [
     zonePill(canMoveRaising ? '육성 에어리어 (카드 클릭=배틀 이동)' : '육성 에어리어'),
     h('div', { className: 'hex-slot-row' }, [
       pl.raising
-        ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { S.moveRaisingToBattle(state, p); render(); } } : {})
+        ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } } : {})
         : h('div', { className: 'empty-slot' }, '비어있음'),
       // digitama pile lives right next to the raising area it feeds, not
       // grouped with the unrelated deck/security/trash counters
-      pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { S.hatchDigitama(state, p); render(); } : undefined),
+      pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } : undefined),
     ]),
   ]);
 
@@ -870,6 +885,7 @@ async function runPendingScript(trigger, opts = {}) {
     }
   }
   const limit = parseOnceLimit(trigger.text);
+  let onceMark = null;
   if (limit != null && trigger.stackUid) {
     const stack = findStack({ player: trigger.player, uid: trigger.stackUid });
     if (stack) {
@@ -880,7 +896,7 @@ async function runPendingScript(trigger, opts = {}) {
         render();
         return;
       }
-      S.markTurnEffectUsed(stack, key);
+      onceMark = { stack, key }; // consumed only once the player actually chooses to activate (15-14-1-1)
     }
   }
   // A deliberate pause before actually resolving — auto-running instantly
@@ -898,6 +914,7 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
+  if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
     startAttack: (p, uid, directTarget, atkOpts) => setTimeout(() => { if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); render(); } }, 0) };
   await Effects.runScript(script, ctx);
@@ -929,8 +946,12 @@ function autoRunMandatoryPending() {
   // order when there are several); only when none are left does the non-turn player's queue start.
   const waiting = state.pending.filter(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
   if (!waiting.length) return;
-  const mine = waiting.filter(t => t.player === state.activePlayer);
-  const pool = mine.length ? mine : waiting;
+  // 15-16-10-2: a triggered 【시큐리티】 effect skips the waiting line and resolves at once. 15-4-5: effects that
+  // triggered WHILE simultaneous ones were resolving (derived triggers, t.depth) resolve before the older waiting ones.
+  const secNow = waiting.filter(t => t.evt && t.evt.kind === 'security');
+  const tier = secNow.length ? secNow : (() => { const md = Math.max(...waiting.map(t => t.depth || 0)); return waiting.filter(t => (t.depth || 0) === md); })();
+  const mine = tier.filter(t => t.player === state.activePlayer);
+  const pool = mine.length ? mine : tier;
   pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
   pendingRunner = (async () => {
     let next = pool[0];
@@ -945,7 +966,9 @@ function autoRunMandatoryPending() {
     if (next.resolved) return;
     autoRunAttempted.add(next.uid);
     runningPendingUid = next.uid;
-    await runPendingScript(next, { delay: true });
+    const knownUids = new Set(state.pending.map(x => x.uid));
+    try { await runPendingScript(next, { delay: true }); }
+    finally { for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + 1; } // 15-4-5 derived triggers
   })().catch(() => {}).finally(() => {
     pendingRunner = null; runningPendingUid = null;
     render(); // chains into the next queued effect
@@ -1238,8 +1261,9 @@ function stepPause(pa, stage, info, next) {
 }
 
 function eligibleBlockers(p, collidingAttacker) {
-  if (collidingAttacker) return state.players[p].battle.filter(s => !s.suspended && !S.s3Flag(state, s, 'noBlock') && !S.hookNoBlock(state, p, s));
-  return state.players[p].battle.filter(s => (S.hasKeyword(s, '블로커') || S.hookGrantedKeywords(state, p, s).includes('블로커')) && !s.suspended && !S.s3Flag(state, s, 'noBlock') && !S.hookNoBlock(state, p, s));
+  // 12-1-4: a Digimon that can't be rested can't block.
+  if (collidingAttacker) return state.players[p].battle.filter(s => S.card(s.cardId).category === 'digimon' && !s.suspended && S.canRestByRule(state, p, s) && !S.s3Flag(state, s, 'noBlock') && !S.hookNoBlock(state, p, s));
+  return state.players[p].battle.filter(s => (S.hasKeyword(s, '블로커') || S.hookGrantedKeywords(state, p, s).includes('블로커')) && !s.suspended && S.canRestByRule(state, p, s) && !S.s3Flag(state, s, 'noBlock') && !S.hookNoBlock(state, p, s));
 }
 
 // Runs the security check and — same as resolveDigimonBattle already does
@@ -1250,6 +1274,7 @@ function eligibleBlockers(p, collidingAttacker) {
 // no actual effect backing it up.
 function runSecurityCheck(pa) {
   pa.secCtl = S.beginSecurityCheck(state, pa.attacker, pa.uid, pa.opp);
+  pa.secCtl.deferBattle = true; // reveal -> resolve 【시큐리티】 effect -> battle (13-1-8)
   pa.res = { checks: pa.secCtl.results, gameOver: false };
   pa.secDone = false;
   pa.stage = 'result';
@@ -1260,8 +1285,13 @@ function runSecurityCheck(pa) {
 // (pause) → next check. The attacker's loss is applied only after the last check.
 function doSecurityStep(pa) {
   const ctl = pa.secCtl;
-  S.stepSecurityCheck(ctl);
+  if (ctl.awaiting) S.battleSecurityCheck(ctl, ctl.awaiting.id); // 13-1-8-3: battle only after the 【시큐리티】 effect (13-1-8-2) has resolved
+  else S.stepSecurityCheck(ctl);
   pa.res.gameOver = ctl.gameOver;
+  if (ctl.awaiting) {
+    stepPause(pa, 'result', `시큐리티 체크 ${ctl.i + 1}/${ctl.total}: ${S.card(ctl.awaiting.id).nameKo} 공개 — 【시큐리티】 효과 처리 후 배틀합니다`, () => doSecurityStep(pa));
+    return;
+  }
   if (ctl.done) {
     if (!ctl.gameOver && ctl.results.length) {
       const last = ctl.results[ctl.results.length - 1];
@@ -1278,6 +1308,12 @@ function doSecurityStep(pa) {
 // a different Digimon — 12-1-5 only bars blocking with the digimon that's
 // already the target).
 function resolveFinalTarget(pa) {
+  // 11-2-7-4 / 11-5-1-4 / 11-2-6: the attacker or a Digimon target left the battle area (e.g. deleted by a
+  // 【어택 시】/【카운터】 effect) -> the attack is established nowhere; it just ends.
+  if (!findStack({ player: pa.attacker, uid: pa.uid }) || (pa.targetKind === 'digimon' && !findStack({ player: pa.opp, uid: pa.targetUid }))) {
+    S.log(state, '어택 중인 디지몬 또는 어택 대상이 없어 어택이 성립하지 않고 종료 (11-2-6 / 11-5-1-4)');
+    endAttack(); return;
+  }
   if (pa.targetKind === 'player') {
     runSecurityCheck(pa);
   } else {
@@ -1285,6 +1321,7 @@ function resolveFinalTarget(pa) {
     pa.battlePreview = aSt && dSt ? { aCard: aSt.cardId, aDp: S.effectiveDP(state, pa.attacker, aSt), dCard: dSt.cardId, dDp: S.effectiveDP(state, pa.opp, dSt) } : null;
     stepPause(pa, 'digimonResult', '배틀! 양쪽 DP를 비교해 결과를 확인합니다', () => {
       const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
+      if (!res) { S.log(state, '배틀 직전 어택 중인 디지몬/대상이 사라져 어택이 성립하지 않고 종료 (11-2-6)'); endAttack(); return; }
       pa.stage = 'digimonResult'; pa.battleRes = res;
     });
   }
@@ -1295,6 +1332,7 @@ function resolveFinalTarget(pa) {
 // Digimon that's already the target from blocking (it can't block itself).
 function enterBlockCheck(pa) {
   const attackerStack = findStack({ player: pa.attacker, uid: pa.uid });
+  if (!attackerStack) { S.log(state, '어택 중인 디지몬이 배틀 에어리어에 없어 블록할 수 없고 어택이 종료 (12-1-6 / 11-2-7-4)'); endAttack(); return; }
   const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌'));
   const blockers = eligibleBlockers(pa.opp, colliding).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
@@ -1352,7 +1390,10 @@ function enterRedirectTiming(pa) {
   const options = S.findRedirectOptions(state, pa.opp, pa.attacker, pa.uid)
     .concat(S.hookRedirectOptions(state, pa.opp, pa.attacker, findStack({ player: pa.attacker, uid: pa.uid })))
     .concat(pa.targetKind === 'digimon' ? S.hookAttackerRedirectOptions(state, pa.attacker, findStack({ player: pa.attacker, uid: pa.uid }), pa.targetUid) : []);
+  // 11-2-7-3: the target can't be redirected to the target it already has.
+  for (let i = options.length - 1; i >= 0; i--) { const o = options[i]; if (o.endsAttack) continue; if (o.toPlayer ? pa.targetKind === 'player' : (pa.targetKind === 'digimon' && (o.targetUid || o.stackUid) === pa.targetUid)) options.splice(i, 1); }
   pa.chargeTarget = S.chargeRedirectTarget(state, pa.attacker, pa.uid);
+  if (pa.chargeTarget && pa.targetKind === 'digimon' && pa.chargeTarget === pa.targetUid) pa.chargeTarget = null;
   const chainAvail = !pa.chainUsed && S.chainOptions(state, pa.attacker, pa.uid).length > 0;
   if (options.length === 0 && !pa.chargeTarget && !chainAvail) {
     pa.redirectOptions = [];
@@ -1400,7 +1441,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   render();
 }
 
-const RESULT_LABEL_KO = { attackerWins: '공격측 승리', defenderWins: '방어측 승리', tie: '동점 (양쪽 소멸)', jammedSurvive: '≪재밍≫으로 생존' };
+const RESULT_LABEL_KO = { attackerWins: '공격측 승리', defenderWins: '방어측 승리', tie: '동점 (양쪽 소멸)', jammedSurvive: '≪재밍≫으로 생존', noBattle: '시큐리티 디지몬 없음 (배틀 없음)' };
 
 function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
   const leftWins = result === 'attackerWins' || result === 'jammedSurvive';
@@ -1555,9 +1596,10 @@ function renderPendingAttack() {
         ]));
       }
     }
-    if (res.result === 'attackerWins' && res.piercing) {
+    if (res.piercing) {
+      // 16-7-3: the ≪관통≫ check is mandatory — no "안 함" option.
       rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, '≪관통≫ — 시큐리티도 체크할까요?'),
+        h('span', {}, '≪관통≫ — 시큐리티 체크 (강제)'),
         h('button', {
           className: 'primary',
           // Piercing's bonus check is still part of THIS attack's single
@@ -1565,7 +1607,6 @@ function renderPendingAttack() {
           // this attack and don't repeat here.
           onClick: () => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
         }, '체크'),
-        h('button', { onClick: () => { endAttack(); render(); } }, '안 함'),
       ]));
     } else {
       rows.push(h('button', { onClick: () => { endAttack(); render(); } }, '닫기'));
@@ -1602,7 +1643,7 @@ function renderPendingAttack() {
       const last = res.checks[res.checks.length - 1];
       if (!pa.secDone) {
         // still revealing — the step-info row above carries the "next" control
-      } else if (last.result === 'defenderWins' || last.result === 'tie') {
+      } else if (last && (last.result === 'defenderWins' || last.result === 'tie')) {
         // Already destroyed by runSecurityCheck — this is purely
         // informational. No "survive anyway" button: there's no tracked
         // keyword for it, every real instance is bespoke card text handled

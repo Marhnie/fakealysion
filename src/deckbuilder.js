@@ -24,7 +24,10 @@ export function copiesInDeck(draft, cardId) {
 }
 
 export function maxCopiesFor(cardId) {
-  return 4; // default rule (2-2-2 / general_rule 1-4-1-2-2); per-card exceptions not modeled yet
+  // default 4 (1-4-1-2-2); 2-3-4-6 〈룰〉 "이 카드와 동일한 카드 넘버의 카드는 덱에 N장까지 넣을 수 있다" raises it
+  const t = `${S.card(cardId)?.effectKo || ''}\n${S.card(cardId)?.inheritedKo || ''}`;
+  const m = t.match(/동일한\s*카드\s*넘버의\s*카드는\s*덱에\s*(\d+)\s*장\s*까지/);
+  return m ? Number(m[1]) : 4;
 }
 
 export function addCard(draft, cardId) {
@@ -52,6 +55,7 @@ export function validate(draft) {
   const errors = [];
   if (mainN !== 50) errors.push(`메인덱 ${mainN}/50장 (정확히 50장이어야 함)`);
   if (digitamaN > 5) errors.push(`디지타마덱 ${digitamaN}/5장 (5장 이하)`);
+  for (const zone of ['main', 'digitama']) for (const [id, n] of Object.entries(draft[zone])) if (n > maxCopiesFor(id)) errors.push(`${id} ${n}장 (최대 ${maxCopiesFor(id)}장, 룰 1-4-1-2-2)`);
   return { ok: errors.length === 0, errors, mainN, digitamaN };
 }
 

@@ -28,7 +28,8 @@ export function mulligan(state, p) {
 export function setSecurityStacks(state) {
   for (const p of ['p1', 'p2']) {
     const pl = state.players[p];
-    pl.security = pl.deck.splice(0, 5);
+    // 5-2-1-6: cards are placed one at a time; the deck's top card ends up at the security's BOTTOM (security[0] = top).
+    pl.security = pl.deck.splice(0, 5).reverse();
     S.log(state, `${p} 시큐리티 스택 5장 세팅 (비공개)`);
   }
 }
@@ -68,7 +69,7 @@ export function nextPhase(state) {
     // 액티브가 되지 않는다." is the continuous version instead — re-checked
     // every cycle, never consumed.
     const wokeUp = [];
-    pl.battle.forEach(s => {
+    [...pl.battle, ...(pl.raising ? [pl.raising] : [])].forEach(s => { // 6-2-1: ALL own cards in the areas (breeding area included)
       if (s.skipNextUnsuspend) { s.skipNextUnsuspend = false; return; }
       if (s.cannotUnsuspendUntil != null && state.turnNumber <= s.cannotUnsuspendUntil) return; // s8: 액티브 봉인 (~상대의 턴 종료까지)
       if (S.isPreventedFromUnsuspending(state, active, s)) return;
@@ -80,7 +81,14 @@ export function nextPhase(state) {
     // the OPPONENT's Active Phase, on top of its own controller's — not just
     // whichever player's own unsuspend step this is.
     const oppBattle = state.players[S.opponentOf(active)].battle;
-    for (const s of oppBattle) if (S.hasKeyword(s, '재기동')) s.suspended = false;
+    const oppP = S.opponentOf(active);
+    for (const s of oppBattle) {
+      if (!s.suspended || !(S.hasKeyword(s, '재기동') || S.hookGrantedKeywords(state, oppP, s).includes('재기동') || S.hasContinuousKeyword(state, oppP, s, '재기동'))) continue;
+      // an "액티브가 되지 않는다" effect still beats ≪재기동≫
+      if ((s.cannotUnsuspendUntil != null && state.turnNumber <= s.cannotUnsuspendUntil) || S.isPreventedFromUnsuspending(state, oppP, s)) continue;
+      s.suspended = false;
+      S.s1Unsuspended(state, oppP, s);
+    }
     S.log(state, `${active} 액티브 페이즈: 전부 액티브`);
     state.phase = 'draw';
     // First player's very first turn skips the draw phase entirely.
@@ -118,6 +126,7 @@ export function nextPhase(state) {
 // empty digitama deck with a full raising slot, or a raising card below
 // Lv.3 with no digitama left to hatch instead).
 export function autoAdvance(state) {
+  S.normalizeDigitamaZones(state); // 3-1-3-9
   let guard = 0;
   while (guard++ < 25) {
     if (state.winner) return;
@@ -128,6 +137,10 @@ export function autoAdvance(state) {
     // Once autoRunMandatoryPending() clears state.pending on a later render,
     // this resumes the cascade from wherever it left off.
     if (state.pending.length > 0) return;
+    // 6-1-4-1 / 6-2-1-2: the turn-end condition (memory on the opponent's side) holds in ANY phase —
+    // e.g. a turn-start effect that pushes memory over ends the turn before unsuspend. (Main phase is
+    // handled by the caller, which also knows about in-progress attacks/choices.)
+    if (state.phase !== 'main' && S.isTurnAutoEnding(state)) { endTurn(state, true); continue; }
     if (state.phase === 'unsuspend' || state.phase === 'draw') { nextPhase(state); continue; }
     if (state.phase === 'breeding') {
       const pl = state.players[state.activePlayer];
@@ -137,7 +150,7 @@ export function autoAdvance(state) {
       // this check, moving (which empties raising) made canHatch look true
       // again and this stopped auto-skipping an already-finished phase.
       const canHatch = !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
-      const canMove = !state.breedingActionTaken && pl.raising && (S.card(pl.raising.cardId).level || 0) >= 3;
+      const canMove = !state.breedingActionTaken && pl.raising && S.canMoveFromRaising(pl.raising);
       if (!canHatch && !canMove) { nextPhase(state); continue; }
     }
     break;
@@ -193,8 +206,19 @@ export function declarePass(state) {
   endTurn(state, true);
 }
 
+// 1-2-4/1-2-5: a player may concede at any time; the loss is immediate and triggers no effects.
+export function surrender(state, p) {
+  if (state.winner) return;
+  state.winner = S.opponentOf(p);
+  state.pending.length = 0;
+  S.log(state, `${p} 투항 — ${state.winner} 승리 (룰 1-2-4)`);
+}
+
 // Call after any memory-spending action. Returns true if the turn ended.
 export function checkAutoEndTurn(state) {
+  // 6-1-4-1: the turn ends only when nothing is left to resolve — a just-queued 【등장 시】/【진화 시】 (which may
+  // itself move the memory back) must resolve first; main.js render() re-checks once the queue is empty.
+  if (state.pending.some(t => !t.resolved)) return false;
   if (S.isTurnAutoEnding(state)) {
     endTurn(state, true);
     return true;
@@ -257,7 +281,7 @@ function parseEvoConditions(targetCardId) {
 // 진화할 수 있다"); it competes with the printed conditions and the cheaper legal option wins.
 export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restriction = null) {
   const base = canEvolveAnyBase(sourceCardId, targetCardId, extraColors, restriction);
-  if (restriction && restriction.alt && !restriction.cannotEvolve) {
+  if (restriction && restriction.alt && !restriction.cannotEvolve && !S.isTokenId(sourceCardId)) {
     const src = S.card(sourceCardId), tgt = S.card(targetCardId);
     for (const a of restriction.alt) {
       if (!a.test(tgt, src)) continue;
@@ -269,7 +293,7 @@ export function canEvolveAny(sourceCardId, targetCardId, extraColors = [], restr
 function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restriction = null) {
   const src = S.card(sourceCardId);
   const tgt = S.card(targetCardId);
-  // A continuous "이 디지몬은 (X색)/「X」으로만 진화할 수 있다." restriction on
+  if (S.isTokenId(sourceCardId)) return { ok: false, reason: '토큰 위에는 카드를 겹칠 수 없음 (룰 4-21-3)' };  // A continuous "이 디지몬은 (X색)/「X」으로만 진화할 수 있다." restriction on
   // the SOURCE stack (see S.evolveTargetRestriction) — checked against the
   // TARGET card, independent of whichever printed condition below it uses.
   if (restriction) {
