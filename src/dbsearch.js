@@ -58,9 +58,15 @@ export function buildBlob(c, order = 0) {
     evoCost: evo == null ? null : evo,
   };
 }
-export function buildIndex(cards) {
+// parallels (optional) = { cardNo: [{ rarity, ... }] }: blob.par = the variants' rarities (alternate arts of the same card).
+export function buildIndex(cards, parallels) {
   const ix = new Map(); let i = 0;
-  for (const id of Object.keys(cards)) ix.set(id, buildBlob(cards[id], i++));
+  for (const id of Object.keys(cards)) {
+    const b = buildBlob(cards[id], i++);
+    b.par = (parallels?.[id] || []).map(v => v.rarity).filter(Boolean);
+    b.parN = parallels?.[id]?.length || 0;
+    ix.set(id, b);
+  }
   return ix;
 }
 // Option lists (keywords / effect tags / traits / sets) derived from the data.
@@ -73,7 +79,7 @@ export function buildOptions(cards, ix) {
     (c.types || []).forEach(t => tr[t] = (tr[t] || 0) + 1);
     if (c.attribute) tr[c.attribute] = (tr[c.attribute] || 0) + 1;
     if (c.form && /^[가-힣]/.test(c.form)) tr[c.form] = (tr[c.form] || 0) + 1;
-    sets.add(b.setKey); if (c.rarity) rar.add(c.rarity);
+    sets.add(b.setKey); if (c.rarity) rar.add(c.rarity); (b.par || []).forEach(r => rar.add(r));
   }
   const top = (o, min, n) => Object.entries(o).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k);
   const natural = (a, b) => a.localeCompare(b, 'en', { numeric: true });
@@ -141,7 +147,7 @@ export function defaultFilter() {
     q: '', scope: 'all', cats: [], colors: [], mono: false, levels: [],
     cost: { min: '', max: '' }, dp: { min: '', max: '' }, evo: { min: '', max: '' },
     traits: [], keywords: [], tags: [], packs: [], setKey: '', rarities: [],
-    inDeck: false, hideMax: false, sort: 'id', pageSize: 60,
+    inDeck: false, hideMax: false, hasPar: false, sort: 'id', pageSize: 60,
   };
 }
 const num = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
@@ -155,7 +161,7 @@ export function activeFilterCount(f) {
   let n = 0;
   for (const k of ['cats', 'colors', 'levels', 'traits', 'keywords', 'tags', 'packs', 'rarities']) if (f[k]?.length) n++;
   for (const k of ['cost', 'dp', 'evo']) if (num(f[k]?.min) != null || num(f[k]?.max) != null) n++;
-  if (f.mono) n++; if (f.setKey) n++; if (f.inDeck) n++; if (f.hideMax) n++;
+  if (f.mono) n++; if (f.hasPar) n++; if (f.setKey) n++; if (f.inDeck) n++; if (f.hideMax) n++;
   return n;
 }
 // ctx = { copies(id) -> copies in deck, max(id) -> limit }
@@ -173,7 +179,9 @@ export function matchFilters(f, c, b, ctx) {
   if (f.tags.length && !f.tags.every(k => b.tags.has(k))) return false;
   if (f.packs.length && !f.packs.includes(b.prefix)) return false;
   if (f.setKey && b.setKey !== f.setKey) return false;
-  if (f.rarities.length && !f.rarities.includes(c.rarity)) return false;
+  // rarity: the base OR any parallel variant of the same card number matches
+  if (f.rarities.length && !f.rarities.includes(c.rarity) && !(b.par || []).some(r => f.rarities.includes(r))) return false;
+  if (f.hasPar && !(b.parN > 0)) return false;
   if (ctx) {
     if (f.inDeck && !(ctx.copies(c.id) > 0)) return false;
     if (f.hideMax && ctx.copies(c.id) >= ctx.max(c.id)) return false;

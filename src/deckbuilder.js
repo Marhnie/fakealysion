@@ -12,7 +12,7 @@ export function saveSavedDecks(decks) {
 }
 
 export function newDraft() {
-  return { name: '', main: {}, digitama: {} };
+  return { name: '', main: {}, digitama: {}, art: {} };
 }
 
 export function totalCount(zoneObj) {
@@ -48,6 +48,24 @@ export function removeCard(draft, cardId) {
 export function validate(draft) { return S.deckLegality(draft); }
 
 // Convert a draft into the {name, main, digitama} shape state.js/DECKS expects.
+// Art choices only matter (and are only kept) for card numbers actually in the deck; unknown / stale keys are dropped.
+export function cleanArt(draft) {
+  const out = {};
+  for (const [id, key] of Object.entries(draft.art || {})) {
+    if (!(draft.main?.[id] || draft.digitama?.[id])) continue;
+    const v = S.parallelOf(key);
+    if (v && key.startsWith(id + '_P') && (S.PARALLELS[id] || []).includes(v)) out[id] = key;
+  }
+  return out;
+}
+export function setArt(draft, cardId, key) {
+  draft.art = { ...(draft.art || {}) };
+  if (key && key.startsWith(cardId + '_P')) draft.art[cardId] = key; else delete draft.art[cardId];
+}
+// Convert a draft into the {name, main, digitama, art?} shape state.js/DECKS expects.
 export function toDeckDefRecord(draft) {
-  return { name: draft.name || '이름 없는 덱', main: { ...draft.main }, digitama: { ...draft.digitama } };
+  const rec = { name: draft.name || '이름 없는 덱', main: { ...draft.main }, digitama: { ...draft.digitama } };
+  const art = cleanArt(draft);
+  if (Object.keys(art).length) rec.art = art;
+  return rec;
 }

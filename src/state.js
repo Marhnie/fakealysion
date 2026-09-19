@@ -9,14 +9,32 @@ import { HOOKS as CARD_HOOKS } from './cards/index.js';
 
 export let CARDS = {};
 export let DECKS = {};
+// Parallel (alternate-art) variants: { cardNo: [{ key, cardId, imgUrl, rarity, setName, releaseDate }] } (scripts/build-parallels.mjs).
+// Art only — a parallel is the SAME card as its base (2-12-1); zones/stacks only ever hold canonical card numbers.
+export let PARALLELS = {};
+const PAR_BY_KEY = new Map();
+export function parallelOf(key) { return PAR_BY_KEY.get(key) || null; }
+// Image url for `cardId` as owned by `player`: the art picked in that player's deck (players[p].art[cardId] = variant key), else base art.
+export function artUrl(state, player, cardId) {
+  try {
+    const key = state && player ? state.players?.[player]?.art?.[cardId] : null;
+    const v = key ? PAR_BY_KEY.get(key) : null;
+    if (v && key.startsWith(cardId + '_P')) return v.imgUrl;
+  } catch (e) { /* fall through to base art */ }
+  return CARDS[cardId]?.imgUrl || null;
+}
 
 export async function loadData() {
-  const [cardsRes, decksRes] = await Promise.all([
+  const [cardsRes, decksRes, parRes] = await Promise.all([
     fetch('./data/cards_full.json'), // full official DB, transformed from dgchub.com export — see scripts/build-cards.mjs
     fetch('./data/decks.json'),
+    fetch('./data/parallels.json').catch(() => null), // optional art variants
   ]);
   CARDS = await cardsRes.json();
   DECKS = await decksRes.json();
+  try { PARALLELS = parRes && parRes.ok !== false ? await parRes.json() : {}; } catch (e) { PARALLELS = {}; }
+  PAR_BY_KEY.clear();
+  for (const arr of Object.values(PARALLELS)) for (const v of arr) PAR_BY_KEY.set(v.key, v);
   // Upstream data error: a few cards list their OWN level as the required source level
   // (ST1-10 페닉스몬 "Lv.6" → nothing could ever evolve into it). A normal evolution source
   // is exactly one level below, so repair those entries.
@@ -217,6 +235,7 @@ function emptyPlayer(deckKeyOrDef) {
   const deckDef = typeof deckKeyOrDef === 'string' ? DECKS[deckKeyOrDef] : deckKeyOrDef;
   return {
     deckName: deckDef.name,
+    art: { ...(deckDef.art || {}) }, // card no -> parallel variant key; display only
     hand: [],
     deck: shuffle(expandDeck(deckDef.main)),
     trash: [],
