@@ -99,7 +99,7 @@ function canEvolveInto(st, p, stack, cardId, ignoreCond) {
   const chk = E.canEvolveAny(stack.cardId, cardId, S.evoExtraArg(st, p, stack), S.evolveTargetRestriction(st, p, stack));
   if (chk.ok) return { ok: true, cost: chk.cost };
   const r = S.evolveTargetRestriction(st, p, stack);
-  if (ignoreCond && !(r && r.cannotEvolve)) return { ok: true, cost: C(cardId).evoNormal?.cost ?? 0 };
+  if (ignoreCond && E.evoRestrictionCheck(cardId, r).ok) return { ok: true, cost: C(cardId).evoNormal?.cost ?? 0 };
   return { ok: false };
 }
 
@@ -340,7 +340,7 @@ OPS.s4_shield = async (instr, ctx) => {
 // End-of-turn destruction of this digimon (e.g. after a temporary evolution).
 OPS.s4_endOfTurnDestroyThis = async (instr, ctx) => {
   const st = ctx.state, p = ctx.self, uid = ctx.sourceStackUid;
-  S.scheduleEndOfTurn(st, () => { const s = stackByUid(st, p, uid); if (s) S.deleteStack(st, p, uid, 'trash', 'ownEffect'); });
+  S.scheduleEndOfTurn(st, () => { const s = stackByUid(st, p, uid); if (s) S.deleteStack(st, p, uid, 'trash', 'ownEffect'); }, { player: p, label: '이 턴 종료 시 소멸' });
   log(ctx, `${p} 이 턴 종료 시 이 디지몬을 소멸시킴 (예약)`);
 };
 
@@ -1173,7 +1173,7 @@ OPS.s4_changeColor = async (instr, ctx) => {
   if (c == null) return;
   t.extraColors = Object.assign([], { replace: [cols[c]] });
   const uid = t.uid, until = st.turnNumber + 1;
-  (st.endOfTurnEffects ||= []).push({ turnNumber: until, fn: () => { const x = stackByUid(st, ctx.opp, uid); if (x) x.extraColors = []; } });
+  (st.endOfTurnEffects ||= []).push({ turnNumber: until, expire: true, fn: () => { const x = stackByUid(st, ctx.opp, uid); if (x) x.extraColors = []; } });
   log(ctx, `${ctx.opp} ${C(t.cardId).nameKo}의 원래 색이 ${names[c]}(으)로 변경됨 (상대의 턴 종료까지)`);
 };
 SCRIPTS['BT18-078::등장 시'] = [{ op: 's4_changeColor' }];

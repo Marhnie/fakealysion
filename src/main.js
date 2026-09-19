@@ -30,10 +30,13 @@ function h(tag, attrs = {}, children = []) {
 
 async function init() {
   await S.loadData();
+  S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
+  S.REPL.onPending = () => { if (state) render(); };
   renderSetup();
 }
 
 let setupPick = { p1: null, p2: null };
+let setupError = '';
 
 function deckOptionsList() {
   const saved = DB.loadSavedDecks();
@@ -80,6 +83,7 @@ function renderSetup() {
       h('div', { className: 'section-title' }, '새 게임'),
       h('div', { className: 'actions-row' }, [h('span', {}, 'P1 덱'), selectFor('p1')]),
       h('div', { className: 'actions-row' }, [h('span', {}, 'P2 덱'), selectFor('p2')]),
+      setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
       h('div', { className: 'actions-row' }, [
         h('button', { className: 'primary', onClick: startNewGame }, '선택한 덱으로 새 게임 시작'),
         h('button', { onClick: openDeckBuilder }, '덱 빌더 열기'),
@@ -108,7 +112,7 @@ function matchesDbFilter(c) {
   if (dbFilter.colors.length && !dbFilter.colors.some(col => (c.colors || []).includes(col))) return false;
   if (dbFilter.q) {
     const q = dbFilter.q.toLowerCase();
-    if (!c.nameKo.includes(dbFilter.q) && !(c.id || '').toLowerCase().includes(q) && !(c.nameEn || '').toLowerCase().includes(q)) return false;
+    if (!c.nameKo.includes(dbFilter.q) && !(c.nameDisplayKo || '').includes(dbFilter.q) && !(c.id || '').toLowerCase().includes(q) && !(c.nameEn || '').toLowerCase().includes(q)) return false;
   }
   return true;
 }
@@ -174,7 +178,11 @@ function renderDeckBuilderScreen() {
     h('div', { className: 'zone-label' }, `디지타마덱 (${v.digitamaN}/5)`),
     h('div', { className: 'stack-list' }, draftDigitamaList),
     h('div', { className: 'actions-row' }, [nameInput, h('button', { className: 'primary', onClick: () => {
-      if (!dbSavedName.trim()) return;
+      if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; renderDeckBuilderScreen(); return; }
+      // 1-4-1: an illegal deck (not exactly 50 / >5 digitama / over the copy limit) cannot be saved.
+      const legal = DB.validate(dbDraft);
+      if (!legal.ok) { dbLastError = '저장 불가 — ' + legal.errors.join(' / '); renderDeckBuilderScreen(); return; }
+      dbLastError = '';
       const all = DB.loadSavedDecks();
       all[dbSavedName.trim()] = DB.toDeckDefRecord({ ...dbDraft, name: dbSavedName.trim() });
       DB.saveSavedDecks(all);
@@ -217,6 +225,14 @@ let mulliganDecided = { p1: false, p2: false };
 let mulliganDealFlash = { p1: false, p2: false };
 
 function startNewGame() {
+  // 1-4-1: refuse to start with an illegal deck (previously-saved decks may predate the save check).
+  for (const p of ['p1', 'p2']) {
+    const def = resolveDeckPick(setupPick[p]);
+    const d = typeof def === 'string' ? S.DECKS[def] : def;
+    const v = d ? S.deckLegality(d) : { ok: false, errors: ['덱을 찾을 수 없음'] };
+    if (!v.ok) { setupError = `${p.toUpperCase()} 덱 "${d?.name || setupPick[p]}"은(는) 게임에 사용할 수 없습니다: ` + v.errors.join(' / '); renderSetup(); return; }
+  }
+  setupError = '';
   state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
   E.drawOpeningHand(state, 'p1');
   E.drawOpeningHand(state, 'p2');
@@ -269,7 +285,12 @@ function afterMulliganCheck() {
 // 6-5-1: main-phase actions (play / evolve / use / link / attack / activate / pass) may only be
 // taken while NOTHING is left unresolved — no waiting effect, open choice, or attack in progress.
 function busy() {
-  return !!state.uiChoice || !!sel.pendingAttack || state.pending.some(t => !t.resolved);
+  return !!state.uiChoice || !!sel.pendingAttack || !!sel.atkQueued || !!state.turnEnding || state.pending.some(t => !t.resolved);
+}
+// 6-6-2/6-6-3: a begun turn end finishes only once nothing is left to resolve (no waiting effect, choice, or
+// attack — including one an end-of-turn effect has queued to start).
+function settleTurnEndIfIdle() {
+  if (state.turnEnding && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
 }
 function blockIfBusy() {
   if (!busy()) return false;
@@ -278,8 +299,24 @@ function blockIfBusy() {
   return true;
 }
 
+// A deletion parked by state.deleteStack on an OPTIONAL survive ability (회피/세이브/디코이/printed "…하는 것으로 소멸하지 않는다"):
+// ask the owner whether to use it; resumeReplacement re-runs the deletion with that ability allowed / declined.
+function pumpReplacementPrompt() {
+  const pr = state.pendingReplacements;
+  if (!pr || !pr.length || state.uiChoice) return;
+  const e = pr[0];
+  const nm = e.cardId ? S.card(e.cardId).nameDisplayKo || S.card(e.cardId).nameKo : '';
+  state.uiChoice = {
+    kind: 'confirmEffect',
+    payload: { player: e.p, yesLabel: '사용한다', noLabel: '사용하지 않는다', prompt: `${e.p}: ${nm}이(가) 소멸하려 합니다 — 대신 다음 효과를 사용할 수 있습니다: ${e.lines.join(' / ') || '(생존 효과)'}` },
+    resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, !!val); render(); },
+  };
+}
+
 function render() {
   if (!state) return renderSetup();
+  settleTurnEndIfIdle();
+  pumpReplacementPrompt();
   E.autoAdvance(state);
   autoRunMandatoryPending();
   // 6-1-4: once memory sits on the opponent's side and there's genuinely
@@ -289,8 +326,12 @@ function render() {
   // shifted by a card effect (e.g. an "어택 시 메모리 -2" effect) finishing
   // resolution, not just the direct memory-spending actions that already
   // called checkAutoEndTurn themselves.
-  if (state.phase === 'main' && !state.pending.length && !sel.pendingAttack && !state.uiChoice) {
-    E.checkAutoEndTurn(state);
+  if (state.phase === 'main' && !state.pending.length && !sel.pendingAttack && !state.uiChoice && !state.turnEnding) {
+    if (E.checkAutoEndTurn(state)) { // turn end begun (6-6-1): start resolving its effects / finish right away when none
+      settleTurnEndIfIdle();
+      E.autoAdvance(state);
+      autoRunMandatoryPending();
+    }
   }
   app.innerHTML = '';
   app.classList.toggle('log-open', panelsOpen.log);
@@ -324,7 +365,7 @@ function renderTopbar() {
   bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? '50%' : `${pct}%`;
   bar.querySelector('.gauge-fill').style.width = `${Math.abs(state.memory) / 20 * 100}%`;
   if (state.winner) {
-    return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [h('b', {}, `게임 종료 — 승자: ${state.winner}`)])]);
+    return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [h('b', {}, state.winner === 'draw' ? '게임 종료 — 무승부 (영구 순환, 18-3-2)' : `게임 종료 — 승자: ${state.winner}`)])]);
   }
   const mainRow = h('div', { className: 'topbar-row' }, [
     h('b', {}, `턴 ${state.turnNumber}`),
@@ -393,7 +434,7 @@ function cardChip(cardId, opts = {}) {
   }
   return h('div', attrs, [
     c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo, loading: 'lazy' }) : null,
-    h('div', { className: 'nm' }, c.nameKo),
+    h('div', { className: 'nm' }, c.nameDisplayKo || c.nameKo),
     h('div', { className: 'meta' }, metaChildren),
     opts.keywordBadges?.length ? h('div', { className: 'keyword-badges' }, opts.keywordBadges.map(k => h('span', { className: 'kw-badge' }, k))) : null,
     opts.sourcesCount ? h('div', { className: 'stack-src' }, `진화원 ${opts.sourcesCount}장`) : null,
@@ -438,7 +479,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
-    onDrop: (drag) => {
+    onDrop: async (drag) => {
       if (!drag) return;
       // An opposing battle stack dropped directly onto this one is a direct
       // attack declaration on THIS specific digimon — no separate target-
@@ -462,9 +503,10 @@ function renderStack(p, stack, zoneKind, opts = {}) {
           return;
         }
         // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
+        const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
         let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
         if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
-        S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand');
+        if (!S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
         sel.stack = null; sel.stack2 = null;
         E.checkAutoEndTurn(state);
         dragData = null; render();
@@ -478,26 +520,47 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       let check = E.canEvolveAny(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack));
       const s1alt = S.s1EvolveAlt(state, p, stack, drag.cardId); // shard1: 진화조건 무시 + 고정 코스트
       if (s1alt && (!check.ok || s1alt.cost < check.cost)) check = { ok: true, cost: s1alt.cost, raw: '특수 진화' };
+      // 8-3 버스트 진화 / 8-4 어플 합체: printed special evolutions (the normal condition check above never covers them).
+      const restrOk = E.evoRestrictionCheck(drag.cardId, S.evolveTargetRestriction(state, p, stack)).ok;
+      const burst = restrOk && S.parseBurstEvolution(drag.cardId) ? S.burstCheck(state, p, stack, drag.cardId) : null;
+      const appf = restrOk && S.parseAppFusion(drag.cardId) ? S.appFusionCheck(state, p, stack, drag.cardId) : null;
+      const special = burst && burst.ok ? 'burst' : appf && appf.ok ? 'app' : null;
+      if (special && (!check.ok || await askYN(p, special === 'burst' ? '《버스트 진화》로 진화할까요? (테이머를 패로 되돌림)' : '《어플 합체》로 진화할까요? (링크 카드를 위에 겹침)'))) {
+        const evoSnap2 = S.snapshotEvoCostMods(state, p);
+        const baseCost = special === 'burst' ? burst.cost : appf.cost;
+        const cost2 = Math.max(0, baseCost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId)); // 8-3-2-3 / 8-4-2-3
+        let tUid = null;
+        if (special === 'burst' && burst.tamerUids.length > 1) { tUid = await ctxChoose('pickStack', { player: p, uids: burst.tamerUids, required: true, prompt: '《버스트 진화》 — 패로 되돌릴 자신의 테이머를 선택하세요' }) || burst.tamerUids[0]; }
+        const res = special === 'burst' ? S.burstEvolve(state, p, stack.uid, drag.cardId, cost2, tUid) : S.appFusion(state, p, stack.uid, drag.cardId, cost2);
+        if (!res) S.restoreEvoCostMods(evoSnap2);
+        E.checkAutoEndTurn(state);
+        dragData = null; render();
+        return;
+      }
       if (!check.ok) {
         S.log(state, `${p} 진화 조건 불일치로 거부: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} (${check.reason})`);
         dragData = null; render();
         return;
       }
+      const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected evolution must not burn the one-time discount
       let evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
       evoModDelta += S.hookEvoCostDiscount(state, p, stack, drag.cardId);
       evoModDelta += S.s1EvoAuto(state, p, stack, drag.cardId); // shard1
-      for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (window.confirm(o.label)) evoModDelta += o.apply() || 0; }
-      for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (window.confirm(o.label)) evoModDelta += o.apply() || 0; }
+      for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += o.apply() || 0; }
+      for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += o.apply() || 0; }
       const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
-      if (absorb && absorb.candidates.length && window.confirm(`《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
-        S.restStack(state, p, absorb.candidates[0]);
+      if (absorb && absorb.candidates.length && await askYN(p, `《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
+        // the player picks WHICH active Digimon is rested (8-x 《흡수진화》)
+        const au = absorb.candidates.length > 1 ? await ctxChoose('pickStack', { player: p, uids: absorb.candidates, required: true, prompt: '《흡수진화》 — 레스트시킬 자신의 액티브 디지몬을 선택하세요' }) : absorb.candidates[0];
+        S.restStack(state, p, au || absorb.candidates[0]);
         evoModDelta += absorb.delta;
-      } else if (absorb && absorb.oppCandidates && absorb.oppCandidates.length && window.confirm(`《흡수진화》 — 상대의 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
-        S.restStack(state, S.opponentOf(p), absorb.oppCandidates[0]); // shard1 (BT3-056)
+      } else if (absorb && absorb.oppCandidates && absorb.oppCandidates.length && await askYN(p, `《흡수진화》 — 상대의 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
+        const ou = absorb.oppCandidates.length > 1 ? await ctxChoose('pickStack', { player: S.opponentOf(p), uids: absorb.oppCandidates, required: true, prompt: '《흡수진화》 — 레스트시킬 상대의 액티브 디지몬을 선택하세요' }) : absorb.oppCandidates[0];
+        S.restStack(state, S.opponentOf(p), ou || absorb.oppCandidates[0]); // shard1 (BT3-056)
         evoModDelta += absorb.delta;
       }
       const cost = Math.max(0, check.cost + evoModDelta);
-      S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand');
+      if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
       E.checkAutoEndTurn(state);
       dragData = null; render();
     },
@@ -574,46 +637,74 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     title: linkSlots.map(s => `${S.card(s.grantedBy).nameKo} 링크: ${s.conditionText} (코스트 ${s.cost})`).join('\n'),
     ondragover: (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('drop-hover'); },
     ondragleave: (e) => { e.currentTarget.classList.remove('drop-hover'); },
-    ondrop: (e) => {
+    ondrop: async (e) => {
       e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover');
       const drag = dragData;
+      // 6-5-1-4-1: a Digimon standing in the battle area can be linked to another Digimon too (drag its stack onto the 🔗 badge).
+      if (drag && drag.kind === 'stack' && drag.zone === 'battle' && drag.player === p && drag.uid !== stack.uid && p === state.activePlayer && state.phase === 'main') {
+        if (blockIfBusy()) return;
+        const src = findStack({ player: p, uid: drag.uid });
+        const lk2 = src ? S.linkCheck(state, p, stack, src.cardId) : { ok: false, reason: '카드 없음' };
+        if (!lk2.ok) { S.log(state, `${p} 링크 거부: ${src ? S.card(src.cardId).nameKo : '?'} → ${S.card(stack.cardId).nameKo} (${lk2.reason})`); dragData = null; render(); return; }
+        S.linkFromBattle(state, p, drag.uid, stack.uid, Math.max(0, lk2.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, src.cardId) : 0)));
+        E.checkAutoEndTurn(state);
+        dragData = null; render();
+        return;
+      }
       if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
       if (blockIfBusy()) return; // 6-5-1: no link while something is unresolved
       if (blockIfBusy()) return;
       const lk = S.linkCheck(state, p, stack, drag.cardId);
       if (!lk.ok) { S.log(state, `${p} 링크 거부: ${S.card(drag.cardId).nameKo} → ${S.card(stack.cardId).nameKo} (${lk.reason})`); dragData = null; render(); return; }
-      S.linkCardTo(state, p, stack.uid, drag.cardId, drag.cardId, Math.max(0, lk.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0)), 'hand');
+      dragData = null;
+      const lcost = Math.max(0, lk.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0));
+      const dIdx = await S.linkDiscardIdx(state, p, stack.uid, ctxChoose); // 4-9-5: the player picks which old link card goes
+      S.linkCardTo(state, p, stack.uid, drag.cardId, drag.cardId, lcost, 'hand', dIdx);
       E.checkAutoEndTurn(state);
-      dragData = null; render();
+      render();
     },
   }, '🔗' + (stack.linkCards?.length ? stack.linkCards.length : ''));
   return h('div', { className: 'stack-wrap' }, [chip, badge, ...extraBtns]);
 }
 
-function playFreshFromDrag(drag, p) {
+// Yes/no through the game's own modal (ctxChoose) instead of a blocking browser dialog.
+const askYN = (player, prompt) => ctxChoose('confirmEffect', { player, prompt, yesLabel: '예', noLabel: '아니오' });
+
+async function playFreshFromDrag(drag, p) {
   if (blockIfBusy()) return;
   if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
   const category = S.card(drag.cardId).category;
   if (category === 'digimon' && S.isPlayRestricted(state, drag.player, drag.cardId)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); dragData = null; render(); return; }
   if (category === 'option') {
     let optDelta = 0; // s8: HOOKS.playDiscount also applies to Option cards ("…옵션 카드를 사용할 때, …사용 코스트 -N")
-    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (window.confirm(o.label)) optDelta += o.apply() || 0; }
+    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) optDelta += o.apply() || 0; }
     S.useOptionCard(state, drag.player, drag.idx, { costDelta: optDelta });
   } else {
     let discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) + S.traitPlayCostDiscount(state, drag.player, drag.cardId) : 0;
     // 《디지크로스》 (7-2): optionally place matching hand/battle cards under this card for -N each.
     let materials = [], restTamers = [];
-    const xr = category === 'digimon' ? S.planDigiXros(state, drag.player, drag.idx) : null;
-    if (xr && window.confirm(`《디지크로스 -${xr.per}》 — ${xr.materials.map(m => S.card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓고 등장 코스트 -${xr.discount}?${xr.restTamers && xr.restTamers.length ? ' (테이머를 레스트시킴)' : ''}`)) {
-      materials = xr.materials; discount -= xr.discount; restTamers = xr.restTamers || [];
+    // 7-2-2-3/4: the player picks which candidate cards (from hand / battle area / tamer / trash) go under, at least 1.
+    const xrOpts = category === 'digimon' ? S.digiXrosOptions(state, drag.player, drag.idx) : [];
+    if (xrOpts.length && await askYN(drag.player, `《디지크로스》 — 재료를 아래에 놓고 등장 코스트를 줄이시겠습니까? (후보: ${xrOpts.map(o => S.card(o.cardId).nameKo).join(', ')})`)) {
+      const KIND = { hand: '패', battle: '배틀 에어리어', tamer: '테이머 아래', trash: '트래시' };
+      const keys = new Set();
+      for (const o of xrOpts) if (xrOpts.length === 1 || await askYN(drag.player, `${S.card(o.cardId).nameKo} (${KIND[o.kind] || o.kind})을(를) 아래에 놓겠습니까?`)) keys.add(o.key);
+      const xr = keys.size ? S.planDigiXrosPicked(state, drag.player, drag.idx, keys) : null;
+      if (xr) { materials = xr.materials; discount -= xr.discount; restTamers = xr.restTamers || []; }
+    }
+    // 《어셈블리》 (7-3): place exactly the required trash cards under the card for a fixed play-cost reduction (all or nothing).
+    let assembly = [];
+    const asmPlan = category === 'digimon' ? S.planAssembly(state, drag.player, drag.idx) : null;
+    if (asmPlan && await askYN(drag.player, `《어셈블리 -${asmPlan.per}》 — 트래시의 ${asmPlan.materials.map(m => S.card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓고 등장 코스트 -${asmPlan.discount}?`)) {
+      assembly = asmPlan.materials; discount -= asmPlan.discount;
     }
     // Card-specific "…등장할 때, <비용>하는 것으로 지불하는 등장 코스트 -N" abilities (HOOKS.playDiscount) — confirmed one by one.
-    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (window.confirm(o.label)) discount += o.apply() || 0; }
+    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += o.apply() || 0; }
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
     if (cost > 0) S.spendMemory(state, cost);
-    S.playDigimonFresh(state, drag.player, drag.idx, { materials, restTamers });
+    S.playDigimonFresh(state, drag.player, drag.idx, { materials, restTamers, assembly });
   }
   E.checkAutoEndTurn(state);
   dragData = null; render();
@@ -840,6 +931,7 @@ async function ctxChoose(kind, payload) {
 // sentence are on Option cards' inheritedKo, always paired with a plain
 // 【메인】-tagged effectKo to re-run.
 function scriptFor(trigger) {
+  if (trigger.schedFn) return [{ op: 'sched' }]; // held end-of-turn effect (18-1): run via trigger.schedFn in runPendingScript
   const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text);
   if (specific) return specific;
   if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
@@ -873,12 +965,26 @@ function isOptionalAutoEffect(text, script) {
 }
 
 async function runPendingScript(trigger, opts = {}) {
+  if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
+    if (opts.delay) await new Promise(r => setTimeout(r, 400));
+    try { await trigger.schedFn(); } catch (e) { S.log(state, `예약된 턴 종료 효과 처리 오류: ${e && e.message}`); }
+    S.resolvePending(state, trigger.uid);
+    render();
+    return;
+  }
   // 15-4-4-3: a waiting effect can't resolve if its card left the area or turned into a NEW card
   // (evolved / fused) before its turn came. 【소멸 시】 effects are meant to wait after leaving.
-  if (trigger.stackUid && trigger.topId && !trigger.inherited && !trigger.tags.some(t => t.includes('소멸 시'))) {
+  if (trigger.stackUid && trigger.topId && !trigger.tags.some(t => t.includes('소멸 시'))) {
     const stNow = findStack({ player: trigger.player, uid: trigger.stackUid });
-    if (!stNow || stNow.cardId !== trigger.topId) {
-      S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 카드가 벗어나거나 새 카드가 되어 발휘하지 못함 (15-4-4-3)`);
+    let why = null;
+    if (!stNow || stNow.cardId !== trigger.topId) why = '카드가 벗어나거나 새 카드가 되어 (15-4-4-3)';
+    // 15-4-4-4: the card no longer has this effect (an inherited effect whose source card left the stack)
+    else if (trigger.inherited && !stNow.sources.includes(trigger.cardId) && !(stNow.linkCards || []).some(l => l.cardId === trigger.cardId)) why = '그 효과를 잃어 (15-4-4-4)';
+    // 15-4-4-5: the trigger condition ("자신의 턴"/"상대의 턴") no longer holds
+    else if (trigger.tags.includes('자신의 턴') && trigger.player !== state.activePlayer) why = '유발 조건(자신의 턴)을 잃어 (15-4-4-5)';
+    else if (trigger.tags.includes('상대의 턴') && trigger.player === state.activePlayer) why = '유발 조건(상대의 턴)을 잃어 (15-4-4-5)';
+    if (why) {
+      S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 ${why} 발휘하지 못함`);
       S.resolvePending(state, trigger.uid);
       render();
       return;
@@ -916,7 +1022,7 @@ async function runPendingScript(trigger, opts = {}) {
   }
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => setTimeout(() => { if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); render(); } }, 0) };
+    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
   await Effects.runScript(script, ctx);
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
@@ -968,7 +1074,7 @@ function autoRunMandatoryPending() {
     runningPendingUid = next.uid;
     const knownUids = new Set(state.pending.map(x => x.uid));
     try { await runPendingScript(next, { delay: true }); }
-    finally { for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + 1; } // 15-4-5 derived triggers
+    finally { for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + (x.rcSim ? 0 : 1); } // rcSim: 15-4-3-3 rule-check deletion triggers alongside the waiting ones // 15-4-5 derived triggers
   })().catch(() => {}).finally(() => {
     pendingRunner = null; runningPendingUid = null;
     render(); // chains into the next queued effect
@@ -1009,8 +1115,8 @@ function renderUiChoice() {
     ])));
   } else if (kind === 'confirmEffect') {
     rows.push(h('div', { className: 'actions-row' }, [
-      h('button', { className: 'primary', onClick: () => resolve(true) }, '발동한다'),
-      h('button', { onClick: () => resolve(false) }, '발동하지 않는다'),
+      h('button', { className: 'primary', onClick: () => resolve(true) }, payload.yesLabel || '발동한다'),
+      h('button', { onClick: () => resolve(false) }, payload.noLabel || '발동하지 않는다'),
     ]));
   } else if (kind === 'pickStack') {
     const cards = payload.uids.map(uid => {
@@ -1019,7 +1125,7 @@ function renderUiChoice() {
       return { uid, cardId: st?.cardId };
     }).filter(x => x.cardId);
     rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { onClick: () => resolve(x.uid) }))));
-    rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
+    if (!(payload.required && cards.length)) rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소')); // 1-3-6: a required choice can't pick zero
   } else if (kind === 'pickStackAnySide') {
     const cards = payload.entries.map(({ player, uid }) => {
       const pl = state.players[player];
@@ -1030,19 +1136,19 @@ function renderUiChoice() {
       selected: false,
       onClick: () => resolve({ player: x.player, uid: x.uid }),
     }))));
-    rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
+    if (!(payload.required && cards.length)) rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소'));
   } else if (kind === 'pickFromHand') {
     const pl = state.players[payload.player];
     const idxs = pl.hand.map((id, i) => i);
     rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], { onClick: () => resolve(pl.hand[i]) }))));
-    rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
+    if (!(payload.required && idxs.length)) rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
   } else if (kind === 'pickFromHandIndexes' || kind === 'pickFromZoneIndex') {
     const pl = state.players[payload.player];
     const zone = payload.zone || 'hand';
     const idxs = payload.eligibleIdxs;
     if (kind === 'pickFromZoneIndex') {
       rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl[zone][i], { onClick: () => resolve(i) }))));
-      rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
+      if (!(payload.required && idxs.length)) rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
     } else {
       if (!state._multiPick) state._multiPick = [];
       const picked = state._multiPick;
@@ -1070,7 +1176,33 @@ function renderUiChoice() {
     })));
     rows.push(h('div', { className: 'actions-row' }, [
       h('span', {}, `${picked.length}장 선택 (최대 ${payload.max})`),
-      h('button', { className: 'primary', onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); } }, '확인 (핸드로 가져가고 나머지는 자동 처리)'),
+      h('button', { className: 'primary', disabled: picked.length < Math.max(payload.min || 0, payload.required && payload.eligible.length ? 1 : 0), onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); } }, '확인 (핸드로 가져가고 나머지는 자동 처리)'),
+    ]));
+  } else if (kind === 'pickSourcesMulti') {
+    if (!state._multiPick) state._multiPick = [];
+    const picked = state._multiPick;
+    rows.push(h('div', { className: 'hand-list' }, payload.ids.map((id, i) => cardChip(id, {
+      selected: picked.includes(i),
+      onClick: () => { const k = picked.indexOf(i); if (k === -1) { if (picked.length < payload.n) picked.push(i); } else picked.splice(k, 1); render(); },
+    }))));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
+      h('button', { className: 'primary', disabled: picked.length !== payload.n, onClick: () => { const r = picked.slice().sort((a, b) => a - b); state._multiPick = []; resolve(r); } }, '확인'),
+    ]));
+  } else if (kind === 'pickLinkCard') {
+    rows.push(h('div', { className: 'hand-list' }, payload.ids.map((id, i) => cardChip(id, { onClick: () => resolve(i) }))));
+  } else if (kind === 'orderCards') {
+    // 3-1-3-4 / 15-15-3-6: the owner picks the order in which several cards are placed at once (click in order; first = top)
+    if (!state._orderPick) state._orderPick = [];
+    const ord = state._orderPick;
+    rows.push(h('div', { className: 'hand-list' }, payload.ids.map((id, i) => {
+      const pos = ord.indexOf(i);
+      return cardChip(id, { selected: pos !== -1, keywordBadges: pos !== -1 ? [`#${pos + 1}`] : undefined, onClick: () => { if (pos === -1) ord.push(i); else ord.splice(pos, 1); render(); } });
+    })));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('span', {}, `순서 ${ord.length}/${payload.ids.length} (숫자 = 위에서부터의 순서, 다시 누르면 취소)`),
+      h('button', { onClick: () => { state._orderPick = []; render(); } }, '초기화'),
+      h('button', { className: 'primary', disabled: ord.length !== payload.ids.length, onClick: () => { const r = ord.slice(); state._orderPick = []; resolve(r); } }, '확인'),
     ]));
   } else if (kind === 'multipleChoice') {
     rows.push(h('div', { className: 'actions-row' }, payload.options.map((label, i) => h('button', { onClick: () => resolve(i) }, label))));
@@ -1393,8 +1525,8 @@ function enterRedirectTiming(pa) {
     .concat(pa.targetKind === 'digimon' ? S.hookAttackerRedirectOptions(state, pa.attacker, findStack({ player: pa.attacker, uid: pa.uid }), pa.targetUid) : []);
   // 11-2-7-3: the target can't be redirected to the target it already has.
   for (let i = options.length - 1; i >= 0; i--) { const o = options[i]; if (o.endsAttack) continue; if (o.toPlayer ? pa.targetKind === 'player' : (pa.targetKind === 'digimon' && (o.targetUid || o.stackUid) === pa.targetUid)) options.splice(i, 1); }
-  pa.chargeTarget = S.chargeRedirectTarget(state, pa.attacker, pa.uid);
-  if (pa.chargeTarget && pa.targetKind === 'digimon' && pa.chargeTarget === pa.targetUid) pa.chargeTarget = null;
+  pa.chargeTargets = S.chargeRedirectTargets(state, pa.attacker, pa.uid).filter(u => !(pa.targetKind === 'digimon' && u === pa.targetUid)); // DP tie -> the player picks
+  pa.chargeTarget = pa.chargeTargets[0] || null;
   const chainAvail = !pa.chainUsed && S.chainOptions(state, pa.attacker, pa.uid).length > 0;
   if (options.length === 0 && !pa.chargeTarget && !chainAvail) {
     pa.redirectOptions = [];
@@ -1545,11 +1677,13 @@ function renderPendingAttack() {
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.chargeTarget) {
-      const ct = state.players[pa.opp].battle.find(s => s.uid === pa.chargeTarget);
-      if (ct) rows.push(h('div', { className: 'actions-row' }, [
-        h('span', {}, `《돌진》 — 가장 DP가 높은 액티브 ${S.card(ct.cardId).nameKo}(으)로 어택 대상 변경`),
-        h('button', { onClick: () => { pa.targetKind = 'digimon'; pa.targetUid = ct.uid; pa.chargeTarget = null; pa.redirectOptions = []; noteRedirect(pa); enterCounterTiming(pa); render(); } }, '변경'),
-      ]));
+      for (const cuid of (pa.chargeTargets && pa.chargeTargets.length ? pa.chargeTargets : [pa.chargeTarget])) {
+        const ct = state.players[pa.opp].battle.find(s => s.uid === cuid);
+        if (ct) rows.push(h('div', { className: 'actions-row' }, [
+          h('span', {}, `《돌진》 — 가장 DP가 높은 액티브 ${S.card(ct.cardId).nameKo}(으)로 어택 대상 변경`),
+          h('button', { onClick: () => { pa.targetKind = 'digimon'; pa.targetUid = ct.uid; pa.chargeTarget = null; pa.chargeTargets = []; pa.redirectOptions = []; noteRedirect(pa); enterCounterTiming(pa); render(); } }, '변경'),
+        ]));
+      }
     }
     if (pa.redirectOptions.length) rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
     pa.redirectOptions.forEach(opt => {

@@ -169,8 +169,11 @@ function linkFrom(ctx, who, host, zone, cardId, delta) {
 
 // ---- evolving
 function evoCheck(ctx, st, cardId, o = {}) {
-  if (o.ignoreCond) return { ok: true, cost: (C(cardId).evoNormal && C(cardId).evoNormal.cost) || 0 };
   const E = ctx.E;
+  if (o.ignoreCond) { // 8-1-2-2: ignoring the condition does not lift "cannot evolve"/"only evolves into X" restrictions
+    const rc = E.evoRestrictionCheck(cardId, S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
+    return rc.ok ? { ok: true, cost: (C(cardId).evoNormal && C(cardId).evoNormal.cost) || 0 } : rc;
+  }
   const r = E.canEvolveAny(st.cardId, cardId, st.extraColors || [], S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
   if (r.ok || !o.ignoreLevel) return r;
   // ignore the Lv. requirement: accept when the colour of the normal condition matches
@@ -276,7 +279,7 @@ async function revealPick(ctx, n, groups, rest = 'bottom') {
     const r = await ctx.choose('pickFromRevealed', { player: self, revealed, eligible: elig, min: 0, max: 1, prompt: '공개된 카드 중 패에 추가할 카드 선택' });
     for (const i of r || []) if (!chosen.includes(i)) chosen.push(i);
   }
-  S.resolveReveal(state, self, n, chosen, chosen, rest);
+  await S.resolveRevealOrdered(state, ctx.choose, self, n, chosen, chosen, rest);
   return chosen.length;
 }
 

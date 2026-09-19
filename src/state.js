@@ -40,11 +40,62 @@ export async function loadData() {
       for (const m of line.matchAll(/「([^」]+)」/g)) if (!(c.types || []).includes(m[1])) c.types = [...(c.types || []), m[1]];
     }
   }
+  // 2-3-1-4: 「ACE」 written in a card name is NOT part of its name (a 「메탈그레이몬」 reference also hits
+  // 「메탈그레이몬 ACE」). Central fix: nameKo is the comparison name (ACE stripped); the printed name
+  // stays in nameDisplayKo for UI display (cardChip, deck builder search).
+  for (const c of Object.values(CARDS)) {
+    if (typeof c.nameKo === 'string' && /\s*ACE$/.test(c.nameKo)) { c.nameDisplayKo = c.nameKo; c.nameKo = c.nameKo.replace(/\s*ACE$/, ''); }
+  }
   S2.fixData(CARDS); // shard2: data repairs + pseudo cards (tokens)
 }
 
 export function card(id) {
   return CARDS[id] || { id, nameKo: id, category: 'unknown', colors: [], types: [] };
+}
+
+// ---- deck construction legality (1-4-1-2, 1-4-1-3, 2-3-4-5/6 〈룰〉카드 넘버) ----
+// Card-number aliasing: "〈룰〉카드 넘버: 「P-058」로도 취급하며, 덱에 「P-058」과 합계 4장까지" — this card counts
+// as (a copy of) another number for the deck limit. Returns the alias id or null.
+export function cardNumberAlias(id) {
+  const c = CARDS[id]; if (!c) return null;
+  const m = `${c.effectKo || ''}\n${c.inheritedKo || ''}`.match(/〈룰〉\s*카드\s*넘버\s*[:：]\s*「([^」]+)」\s*(?:으로|로)도\s*취급/);
+  return m ? m[1] : null;
+}
+// Deck-limit group key: cards that are treated as each other's number share one key (the smaller/base number).
+export function deckLimitKey(id) { return cardNumberAlias(id) || id; }
+export function maxCopiesFor(id) {
+  // default 4 (1-4-1-2-2); 〈룰〉"이 카드와 동일한 카드 넘버의 카드는 덱에 N장까지" raises it
+  const c = CARDS[id];
+  const m = `${c?.effectKo || ''}\n${c?.inheritedKo || ''}`.match(/동일한\s*카드\s*넘버의\s*카드는\s*덱에\s*(\d+)\s*장\s*까지/);
+  return m ? Number(m[1]) : 4;
+}
+// Copies of `id`'s limit-group already in {main, digitama} (aliases counted together).
+export function copiesTowardLimit(deckDef, id) {
+  const key = deckLimitKey(id);
+  let n = 0;
+  for (const zone of ['main', 'digitama']) for (const [cid, q] of Object.entries(deckDef[zone] || {})) if (deckLimitKey(cid) === key) n += q;
+  return n;
+}
+// Full legality check of a {main, digitama} deck definition. Returns { ok, errors, mainN, digitamaN }.
+export function deckLegality(deckDef) {
+  const sum = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+  const mainN = sum(deckDef.main), digitamaN = sum(deckDef.digitama);
+  const errors = [];
+  if (mainN !== 50) errors.push(`메인덱 ${mainN}/50장 (정확히 50장이어야 함, 룰 1-4-1-2-1)`);
+  if (digitamaN > 5) errors.push(`디지타마덱 ${digitamaN}/5장 (5장 이하, 룰 1-4-1-3-1)`);
+  const seen = new Set();
+  for (const zone of ['main', 'digitama']) for (const id of Object.keys(deckDef[zone] || {})) {
+    const cd = CARDS[id];
+    if (!cd) { errors.push(`${id}: 알 수 없는 카드`); continue; }
+    if (zone === 'main' && cd.category === 'digitama') errors.push(`${id} ${cd.nameKo}: 디지타마 카드는 디지타마덱에만 넣을 수 있음`);
+    if (zone === 'digitama' && cd.category !== 'digitama') errors.push(`${id} ${cd.nameKo}: 디지타마덱에는 디지타마 카드만 넣을 수 있음`);
+    const key = deckLimitKey(id);
+    if (seen.has(key)) continue; seen.add(key);
+    const n = copiesTowardLimit(deckDef, id);
+    const lim = Math.max(...[id, ...Object.keys({ ...(deckDef.main || {}), ...(deckDef.digitama || {}) }).filter(o => deckLimitKey(o) === key)].map(maxCopiesFor));
+    if (n > lim) errors.push(`${key === id ? id : `${id}(=${key})`} ${cd.nameKo}: ${n}장 (최대 ${lim}장, 룰 1-4-1-2-2/2-3-4-6)`);
+  }
+  return { ok: errors.length === 0, errors, mainN, digitamaN };
 }
 
 // Split a card's raw effect text into tagged segments using the official
@@ -299,6 +350,11 @@ export function cardDescPredicate(desc) { return evoTargetPredicate(desc); }
 
 // info: { owner, stack, cause }. `stack` may already be off the board (delete).
 export function emitGameEvent(state, kind, info) {
+  // 15-5-2: one trigger condition that occurs several times simultaneously (N security cards lost by ONE effect instruction) triggers once.
+  if (kind === 'securityDecrease' && info.cause === 'effect' && state._secDecBatch) {
+    if (state._secDecBatch.has(info.owner)) return;
+    state._secDecBatch.add(info.owner);
+  }
   for (const hook of EVENT_HOOKS) hook(state, kind, info);
   const subjCard = info.stack ? card(info.stack.cardId) : null;
   for (const hp of ['p1', 'p2']) {
@@ -341,7 +397,7 @@ export function emitGameEvent(state, kind, info) {
           }
           if (!ok) continue;
           if (ab.limit != null) markTurnEffectUsed(holder, onceLimitKey(id, seg.tags));
-          state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text: effect, resolved: false, watcher: true });
+          state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text: effect, resolved: false, watcher: true, inherited: !own, topId: holder.cardId });
         }
       }
     }
@@ -689,17 +745,18 @@ export function useChain(state, p, attackerUid, otherUid) {
 // 상대의 디지몬 1마리로 변경할 수 있다." Returns the uid to redirect to (first
 // on a DP tie), or null if the attacker lacks the keyword / no legal target /
 // the attacker is immune to redirects.
-export function chargeRedirectTarget(state, attackerP, attackerUid) {
+export function chargeRedirectTarget(state, attackerP, attackerUid) { return chargeRedirectTargets(state, attackerP, attackerUid)[0] || null; }
+// ALL legal 《돌진》 targets: the highest-DP active Digimon — on a DP tie the (attacking) player picks which one.
+export function chargeRedirectTargets(state, attackerP, attackerUid) {
   const apl = state.players[attackerP];
   const aStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
-  if (!aStack || !hasKeyword(aStack, '돌진') || isAttackTargetImmune(state, attackerP, aStack)) return null;
+  if (!aStack || !hasKeyword(aStack, '돌진') || isAttackTargetImmune(state, attackerP, aStack)) return [];
   const opp = opponentOf(attackerP);
   const cands = state.players[opp].battle
     .filter(s => !s.suspended && card(s.cardId).category === 'digimon' && !stackHasContinuousAbility(state, opp, s, RE_CANNOT_BE_ATTACKED) && !s3Flag(state, s, 'unattackable'));
-  if (!cands.length) return null;
-  let best = cands[0], bestDp = effectiveDP(state, opp, best);
-  for (const c of cands.slice(1)) { const d = effectiveDP(state, opp, c); if (d > bestDp) { best = c; bestDp = d; } }
-  return best.uid;
+  if (!cands.length) return [];
+  const top = Math.max(...cands.map(c => effectiveDP(state, opp, c)));
+  return cands.filter(c => effectiveDP(state, opp, c) === top).map(c => c.uid);
 }
 
 // Marks a redirect option as used this turn (for its [턴에 N회] cap, if any).
@@ -711,6 +768,12 @@ export function markRedirectUsed(state, p, stackUid, cardId) {
 
 export function resolvePending(state, uid) {
   const t = state.pending.find(x => x.uid === uid);
+  if (t && !t.resolved) {
+    // 18-3: perpetual loop guard. Nobody can supply a stop declaration in this simulator, so a single turn resolving an
+    // absurd number of triggered effects is treated as an infinite loop with no stopping means -> draw (18-3-2).
+    if (state._resolvedTurn !== state.turnNumber) { state._resolvedTurn = state.turnNumber; state._resolvedCount = 0; }
+    if (++state._resolvedCount > 1500 && !state.winner) { state.winner = 'draw'; log(state, '영구 순환 발생 — 멈출 수단이 없어 무승부 (18-3-2)'); }
+  }
   if (t) t.resolved = true;
   state.pending = state.pending.filter(x => !x.resolved);
   purgeTokens(state);
@@ -796,14 +859,27 @@ export function revealTop(state, p, n) {
 }
 
 // Move revealed cards: some to hand, rest to bottom (default) or top of deck.
-export function resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo = 'bottom') {
+// 15-15-3-6 / 3-1-3-4: the owner chooses the order of revealed cards returned to the deck. `restOrder` (optional) is a permutation of
+// indices into the returned-cards list (listed first = topmost of that group); use resolveRevealOrdered to have the player choose it.
+export async function resolveRevealOrdered(state, choose, p, n, keepIdx, toHandIdxs, restTo = 'bottom') {
+  const revealed = state.players[p].deck.slice(0, n);
+  const rest = revealed.filter((id, i) => !toHandIdxs.includes(i));
+  let order = null;
+  if (restTo !== 'trash' && rest.length > 1 && typeof choose === 'function') {
+    order = await choose('orderCards', { player: p, ids: rest, prompt: `덱 ${restTo === 'bottom' ? '아래' : '위'}로 되돌릴 카드 ${rest.length}장의 순서를 정하세요 (위쪽부터)` });
+    if (!Array.isArray(order) || order.length !== rest.length) order = null;
+  }
+  return resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo, order);
+}
+export function resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo = 'bottom', restOrder = null) {
   const pl = state.players[p];
   const revealed = pl.deck.splice(0, n);
   const toHand = [];
-  const rest = [];
+  let rest = [];
   revealed.forEach((id, i) => {
     if (toHandIdxs.includes(i)) toHand.push(id); else rest.push(id);
   });
+  if (restOrder && restOrder.length === rest.length && restOrder.every(i => Number.isInteger(i) && i >= 0 && i < rest.length)) rest = restOrder.map(i => rest[i]);
   pl.hand.push(...toHand);
   if (restTo === 'trash') pl.trash.push(...rest); else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
   log(state, `${p} 공개 처리: 핸드로 ${toHand.map(id=>card(id).nameKo).join(',')||'없음'} / 나머지 덱 ${restTo === 'bottom' ? '밑' : '위'}로`);
@@ -1220,7 +1296,27 @@ function evolveTargetRestrictionBase(state, p, stack) {
 export function effectiveDP(state, p, stack) {
   const ov = stack.dpBaseOverride; // "원래 DP를 N으로 변경" (until: last turn number it applies)
   const base = ov && state.turnNumber <= ov.until ? ov.value : (card(stack.cardId).dp || 0);
-  return s7DpFloor(state, p, stack, base + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack) + hookDP(state, p, stack) + s7DpSum(state, stack));
+  return s7DpFloor(state, p, stack, base + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack) + hookDP(state, p, stack) + s7DpSum(state, stack) + lateDpAllSum(state, p, stack));
+}
+
+// 15-11-2-2: a continuing "all of your/their Digimon get DP±N" effect also reaches Digimon that enter later.
+// modifyDPAll applies to the stacks present at resolution (tempDP) and records the mod here; a stack NOT among
+// those present (a later arrival) gets the same amount dynamically while the effect lasts.
+export function addDpAllMod(state, p, amount, duration) {
+  const pl = state.players[p];
+  const until = duration === 'permanent' ? 1e9 : duration === 'opponentTurn' ? state.turnNumber + 1 : state.turnNumber;
+  (pl.dpAllLate = pl.dpAllLate || []).push({ amount, until, uids: pl.battle.map(s => s.uid) });
+}
+function lateDpAllSum(state, p, stack) {
+  const mods = state.players[p].dpAllLate;
+  if (!mods || !mods.length) return 0;
+  let sum = 0;
+  for (let i = mods.length - 1; i >= 0; i--) {
+    const m = mods[i];
+    if (m.until < state.turnNumber) { mods.splice(i, 1); continue; }
+    if (!m.uids.includes(stack.uid) && state.players[p].battle.includes(stack)) sum += m.amount;
+  }
+  return sum;
 }
 
 // "이 디지몬은 액티브 상태의 상대 디지몬에게도 어택할 수 있다." (no "no
@@ -1285,7 +1381,7 @@ export function recomputeStackGrants(stack) {
 function parseLinkGrant(sourceCardId) {
   const c = card(sourceCardId);
   if (!c.inheritedKo) return null;
-  const m = c.inheritedKo.match(/링크\s*[:：]\s*(.+?)\s*[:：]\s*코스트\s*(\d+)/);
+  const m = c.inheritedKo.match(/링크\s*(?:[:：]|〉)\s*(.+?)\s*[:：]\s*코스트\s*(\d+)/); // '링크: …' and the '〈링크〉…' spelling
   if (!m) return null;
   return { grantedBy: sourceCardId, conditionText: m[1].trim(), cost: Number(m[2]) };
 }
@@ -1332,7 +1428,19 @@ function queueLinkTriggers(state, p, stack, linkCardId) {
   for (const srcId of stack.sources) queueInheritedTriggersFor(state, p, srcId, 'linked', stack.uid);
 }
 
-export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, source = 'hand') {
+// 4-9-5: when a new Link Card would exceed the cap, the PLAYER chooses which existing link card to discard.
+// Returns the index into stack.linkCards to discard (or undefined when no discard is needed); pass it as linkCardTo's `discardIdx`.
+export async function linkDiscardIdx(state, p, uid, choose) {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+  if (!stack || !(stack.linkCards || []).length) return undefined;
+  const cap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
+  if (stack.linkCards.length < cap) return undefined;
+  if (stack.linkCards.length === 1 || typeof choose !== 'function') return 0;
+  const i = await choose('pickLinkCard', { player: p, ids: stack.linkCards.map(l => l.cardId), prompt: `링크 상한 초과 — 파기할 기존 링크 카드를 선택하세요 (룰 4-9-5)` });
+  return Number.isInteger(i) && i >= 0 && i < stack.linkCards.length ? i : 0;
+}
+export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, source = 'hand', discardIdx = undefined) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return null;
@@ -1344,7 +1452,8 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   // there's no picker UI yet, so this discards oldest-attached first.
   const cap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
   while (stack.linkCards.length >= cap && stack.linkCards.length > 0) {
-    const [old] = stack.linkCards.splice(0, 1);
+    const [old] = stack.linkCards.splice(Number.isInteger(discardIdx) && discardIdx >= 0 && discardIdx < stack.linkCards.length ? discardIdx : 0, 1);
+    discardIdx = undefined;
     pl.trash.push(old.cardId);
     // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — no applyOverflowIfAny here.
     log(state, `${p} 기존 링크 카드 ${card(old.cardId).nameKo} 파기 (링크 상한 초과)`);
@@ -1362,6 +1471,23 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   queueLinkTriggers(state, p, stack, linkCardId);
   dispatchHookEvents(state, 'linked', { owner: p, stack, linkCardId }); // s8: "이/자신의 디지몬이 링크되었을 때" watchers
   return stack;
+}
+
+// 6-5-1-4 / 10-1-1: link a Digimon that is in the BATTLE area (its top card) to another own Digimon. The rest of the leaving stack (evolution
+// sources, its own link cards) goes to the trash and its 'leaves the battle area' triggers fire. Returns the host stack or null.
+export function linkFromBattle(state, p, srcUid, hostUid, cost) {
+  const pl = state.players[p];
+  const src = pl.battle.find(s => s.uid === srcUid), host = pl.battle.find(s => s.uid === hostUid);
+  if (!src || !host || src === host) return null;
+  const chk = linkCheck(state, p, host, src.cardId);
+  if (!chk.ok) { log(state, `${p} 링크 불가: ${chk.reason}`); return null; }
+  if (!canPayCost(state, cost)) { log(state, `${p} 링크 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); return null; }
+  pl.battle.splice(pl.battle.indexOf(src), 1);
+  const extra = [...src.sources, ...(src.linkCards || []).map(l => l.cardId)];
+  pl.trash.push(...extra);
+  for (const id of src.sources) applyOverflowIfAny(state, p, id);
+  hookLeaveTriggers(state, p, src, 'link');
+  return linkCardTo(state, p, hostUid, src.cardId, src.cardId, cost, 'battle');
 }
 
 // 10-4-1: the host becoming a new card (further digivolve/DNA fusion)
@@ -1431,12 +1557,43 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
 // below) vanishes automatically the moment a rule check is possible — not
 // tied to any specific card's own effect. Swept after anything that can
 // move a stack's effective DP downward.
+// 17-1-2-2: rule checks are not performed while an effect is being processed (runScript depth > 0); they are
+// remembered and run once the outermost effect finishes (flushRuleChecks, called from effects.js runScript).
+export function flushRuleChecks(state) {
+  const list = state._rcPending; state._rcPending = null;
+  if (!list) return;
+  const seen = new Set();
+  const known = new Set(state.pending.map(x => x.uid));
+  for (const { p, uid } of list) {
+    if (seen.has(p + uid)) continue; seen.add(p + uid);
+    const pl = state.players[p];
+    const st = pl.battle.find(s => s.uid === uid);
+    if (st) ruleCheckDP(state, p, st);
+  }
+  // 15-4-3-3: 【소멸 시】 etc. triggered by a rule-check deletion trigger simultaneously with the effects already waiting
+  // (they are not "derived" triggers of the effect that just resolved, so they stay in the same resolution tier).
+  for (const x of state.pending) if (!known.has(x.uid)) x.rcSim = true;
+}
 function ruleCheckDP(state, p, stack) {
+  if (state._rcDepth > 0) { (state._rcPending = state._rcPending || []).push({ p, uid: stack.uid }); return; }
   const pl = state.players[p];
   if (!pl.battle.includes(stack)) return; // rule applies to the battle area only, not the raising area
   // 17-1-3-2-5: Link Cards beyond the Link cap (e.g. the ≪링크+N≫ source is gone) are discarded (no deletion).
   const linkCap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
   while ((stack.linkCards || []).length > linkCap) { const ex = stack.linkCards.pop(); pl.trash.push(ex.cardId); log(state, `${p} ${card(ex.cardId).nameKo} 링크 상한 초과로 파기 (17-1-3-2-5)`); }
+  // 17-1-3-2-6 / 17-1-3-2-7: Link Cards whose printed Link condition the host no longer meets, or whose category
+  // isn't the linkable one (Digimon), are discarded. Conservative: only when the condition parses to a predicate.
+  if ((stack.linkCards || []).length && card(stack.cardId).category === 'digimon') {
+    for (const l of [...stack.linkCards]) {
+      let bad = card(l.cardId).category !== 'digimon';
+      if (!bad) { const g = parseLinkGrant(l.cardId); const pr = g && evoTargetPredicate(g.conditionText); bad = !!pr && !pr(card(stack.cardId)); }
+      if (!bad) continue;
+      stack.linkCards.splice(stack.linkCards.indexOf(l), 1);
+      if (!CARDS[l.cardId]?.isToken) pl.trash.push(l.cardId);
+      recomputeStackGrants(stack);
+      log(state, `${p} ${card(l.cardId).nameKo} 링크 조건/카테고리가 맞지 않아 룰체크로 파기 (17-1-3-2-6/7)`);
+    }
+  }
   // 17-1-3-1-1 only concerns DIGIMON with DP; a Tamer/Option has no DP and is never "DP 0 -> deleted".
   if (['tamer', 'option'].includes(card(stack.cardId).category)) return;
   if (!stackHasDP(state, stack)) { // 2-5-3: no DP at all (e.g. BT18-086) — nothing to reduce to 0, but 17-1-3-2-1: such a Digimon in the battle area is DISCARDED (not deleted: no 【소멸 시】)
@@ -1860,6 +2017,9 @@ export function dpDestroyCapBoost(state, p, stackUid) {
 // Returns the best (most negative) still-valid, one-time cost delta for
 // evolving INTO `targetCardId`, and marks it consumed. Call this exactly
 // once per resolved evolution.
+// Snapshot/restore of the one-time evolve-cost mods' "used" flags, so a rejected evolution/jogress (e.g. unpayable cost) does not burn the discount.
+export function snapshotEvoCostMods(state, p) { return (state.players[p].evoCostMods || []).map(m => [m, !!m.usedUp]); }
+export function restoreEvoCostMods(snap) { for (const [m, u] of snap) m.usedUp = u; }
 export function consumeEvoCostMod(state, p, targetCardId) {
   if (isEvoCostLocked(state, p)) return 0;
   const pl = state.players[p];
@@ -1894,6 +2054,14 @@ export function digiburstPickSources(stack, n) {
   const has = (id) => /발휘한\s*《디지버스트》로\s*이\s*카드가\s*파기되었을\s*때/.test(`${card(id).inheritedKo || ''}${card(id).effectKo || ''}`);
   const order = stack.sources.map((id, i) => ({ id, i, pri: has(id) ? 0 : 1 })).sort((a, b) => a.pri - b.pri || a.i - b.i).slice(0, n);
   return order.map(x => x.i);
+}
+
+// 《디지버스트 N》: the PLAYER chooses which N sources are trashed (digiburstPickSources is only the headless fallback).
+export async function digiburstChooseSources(state, p, stack, n, choose) {
+  if (n >= stack.sources.length || typeof choose !== 'function') return digiburstPickSources(stack, n);
+  const r = await choose('pickSourcesMulti', { player: p, uid: stack.uid, ids: stack.sources.slice(), n, prompt: `《디지버스트》 — 파기할 진화원 ${n}장을 선택하세요` });
+  if (Array.isArray(r) && r.length === n && r.every(i => Number.isInteger(i) && i >= 0 && i < stack.sources.length) && new Set(r).size === n) return r;
+  return digiburstPickSources(stack, n);
 }
 
 export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx = null) {
@@ -1931,14 +2099,30 @@ export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx =
 
 // Schedule an effect to run automatically when the CURRENT active player's
 // turn ends (e.g. "gain 3 memory now; lose 3 at end of turn").
-export function scheduleEndOfTurn(state, fn) {
+// meta (all optional): { player: who the delayed effect belongs to (default: the turn player), cardId, label,
+//   expire: true -> pure duration expiry (no trigger/ordering; runs when the turn actually finishes) }.
+// Non-expire entries are held effects ("이 턴 종료 시 …", 18-1): at turn end they wait in state.pending like any
+// trigger so the turn player can order them against 【턴 종료 시】 effects (18-1-2 / 4-3-2).
+export function scheduleEndOfTurn(state, fn, meta = {}) {
   state.endOfTurnEffects = state.endOfTurnEffects || [];
-  state.endOfTurnEffects.push({ turnNumber: state.turnNumber, fn });
+  state.endOfTurnEffects.push({ turnNumber: state.turnNumber, fn, ...meta });
 }
 
-export function runEndOfTurnEffects(state) {
-  const due = (state.endOfTurnEffects || []).filter(e => e.turnNumber === state.turnNumber);
-  state.endOfTurnEffects = (state.endOfTurnEffects || []).filter(e => e.turnNumber !== state.turnNumber);
+// Turn end phase (6-6-1): held end-of-turn effects due now become pending items (resolved via item.schedFn).
+export function queueScheduledTurnEnd(state, finishing) {
+  const all = state.endOfTurnEffects || [];
+  const due = all.filter(e => e.turnNumber === state.turnNumber && !e.expire);
+  state.endOfTurnEffects = all.filter(e => !due.includes(e));
+  for (const e of due) {
+    state.pending.push({ uid: 'p' + (pendingUid++), player: e.player || finishing, cardId: e.cardId || '예약 효과', stackUid: null, tags: ['__턴종료예약'], text: e.label || '이 턴 종료 시 예약된 효과', resolved: false, schedFn: e.fn });
+  }
+}
+
+// Duration expiries scheduled with expire:true run when the turn actually finishes (6-6-3).
+export function runExpiringEndOfTurnEffects(state) {
+  const all = state.endOfTurnEffects || [];
+  const due = all.filter(e => e.turnNumber === state.turnNumber);
+  state.endOfTurnEffects = all.filter(e => e.turnNumber !== state.turnNumber);
   for (const e of due) e.fn();
 }
 
@@ -1988,12 +2172,128 @@ export function parseDigiXros(cardId) {
 
 // Greedy plan of which materials to place (hand first, then battle-area stacks).
 // `handIndex` is the card being played (excluded from the materials).
-export function planDigiXros(state, p, handIndex) {
+// ---- 어셈블리 (Assembly, 7-3) ----
+// "어셈블리 -N: <조건> (N장) …" — while playing this Digimon from hand, place EXACTLY the required cards from the TRASH under it (all or nothing,
+// 7-3-2-4) to lower the play cost by N (a fixed amount, not per card).
+const ASM_COLORS = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
+function parseAssemblyItem(txt, inheritCore) {
+  const names = (m) => [...m.matchAll(/「([^」]+)」/g)].map(x => x[1]);
+  let t = txt.trim(), count = 1, distinct = null;
+  let m = t.match(/(\d+)\s*장\s*$/); if (m) { count = Number(m[1]); t = t.slice(0, m.index); }
+  if (/명칭이\s*서로\s*다른/.test(t)) distinct = 'name';
+  else if (/카드\s*넘버가\s*서로\s*다른/.test(t)) distinct = 'number';
+  else if (/Lv\.\s*이\s*(?:서로\s*)?다른/.test(t)) distinct = 'level';
+  const atoms = [];
+  const NL = String.raw`((?:「[^」]+」\/?\s*)+)`;
+  let rest = t;
+  const take = (re, fn) => { const mm = rest.match(re); if (mm) { atoms.push(fn(names(mm[1]))); rest = rest.replace(mm[0], ' '); } };
+  take(new RegExp(String.raw`명칭에\s*${NL}(?:을|를)?\s*포함`), (l) => (c) => l.some(x => c.nameKo.includes(x)));
+  take(new RegExp(String.raw`특징에\s*${NL}(?:을|를)?\s*포함`), (l) => (c) => (c.types || []).some(ty => l.some(x => ty.includes(x))));
+  take(new RegExp(String.raw`특징(?:으로)?\s*${NL}(?:을|를)?\s*가(?:진|지고)`), (l) => (c) => (c.types || []).some(ty => l.includes(ty)));
+  take(new RegExp(String.raw`${NL}(?:의\s*기술이\s*있는|(?:이|가)\s*기술되어\s*있)`), (l) => (c) => l.some(x => c.nameKo.includes(x)));
+  if (!atoms.length && /「/.test(rest)) { const l = names(rest); if (l.length) atoms.push((c) => l.includes(c.nameKo)); }
+  let lvTest = null;
+  if ((m = t.match(/Lv\.\s*(\d+)\s*(이하|이상)?/))) { const n = Number(m[1]); lvTest = m[2] === '이하' ? (c) => c.level != null && c.level <= n : m[2] === '이상' ? (c) => c.level != null && c.level >= n : (c) => c.level === n; }
+  let colTest = null;
+  if ((m = t.match(/(레드|블루|옐로우|옐로|그린|블랙|퍼플|화이트)인/))) { const col = ASM_COLORS[m[1]]; colTest = (c) => (c.colors || []).includes(col); }
+  const cat = /디지몬\s*카드/.test(t) ? 'digimon' : /테이머\s*카드/.test(t) ? 'tamer' : null;
+  let core = atoms.length ? (c) => atoms.some(f => f(c)) : null;
+  if (!core) core = inheritCore || (lvTest || colTest || cat ? () => true : null);
+  if (!core) return null;
+  const test = (c) => core(c) && (!lvTest || lvTest(c)) && (!colTest || colTest(c)) && (!cat || c.category === cat);
+  return { test, count, distinct, hasCore: atoms.length > 0, coreFn: atoms.length ? core : null };
+}
+export function parseAssembly(cardId) {
+  const line = (card(cardId).effectKo || '').split('\n').map(l => l.trim()).find(l => /^어셈블리\s*-\s*\d+\s*[:：]/.test(l));
+  if (!line) return null;
+  const m = line.match(/^어셈블리\s*-\s*(\d+)\s*[:：]\s*(.+)$/);
+  let desc = m[2].replace(/\s*등장할\s*때,.*$/, '').trim();
+  const alts = desc.split(/\s+\/\s+/); // "「A」 / 특징에 「TS」를 가진 테이머 카드": one slot satisfied by either
+  let reqs = [];
+  if (alts.length > 1) {
+    const items = alts.map(a => parseAssemblyItem(a, null));
+    if (items.some(x => !x)) return null;
+    reqs = [{ test: (c) => items.some(x => x.test(c)), count: 1, distinct: null }];
+  } else {
+    const parts = desc.split(/\s*×\s*|\s+[xX]\s+/);
+    let core0 = null;
+    for (let i = 0; i < parts.length; i++) {
+      const it = parseAssemblyItem(parts[i], i > 0 ? core0 : null);
+      if (!it) return null;
+      if (i === 0 && it.coreFn) core0 = it.coreFn;
+      reqs.push(it);
+    }
+  }
+  return { per: Number(m[1]), reqs };
+}
+// Find cards in `pool` (array of cardIds) that satisfy every requirement exactly (assignment search). Returns the picked ids (requirement order) or null.
+export function solveAssembly(asm, pool) {
+  const slots = []; asm.reqs.forEach((r, ri) => { for (let k = 0; k < r.count; k++) slots.push(ri); });
+  const used = new Array(pool.length).fill(false), chosen = [];
+  const distinctOk = (ri, ids) => {
+    const d = asm.reqs[ri].distinct; if (!d) return true;
+    const keys = ids.map(id => d === 'name' ? card(id).nameKo : d === 'number' ? id : card(id).level);
+    return new Set(keys).size === keys.length;
+  };
+  // prefilter: every requirement needs enough (distinct) candidates; then a bounded search (a trash never has more than ~50 cards)
+  const keyOf = (ri, id) => { const d = asm.reqs[ri].distinct; return d === 'name' ? card(id).nameKo : d === 'number' ? id : d === 'level' ? card(id).level : id + '#'; };
+  for (let ri = 0; ri < asm.reqs.length; ri++) {
+    const cand = pool.filter(id => asm.reqs[ri].test(card(id)));
+    const n = asm.reqs[ri].distinct ? new Set(cand.map(id => keyOf(ri, id))).size : cand.length;
+    if (n < asm.reqs[ri].count) return null;
+  }
+  let steps = 0;
+  const dfs = (si) => {
+    if (si === slots.length) return true;
+    if (++steps > 200000) return false;
+    const ri = slots[si];
+    const tried = new Set();
+    for (let i = 0; i < pool.length; i++) {
+      if (used[i] || tried.has(asm.reqs[ri].distinct ? keyOf(ri, pool[i]) : pool[i])) continue;
+      const c = card(pool[i]);
+      if (!asm.reqs[ri].test(c)) continue;
+      const prev = chosen.filter(x => x.ri === ri).map(x => x.id);
+      if (!distinctOk(ri, [...prev, pool[i]])) continue;
+      tried.add(asm.reqs[ri].distinct ? keyOf(ri, pool[i]) : pool[i]);
+      used[i] = true; chosen.push({ ri, id: pool[i] });
+      if (dfs(si + 1)) return true;
+      used[i] = false; chosen.pop();
+    }
+    return false;
+  };
+  if (!dfs(0)) return null;
+  return chosen.map(x => x.id);
+}
+// Plan for playing the hand card at `handIndex`: { per, materials:[{kind:'trash',cardId}], discount } or null (no assembly / cannot be satisfied from the trash).
+export function planAssembly(state, p, handIndex) {
   const pl = state.players[p];
   const cardId = pl.hand[handIndex];
+  const asm = cardId ? parseAssembly(cardId) : null;
+  if (!asm) return null;
+  const ids = solveAssembly(asm, pl.trash);
+  if (!ids) return null;
+  return { per: asm.per, materials: ids.map(id => ({ kind: 'trash', cardId: id })), discount: asm.per };
+}
+
+// Two-step DigiXros selection for UIs (7-2-2-3/4): digiXrosOptions lists every legal candidate (each with a stable `key`), then
+// planDigiXrosPicked builds the plan from just the keys the player ticked (at least one; each requirement still capped by its count).
+export function digiXrosOptions(state, p, handIndex, cardIdOverride = null, zone = 'hand') {
+  const list = [], cnt = {};
+  planDigiXros(state, p, handIndex, (id, kind) => { const k = kind + ':' + id; cnt[k] = (cnt[k] || 0) + 1; list.push({ cardId: id, kind, key: k + '#' + cnt[k] }); return false; }, cardIdOverride, zone);
+  return list;
+}
+export function planDigiXrosPicked(state, p, handIndex, keys, cardIdOverride = null, zone = 'hand') {
+  const cnt = {};
+  return planDigiXros(state, p, handIndex, (id, kind) => { const k = kind + ':' + id; cnt[k] = (cnt[k] || 0) + 1; return keys.has(k + '#' + cnt[k]); }, cardIdOverride, zone);
+}
+// 7-2-2-3/4: `ask(cardId, kind)` (optional, sync) lets the player pick which of the matching candidates to place — omit it for the greedy maximum.
+// `cardIdOverride`: plan for a card that is not in hand (effect-driven play from the trash, 7-2-2-13).
+export function planDigiXros(state, p, handIndex, ask = null, cardIdOverride = null, zone = 'hand') {
+  const pl = state.players[p];
+  const cardId = cardIdOverride || pl.hand[handIndex];
   const xr = cardId ? parseDigiXros(cardId) : null;
   if (!xr) return null;
-  const usedHand = new Set([handIndex]), usedStacks = new Set(), materials = [];
+  const usedHand = new Set(handIndex != null && zone === 'hand' ? [handIndex] : []), usedStacks = new Set(), materials = [];
   const extras = [];
   for (const { hp, holder, d } of activeHooks(state)) if (hp === p && d.xrosExtra && !holder.suspended) { const e = d.xrosExtra(state, hp, holder, cardId); if (e) extras.push({ holder, underLeft: e.under ?? 0, trashLeft: e.trash ?? 0 }); }
   const matches =(req, c) => req.name ? (c.nameKo === req.name && (!req.color || (c.colors || []).includes(req.color)))
@@ -2007,6 +2307,7 @@ ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
       if (usedHand.has(i)) continue;
       const c = card(pl.hand[i]);
       if (!matches(req, c) || (req.distinct && names.has(c.nameKo))) continue;
+      if (ask && !ask(pl.hand[i], 'hand')) continue;
       usedHand.add(i); names.add(c.nameKo); need--;
       materials.push({ kind: 'hand', cardId: pl.hand[i] });
     }
@@ -2015,6 +2316,7 @@ ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
       if (usedStacks.has(st.uid) || card(st.cardId).category !== 'digimon') continue;
       const c = card(st.cardId);
       if ((!matches(req, c) && !S2.xrosSub(state, p, st)) || (req.distinct && names.has(c.nameKo))) continue; // shard2 (BT10-111 substitute)
+      if (ask && !ask(st.cardId, 'battle')) continue;
       usedStacks.add(st.uid); names.add(c.nameKo); need--;
       materials.push({ kind: 'stack', uid: st.uid, cardId: st.cardId });
     }
@@ -2023,18 +2325,51 @@ ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
       for (let i = 0; i < ex.holder.sources.length && need > 0 && ex.underLeft > 0; i++) {
         const id = ex.holder.sources[i], c = card(id);
         if (!matches(req, c) || (req.distinct && names.has(c.nameKo)) || materials.some(m => m.kind === 'tamer' && m.tamerUid === ex.holder.uid && m.idx === i)) continue;
+        if (ask && !ask(id, 'tamer')) continue;
         names.add(c.nameKo); need--; ex.underLeft--; ex.used = true;
         materials.push({ kind: 'tamer', tamerUid: ex.holder.uid, cardId: id, idx: i });
       }
       for (let i = 0; i < pl.trash.length && need > 0 && ex.trashLeft > 0; i++) {
+        if (zone === 'trash' && i === handIndex) continue; // the card being played itself
         const id = pl.trash[i], c = card(id);
         if (!matches(req, c) || (req.distinct && names.has(c.nameKo)) || materials.some(m => m.kind === 'trash' && m.idx === i)) continue;
+        if (ask && !ask(id, 'trash')) continue;
         names.add(c.nameKo); need--; ex.trashLeft--; ex.used = true;
         materials.push({ kind: 'trash', cardId: id, idx: i, tamerUid: ex.holder.uid });
       }
     }
   }
   return materials.length ? { per: xr.per, materials, discount: xr.per * materials.length, restTamers: extras.filter(e => e.used).map(e => e.holder.uid) } : null;
+}
+
+// 7-2-2-3/7-2-2-7: put DigiXros materials under a freshly played stack — hand cards by id, battle-area Digimon leave the area
+// (their link cards are discarded and 'leave the battle area' triggers fire, 7-2-2-7) and bring their own sources with them.
+// Returns how many material cards were actually placed (= the number "디지크로스하고 있었다면" counts, 7-2-2-9/10).
+function placeXrosMaterials(state, p, stack, mats) {
+  const pl = state.players[p];
+  let placed = 0;
+  for (const mt of mats) {
+    if (mt.kind === 'hand') {
+      const hi = pl.hand.indexOf(mt.cardId);
+      if (hi !== -1) { pl.hand.splice(hi, 1); stack.sources.push(mt.cardId); placed++; }
+    } else if (mt.kind === 'tamer') {
+      const t = pl.battle.find(x => x.uid === mt.tamerUid);
+      const ti = t ? t.sources.lastIndexOf(mt.cardId) : -1;
+      if (ti !== -1) { t.sources.splice(ti, 1); stack.sources.push(mt.cardId); placed++; }
+    } else if (mt.kind === 'trash') {
+      const ti = pl.trash.lastIndexOf(mt.cardId);
+      if (ti !== -1) { pl.trash.splice(ti, 1); stack.sources.push(mt.cardId); placed++; }
+    } else {
+      const bi = pl.battle.findIndex(x => x.uid === mt.uid);
+      if (bi !== -1) {
+        const [ms] = pl.battle.splice(bi, 1);
+        discardLinkCardsOnNewCard(state, p, ms);
+        stack.sources.push(...ms.sources, ms.cardId); placed++;
+        hookLeaveTriggers(state, p, ms, 'xros'); // 7-2-2-7
+      }
+    }
+  }
+  return placed;
 }
 
 export function playDigimonFresh(state, p, handIndex, opts = {}) {
@@ -2045,23 +2380,9 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   // 디지크로스: materials go under the new card (7-2-2-3/7-2-2-7) — hand cards by id,
   // battle-area Digimon leave the area and bring their own sources with them.
   const s2mat = state._s2PlayMat || []; state._s2PlayMat = null; // shard2: play-discount materials chosen via a hook (BT10-093)
-  for (const mt of [...[...(opts.materials || [])].reverse(), ...s2mat]) { // 7-2-2-8: the material written LEFTMOST in the condition ends up on top (sources[] is oldest-first, so push it last)
-    if (mt.kind === 'hand') {
-      const hi = pl.hand.indexOf(mt.cardId);
-      if (hi !== -1) { pl.hand.splice(hi, 1); stack.sources.push(mt.cardId); }
-    } else if (mt.kind === 'tamer') {
-      const t = pl.battle.find(x => x.uid === mt.tamerUid);
-      const ti = t ? t.sources.lastIndexOf(mt.cardId) : -1;
-      if (ti !== -1) { t.sources.splice(ti, 1); stack.sources.push(mt.cardId); }
-    } else if (mt.kind === 'trash') {
-      const ti = pl.trash.lastIndexOf(mt.cardId);
-      if (ti !== -1) { pl.trash.splice(ti, 1); stack.sources.push(mt.cardId); }
-    } else {
-      const bi = pl.battle.findIndex(x => x.uid === mt.uid);
-      if (bi !== -1) { const [ms] = pl.battle.splice(bi, 1); stack.sources.push(...ms.sources, ms.cardId); }
-    }
-  }
-  stack.xrosCount = stack.sources.length; // 7-2-2-9/10: number of cards placed under by DigiXros (0 = did not DigiXros); usable by "디지크로스하고 있었다면" conditions
+  if ((opts.assembly || []).length) placeXrosMaterials(state, p, stack, [...opts.assembly].reverse()); // 7-3-2-6: the card written leftmost ends up on top
+  const xrosPlaced = placeXrosMaterials(state, p, stack, [...[...(opts.materials || [])].reverse(), ...s2mat]); // 7-2-2-8: the material written LEFTMOST in the condition ends up on top (sources[] is oldest-first, so push it last)
+  stack.xrosCount = xrosPlaced; // 7-2-2-9/10: number of cards placed under by DigiXros (0 = did not DigiXros); usable by "디지크로스하고 있었다면" conditions
   for (const tu of opts.restTamers || []) restStack(state, p, tu); // s5: tamers rested as the cost of lending materials
   if ((opts.materials || []).length) log(state, `${p} 디지크로스: ${(opts.materials).map(m => card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓음`);
   recomputeStackGrants(stack); // picks up any keyword the card innately has on its own printed text
@@ -2102,6 +2423,11 @@ export function playFreeFromZone(state, p, zone, index, opts = {}) {
   const stack = makeStack(id, state.turnNumber);
   if (opts.rested) stack.suspended = true;
   stack.playedByEffect = true; // "이 디지몬이 효과로 등장하고 있었다면" (BT15-022)
+  if ((opts.materials || []).length) { // 7-2-2-13: an effect-driven play may DigiXros too (materials chosen by the caller via planDigiXros)
+    stack.xrosCount = placeXrosMaterials(state, p, stack, [...opts.materials].reverse());
+    for (const tu of opts.restTamers || []) restStack(state, p, tu);
+    if (stack.xrosCount) log(state, `${p} 디지크로스: ${opts.materials.map(m => card(m.cardId).nameKo).join(', ')}을(를) 아래에 놓음`);
+  }
   recomputeStackGrants(stack);
   pl.battle.push(stack);
   stack.s7ByEffect = true;
@@ -2428,6 +2754,8 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   fused.attackEligibleTurn = state.turnNumber; // DNA/Jogress results can attack immediately
   fused.viaFusion = true; // for "조그레스 진화하고 있었다면" conditions
   pl.battle.push(fused);
+  // 8-2-2-1-3/4: a material that was attacking / being attacked no longer exists as such -> the attack has no attacker/target and ends.
+  { const ac = state.attackCtx; if (ac && [a.uid, b.uid].some(u => u === ac.uid || u === ac.targetUid) && ac.terminate) ac.terminate(); }
   if (cost > 0) spendMemory(state, cost);
   log(state, `${p} DNA/조그레스 진화: ${card(a.cardId).nameKo}+${card(b.cardId).nameKo} → ${card(newCardId).nameKo} (코스트${cost})`);
   drawCards(state, p, 1); // universal digivolve bonus draw
@@ -2435,6 +2763,106 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   ruleCheckDP(state, p, fused);
   queueTriggersForStack(state, p, fused, 'digivolve');
   return fused;
+}
+
+// ---- 버스트 진화 (Burst Digivolve, 8-3) ----
+// "〔버스트 진화〕 「<진화할 디지몬 명칭>」 : 「<테이머>」 1명을 패로 되돌리는 것으로, 코스트 N" (BT25-104 prints the cost first, and "패에 추가하는 것으로").
+export function parseBurstEvolution(cardId) {
+  const line = (card(cardId).effectKo || '').split('\n').find(l => /〔버스트\s*진화〕/.test(l));
+  if (!line) return null;
+  const names = [...line.replace(/^.*?〔버스트\s*진화〕/, '').matchAll(/「([^」]+)」/g)].map(m => m[1]);
+  if (names.length < 2) return null;
+  const cm = line.match(/코스트\s*(\d+)/);
+  return { targetName: names[0], tamerName: names[1], cost: cm ? Number(cm[1]) : 0 };
+}
+// Can `stack` burst-digivolve into `cardId`? -> { ok, cost, tamerUids } | { ok:false, reason }. (Colour restrictions "X로만 진화할 수 있다" are the caller's E.evoRestrictionCheck.)
+export function burstCheck(state, p, stack, cardId) {
+  const b = parseBurstEvolution(cardId);
+  if (!b) return { ok: false, reason: '버스트 진화 조건 없음' };
+  if (card(cardId).category !== 'digimon' || card(stack.cardId).category !== 'digimon') return { ok: false, reason: '버스트 진화는 디지몬끼리만 가능' };
+  const r = evolveTargetRestriction(state, p, stack);
+  if (r && r.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
+  if (card(stack.cardId).nameKo !== b.targetName) return { ok: false, reason: `버스트 진화 대상은 「${b.targetName}」` };
+  const tamers = state.players[p].battle.filter(s => card(s.cardId).category === 'tamer' && card(s.cardId).nameKo === b.tamerName);
+  if (!tamers.length) return { ok: false, reason: `배틀 에어리어에 「${b.tamerName}」가 없음` };
+  return { ok: true, cost: b.cost, tamerUids: tamers.map(t => t.uid) };
+}
+// 8-3-3: return the tamer to hand, pay the cost, stack the card, draw 1; 8-3-2-1: at this turn's end trash the top card underneath (if it is a Digimon).
+export function burstEvolve(state, p, stackUid, cardId, cost, tamerUid, source = 'hand') {
+  const pl = state.players[p];
+  const stack = pl.battle.find(s => s.uid === stackUid);
+  if (!stack) return null;
+  const chk = burstCheck(state, p, stack, cardId);
+  if (!chk.ok) { log(state, `${p} 버스트 진화 불가: ${chk.reason}`); return null; }
+  if (source === 'hand' && !pl.hand.includes(cardId)) return null;
+  if (!canPayCost(state, cost)) { log(state, `${p} ${card(cardId).nameKo} 버스트 진화 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); return null; }
+  const tUid = chk.tamerUids.includes(tamerUid) ? tamerUid : chk.tamerUids[0];
+  const ti = pl.battle.findIndex(s => s.uid === tUid);
+  const [tamer] = pl.battle.splice(ti, 1);
+  const linkIds = (tamer.linkCards || []).map(l => l.cardId);
+  pl.hand.push(tamer.cardId);
+  pl.trash.push(...tamer.sources, ...linkIds);
+  for (const id of [...tamer.sources, tamer.cardId]) applyOverflowIfAny(state, p, id);
+  log(state, `${p} 버스트 진화: ${card(tamer.cardId).nameKo}을(를) 패로 되돌림`);
+  hookLeaveTriggers(state, p, tamer, 'ownEffect');
+  const evolved = digivolve(state, p, stackUid, cardId, cost, source);
+  if (!evolved) return null;
+  evolved.viaBurst = true;
+  const uid = evolved.uid;
+  scheduleEndOfTurn(state, () => {
+    const s = state.players[p].battle.find(x => x.uid === uid);
+    if (!s || !s.sources.length || card(s.sources[s.sources.length - 1]).category !== 'digimon') return;
+    trashEvoSources(state, p, uid, 1, 'top');
+  }, { player: p, cardId, label: '버스트 진화한 턴 종료 시, 진화원 위에서 1장 파기' });
+  return evolved;
+}
+
+// ---- 어플 합체 (App Fusion, 8-4) ----
+// "〔어플 합체〕 「A」＆「B」(＆「C」) : 코스트 N" — a Digimon linked (by ONE other kind of card) with two of the listed kinds evolves by stacking its link
+// card(s) on top of it and the fusion card above them.
+export function parseAppFusion(cardId) {
+  const line = (card(cardId).effectKo || '').split('\n').find(l => l.includes('〔어플 합체〕'));
+  if (!line) return null;
+  const m = line.replace(/^.*?〔어플 합체〕/, '').match(/^\s*(.+?)\s*[:：]\s*(?:코스트\s*)?(\d+)?/);
+  const names = m ? [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]) : [];
+  if (names.length < 2) return null;
+  return { names, cost: m[2] != null ? Number(m[2]) : 0 };
+}
+export function appFusionCheck(state, p, stack, cardId) {
+  const inf = parseAppFusion(cardId);
+  if (!inf) return { ok: false, reason: '어플 합체 조건 없음' };
+  if (card(cardId).category !== 'digimon' || card(stack.cardId).category !== 'digimon') return { ok: false, reason: '어플 합체는 디지몬끼리만 가능' };
+  const r = evolveTargetRestriction(state, p, stack);
+  if (r && r.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
+  const top = card(stack.cardId).nameKo;
+  if (!inf.names.includes(top)) return { ok: false, reason: `어플 합체 재료 「${inf.names.join('」「')}」 중 하나여야 함` };
+  const links = (stack.linkCards || []).filter(l => l.cardId);
+  const kinds = new Set(links.map(l => card(l.cardId).nameKo));
+  if (kinds.size !== 1) return { ok: false, reason: '링크 카드가 정확히 1종이어야 함 (2종 조합 링크 상태)' };
+  const [k] = [...kinds];
+  if (k === top || !inf.names.includes(k)) return { ok: false, reason: `링크 카드가 「${inf.names.join('」「')}」 중 다른 1종이어야 함` };
+  return { ok: true, cost: inf.cost };
+}
+// 8-4-3: pay the cost, stack the link cards over the Digimon, stack the fusion card on top, draw 1. source: 'hand' | 'trash'.
+export function appFusion(state, p, stackUid, cardId, cost, source = 'hand') {
+  const pl = state.players[p];
+  const stack = pl.raising?.uid === stackUid ? pl.raising : pl.battle.find(s => s.uid === stackUid);
+  if (!stack) return null;
+  const chk = appFusionCheck(state, p, stack, cardId);
+  if (!chk.ok) { log(state, `${p} 어플 합체 불가: ${chk.reason}`); return null; }
+  const zone = source === 'trash' ? pl.trash : pl.hand;
+  const zi = source === 'hand' ? zone.indexOf(cardId) : zone.lastIndexOf(cardId);
+  if (zi === -1) return null;
+  if (!canPayCost(state, cost)) { log(state, `${p} ${card(cardId).nameKo} 어플 합체 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); return null; }
+  if (source === 'trash') zone.splice(zi, 1);
+  const links = stack.linkCards.map(l => l.cardId);
+  stack.linkCards = [];
+  // sources[] is oldest-first: [...old sources, old top, link1..link(n-1)] with link n becoming the "current top" that digivolve() then pushes.
+  stack.sources.push(stack.cardId, ...links.slice(0, -1));
+  stack.cardId = links[links.length - 1];
+  const res = digivolve(state, p, stackUid, cardId, cost, source === 'trash' ? 'trash' : 'hand');
+  if (res) { res.viaAppFusion = true; log(state, `${p} 어플 합체 완료: ${card(cardId).nameKo}`); }
+  return res;
 }
 
 // 16-20: ≪세이브≫ ("you may place this card under one of your own Tamers"
@@ -2621,50 +3049,54 @@ export function inheritKeywordSource(stack) {
 function trySurviveByKeyword(state, p, stack, cause) {
   const pl = state.players[p];
   const has = (key, label = key) => hasKeyword(stack, key) || hasContinuousKeyword(state, p, stack, label);
-  if (has('회피') && !stack.suspended) {
+  const opt = (fn) => replAttempt(state, fn); // each optional survive is its own skippable attempt (player may decline it)
+  if (has('회피') && !stack.suspended && opt(() => {
     stack.suspended = true;
     log(state, `${p} ${card(stack.cardId).nameKo} 《회피》 — 레스트하여 소멸하지 않음`);
     return true;
-  }
-  if (has('아머퍼지', '아머 퍼지') && stack.sources.length > 0) {
+  })) return true;
+  if (has('아머퍼지', '아머 퍼지') && stack.sources.length > 0 && opt(() => {
     const id = stack.sources.pop();
     pl.trash.push(id);
     log(state, `${p} ${card(stack.cardId).nameKo} 《아머 퍼지》 — ${card(id).nameKo} 파기하여 소멸하지 않음`);
     recomputeStackGrants(stack);
     return true;
-  }
+  })) return true;
   const frag = Number(stack.inheritedKeywords?.['프래그먼트'] || 0) || Number(stack.keywords?.['프래그먼트'] || 0);
-  if (frag > 0 && stack.sources.length >= frag) { // 16-37-1: must be able to discard the full specified number
+  if (frag > 0 && stack.sources.length >= frag && opt(() => { // 16-37-1: must be able to discard the full specified number
     // "진화원을 선택하여 N장 파기" — auto-picks the most recently stacked sources.
     const removed = stack.sources.splice(Math.max(0, stack.sources.length - frag), frag);
     pl.trash.push(...removed);
     log(state, `${p} ${card(stack.cardId).nameKo} 《프래그먼트 ${frag}》 — 진화원 ${removed.length}장 파기하여 소멸하지 않음`);
     recomputeStackGrants(stack);
     return true;
-  }
-  if (has('방벽') && cause === 'battle' && pl.security.length > 0) {
+  })) return true;
+  if (has('방벽') && cause === 'battle' && pl.security.length > 0 && opt(() => {
     trashTopSecurityByEffect(state, p);
     log(state, `${p} ${card(stack.cardId).nameKo} 《방벽》 — 시큐리티 1장 파기하여 소멸하지 않음`);
     return true;
-  }
+  })) return true;
   if (cause !== 'ownEffect' && (stack.linkCards || []).length) { // 16-46 ≪분리≫: not by own effect -> discard a designated Link Card, don't leave
     for (const { desc } of keywordDescs(stack, '분리')) {
       const pr = leaveCardPred(desc, true); if (!pr) continue;
       const li = stack.linkCards.findIndex(l => pr(card(l.cardId)));
       if (li === -1) continue;
-      const [lc] = stack.linkCards.splice(li, 1);
-      pl.trash.push(lc.cardId);
-      log(state, `${p} ${card(stack.cardId).nameKo} 《분리》 — 링크 카드 ${card(lc.cardId).nameKo} 파기하여 소멸하지 않음`);
+      if (!opt(() => {
+        const [lc] = stack.linkCards.splice(li, 1);
+        pl.trash.push(lc.cardId);
+        log(state, `${p} ${card(stack.cardId).nameKo} 《분리》 — 링크 카드 ${card(lc.cardId).nameKo} 파기하여 소멸하지 않음`);
+        return true;
+      })) continue;
       return true;
     }
   }
   if (has('스케이프고트') && cause !== 'ownEffect') {
     const other = pl.battle.find(s => s !== stack && card(s.cardId).category === 'digimon');
-    if (other) {
+    if (other && opt(() => {
       log(state, `${p} ${card(stack.cardId).nameKo} 《스케이프고트》 — ${card(other.cardId).nameKo} 소멸시켜 소멸하지 않음`);
       deleteStack(state, p, other.uid, 'trash', 'ownEffect');
       return true;
-    }
+    })) return true;
   }
   return false;
 }
@@ -2855,13 +3287,14 @@ function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
         }
         if (!ab.cond(state, p, holder, protectedStack)) continue;
         if (!ab.cost.can(state, p, holder, protectedStack)) continue;
-        if (ab.limit != null) {
-          const key = onceLimitKey(id, seg.tags);
-          if (turnUsesRemaining(holder, key, ab.limit) <= 0) continue;
-          markTurnEffectUsed(holder, key);
-        }
-        ab.cost.pay(state, p, holder, protectedStack);
-        log(state, `${p} ${card(holder.cardId).nameKo} 생존 능력 — ${card(protectedStack.cardId).nameKo} 소멸하지 않음`);
+        const onceKey = ab.limit != null ? onceLimitKey(id, seg.tags) : null;
+        if (onceKey && turnUsesRemaining(holder, onceKey, ab.limit) <= 0) continue;
+        if (!replAttempt(state, () => {
+          if (onceKey) markTurnEffectUsed(holder, onceKey);
+          ab.cost.pay(state, p, holder, protectedStack);
+          log(state, `${p} ${card(holder.cardId).nameKo} 생존 능력 — ${card(protectedStack.cardId).nameKo} 소멸하지 않음`);
+          return true;
+        })) continue;
         return true;
       }
     }
@@ -2869,16 +3302,95 @@ function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
   return false;
 }
 
+// ===== resumable replacement-effect prompts (optional survive abilities: 《회피》/《세이브》/《디코이》/printed "…하는 것으로 소멸하지 않는다") =====
+// deleteStack() is synchronous, but an OPTIONAL replacement ("you may pay X so this doesn't leave") needs a player decision.
+// When REPL.interactive (the browser UI sets it; headless soak/tests keep the old auto behaviour) a top-level deleteStack first
+// PROBES on a deep clone of the state: the clone's survive attempts are numbered in priority order, and the first attempt that
+// succeeds AND changed the game (paid a cost) is the "hit". A hit means: park the deletion in state.pendingReplacements
+// (deleteStack returns null = "not deleted for now") and let the UI ask. resumeReplacement() then either re-runs deleteStack
+// with that attempt allowed (yes) or with it skipped (no; the next attempt gets probed the same way). Free/static immunities
+// (no state change) are applied without asking. Nested deleteStack calls (costs that destroy other stacks) run automatically.
+export const REPL = { interactive: false, depth: 0, onPending: null };
+// Synchronous yes/no used INSIDE replacement hooks (shards' preventLeave): inside deleteStack the gate above already asked, so it
+// answers `def`; outside (bounce paths) it falls back to a plain confirm in the browser.
+export function replAsk(msg, def = true) {
+  if (REPL.depth > 0 || !REPL.interactive) return def;
+  try { if (typeof globalThis.confirm === 'function') return !!globalThis.confirm(msg); } catch (e) { /* ignore */ }
+  return def;
+}
+function cloneState(o, seen = new WeakMap()) {
+  if (o === null || typeof o !== 'object') return o;
+  if (seen.has(o)) return seen.get(o);
+  let out;
+  if (Array.isArray(o)) { out = []; seen.set(o, out); for (const v of o) out.push(cloneState(v, seen)); return out; }
+  if (o instanceof Set) { out = new Set(); seen.set(o, out); for (const v of o) out.add(cloneState(v, seen)); return out; }
+  if (o instanceof Map) { out = new Map(); seen.set(o, out); for (const [k, v] of o) out.set(k, cloneState(v, seen)); return out; }
+  out = {}; seen.set(o, out);
+  for (const k of Object.keys(o)) out[k] = cloneState(o[k], seen);
+  return out;
+}
+function replFingerprint(state) {
+  const ps = ['p1', 'p2'].map(p => { const pl = state.players[p]; return [pl.hand, pl.trash, pl.security, pl.deck.length, pl.digitamaDeck.length, [pl.raising, ...pl.battle].map(s => s && [s.uid, s.cardId, s.sources, s.suspended, (s.linkCards || []).length])]; });
+  return JSON.stringify([ps, state.memory]);
+}
+// Wraps one survive attempt inside a top-level deleteStack pass: honours the skip set, numbers attempts, records the probe hit.
+function replAttempt(state, fn) {
+  if (REPL.depth !== 1) return fn();
+  const n = state._replN = (state._replN || 0) + 1;
+  if (state._replSkip && state._replSkip.has(n)) return false;
+  const probe = state._replProbe;
+  const fp0 = probe && probe.hit == null ? replFingerprint(state) : null;
+  const r = fn();
+  if (r && probe && probe.hit == null && replFingerprint(state) !== fp0) probe.hit = n;
+  return r;
+}
+function replGate(state, p, uid, toZone, cause) {
+  const pend = (state.pendingReplacements ||= []);
+  if (pend.some(x => x.p === p && x.uid === uid)) return 'defer';
+  if (state._replForce === uid) return 'go';
+  const decl = (state._replDecl ||= {})[uid] || [];
+  const trial = cloneState(state);
+  trial._replProbe = { hit: null }; trial._replSkip = new Set(decl); trial._replN = 0; trial.pendingReplacements = []; trial._replForce = null; trial._replDepth = 0;
+  trial.log = []; // only the lines this probe adds (log() unshifts, newest first)
+  const depth0 = REPL.depth; REPL.depth = 0;
+  try { deleteStack(trial, p, uid, toZone, cause); } catch (e) { trial._replProbe.hit = null; } finally { REPL.depth = depth0; }
+  const hit = trial._replProbe.hit;
+  if (hit == null) return 'go';
+  const st = state.players[p].raising?.uid === uid ? state.players[p].raising : state.players[p].battle.find(s => s.uid === uid);
+  const lines = trial.log.map(l => l.msg).reverse();
+  pend.push({ p, uid, toZone, cause, hit, decl: decl.slice(), cardId: st?.cardId, lines: lines.slice(0, 3) });
+  if (typeof REPL.onPending === 'function') setTimeout(REPL.onPending, 0);
+  return 'defer';
+}
+// UI answer: yes = let the survive ability happen (re-run with that attempt allowed); no = decline it (next one is probed).
+export function resumeReplacement(state, entry, yes) {
+  const pend = state.pendingReplacements || [];
+  const i = pend.indexOf(entry); if (i !== -1) pend.splice(i, 1);
+  const decl = (state._replDecl ||= {});
+  if (yes) state._replForce = entry.uid; else (decl[entry.uid] ||= []).push(entry.hit);
+  try { state._replSkip = new Set(decl[entry.uid] || []); deleteStack(state, entry.p, entry.uid, entry.toZone, entry.cause); }
+  finally { state._replForce = null; state._replSkip = null; }
+  if (!pend.some(x => x.uid === entry.uid)) delete decl[entry.uid];
+  if (!pend.length && state._replWaiters?.length) { const w = state._replWaiters; state._replWaiters = []; w.forEach(f => f()); }
+}
+
 export function deleteStack(state, p, uid, toZone = 'trash', cause = null) {
+  if (REPL.interactive && !state._replProbe && !(REPL.depth > 0) && replGate(state, p, uid, toZone, cause) === 'defer') return null;
+  const top = REPL.depth === 0;
+  REPL.depth++; if (top) state._replN = 0;
+  try { return deleteStackCore(state, p, uid, toZone, cause); } finally { REPL.depth--; }
+}
+function deleteStackCore(state, p, uid, toZone, cause) {
   const pl = state.players[p];
   const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (peek && (cause === 'effect' || cause === 'ownEffect') && effectBlocked(state, p, peek, 'delete', cause)) { log(state, `${p} ${card(peek.cardId).nameKo}는 상대의 효과로 소멸하지 않음`); return null; }
   if (peek && cause === 'battle' && s1BattleDeleteBlocked(state)) { log(state, `${p} ${card(peek.cardId).nameKo}는 이 턴 배틀로 소멸하지 않음`); return null; } // shard1
   if (peek && s1Flag(state, peek, 'noEffectDelete') && cause === 'effect') { log(state, `${p} ${card(peek.cardId).nameKo}는 효과로 소멸하지 않음`); return null; } // shard1
-  if (peek && tryDecoy(state, p, peek, cause)) return null; // s5 《디코이》
-  if (peek && trySurviveBySacrifice(state, p, peek)) return null;
-  if (peek && trySurviveByKeyword(state, p, peek, cause)) return null;
-  if (peek && trySurviveByPrintedAbility(state, p, peek, cause)) return null;
+  const A = (fn) => replAttempt(state, fn); // optional survive attempts: probe / skippable (see REPL above)
+  if (peek && A(() => tryDecoy(state, p, peek, cause))) return null; // s5 《디코이》
+  if (peek && A(() => trySurviveBySacrifice(state, p, peek))) return null;
+  if (peek && A(() => trySurviveByKeyword(state, p, peek, cause))) return null;
+  if (peek && A(() => trySurviveByPrintedAbility(state, p, peek, cause))) return null;
   if (peek && hookPreventLeave(state, p, peek, cause, 'delete')) return null;
   let stack = null, fromBattle = false;
   if (pl.raising?.uid === uid) { stack = pl.raising; pl.raising = null; }
@@ -3467,7 +3979,7 @@ export function grantShield(state, p, uid, shield) {
 export function hookPreventLeave(state, tp, target, cause, mode = 'delete') {
   for (const { hp, holder, d, id } of [...activeHooks(state)]) {
     if (!d.preventLeave || hp !== tp) continue;
-    if (d.preventLeave(state, hp, holder, target, tp, cause, mode, id)) return true;
+    if (replAttempt(state, () => d.preventLeave(state, hp, holder, target, tp, cause, mode, id))) return true;
   }
   return false;
 }

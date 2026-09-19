@@ -247,7 +247,7 @@ OPS.s8_kw = async (i, ctx) => {
   else uid = await pickOne(ctx, player, battleOf(ctx, i.who === 'opp' ? 'opp' : 'self').filter(s => isDigi(s.cardId) && (!i.pred || i.pred(ctx, s))).map(s => s.uid), i.prompt || '키워드를 얻을 디지몬 선택');
   const st = uid && findStack(state, player, uid);
   if (!st) return;
-  const exp = i.until === 'oppEnd' ? oppEnd(ctx) : i.until === 'turnEndWindow' ? state.turnNumber + 1 : state.turnNumber;
+  const exp = i.until === 'oppEnd' ? oppEnd(ctx) : state.turnNumber; // 'turnEnd' / 'turnEndWindow': ends with this turn — turn-end triggers are queued BEFORE expiry now (6-6), so no +1 window is needed
   for (const [kw, val] of i.keywords) {
     S.grantKeyword(state, player, uid, kw, val, 'permanent');
     st.keywordExpiry = st.keywordExpiry || {};
@@ -394,7 +394,7 @@ OPS.s8_evolve = async (i, ctx) => {
   const { state } = ctx;
   const pl = state.players[ctx.self];
   const zones = i.zones || ['hand'];
-  const evoOk = (st, id) => (i.ignoreCond || ctx.E.canEvolveAny(st.cardId, id, st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok);
+  const evoOk = (st, id) => (i.ignoreCond ? ctx.E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, id, st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok);
   const cardsFor = (st, z) => pl[z].map((id, k) => k).filter(k => isDigi(pl[z][k]) && (!i.card || i.card(pl[z][k], ctx, st)) && evoOk(st, pl[z][k]));
   let stacks;
   if (i.subject === 'this') stacks = [stackOf(ctx)].filter(Boolean);
@@ -475,19 +475,19 @@ OPS.s8_link = async (i, ctx) => {
     for (const z of (i.from || ['hand'])) {
       if (z === 'sources') {
         const holders = i.sourcesOf === 'any' ? pl.battle.filter(s => isDigi(s.cardId)) : [me].filter(Boolean);
-        for (const h of holders) h.sources.forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo))) opts.push({ z, k, id, from: h }); });
-      } else pl[z].forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo))) opts.push({ z, k, id }); });
+        for (const h of holders) h.sources.forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && S.linkCheck(state, ctx.self, host, id).ok) opts.push({ z, k, id, from: h }); });
+      } else pl[z].forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && S.linkCheck(state, ctx.self, host, id).ok) opts.push({ z, k, id }); }); // 10-1-1 link condition
     }
     if (!opts.length) break;
     const ids = opts.map(o => o.id);
     const r = await ctx.choose('pickFromRevealed', { player: ctx.self, revealed: ids, eligible: ids.map((id, x) => ({ id, i: x })), min: 0, max: 1, prompt: `링크할 카드 선택${i.max > 1 ? ` (${n + 1}/${i.max})` : ''}` });
     if (!r || !r.length) break;
     const o = opts[r[0]];
-    const slots = S.availableLinkSlots(host);
-    const base = slots.length ? Math.min(...slots.map(s => s.cost)) : 0;
+    const lkc = S.linkCheck(state, ctx.self, host, o.id);
+    const base = lkc.ok ? lkc.cost : 0;
     const cost = i.free ? 0 : Math.max(0, base + (i.costDelta || 0));
     if (o.z === 'sources') { o.from.sources.splice(o.k, 1); S.recomputeStackGrants(o.from); } else pl[o.z].splice(o.k, 1);
-    S.linkCardTo(state, ctx.self, host.uid, o.id, slots[0]?.grantedBy || o.id, cost, 'x');
+    S.linkCardTo(state, ctx.self, host.uid, o.id, o.id, cost, 'x', await S.linkDiscardIdx(state, ctx.self, host.uid, ctx.choose));
     names.push(C(o.id).nameKo);
   }
 };
@@ -679,23 +679,13 @@ OPS.s8_deckTopUnderTamer = async (i, ctx) => {
   await putDeckTopUnder(ctx, t, i.n || 1);
 };
 // 어플 합체: own Digimon linked with ≥2 kinds of the fusion line's names → link cards go on top of it and it evolves into the hand card
-OPS.s8_appFuse = async (i, ctx) => {
+OPS.s8_appFuse = async (i, ctx) => { // 8-4: rule-level flow lives in S.appFusionCheck / S.appFusion (state.js)
   const { state } = ctx;
   const pl = state.players[ctx.self];
-  const parse = (id) => {
-    const line = (C(id).effectKo || '').split('\n').find(l => /〔어플 합체〕/.test(l));
-    const m = line && line.match(/〔어플 합체〕\s*(.+?)\s*[:：]\s*코스트\s*(\d+)/);
-    return m ? { names: [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]), cost: Number(m[2]) } : null;
-  };
   const combos = [];
   for (const host of pl.battle) {
     if (!isDigi(host.cardId) || !(host.linkCards || []).length) continue;
-    const linked = new Set(host.linkCards.map(l => C(l.cardId).nameKo));
-    pl.hand.forEach((id, k) => {
-      if (!isDigi(id)) return;
-      const f = parse(id);
-      if (f && f.names.filter(n => linked.has(n)).length >= 2) combos.push({ host, k, id, f });
-    });
+    pl.hand.forEach((id, k) => { if (isDigi(id) && S.appFusionCheck(state, ctx.self, host, id).ok) combos.push({ host, k, id }); });
   }
   if (!combos.length) { log(ctx, `${ctx.self} 어플 합체할 수 있는 조합이 없음`); return; }
   const hostUid = await pickOne(ctx, ctx.self, [...new Set(combos.map(c => c.host.uid))], '어플 합체할 디지몬 선택');
@@ -705,11 +695,8 @@ OPS.s8_appFuse = async (i, ctx) => {
   const k = await pickZone(ctx, 'hand', opts.map(c => c.k), '어플 합체할 패의 디지몬 카드 선택');
   const c = opts.find(o => o.k === k);
   if (!c) return;
-  const linkIds = host.linkCards.map(l => l.cardId);
-  host.linkCards = [];
-  S.digivolve(state, ctx.self, host.uid, c.id, c.f.cost, 'hand');
-  const ns = findStack(state, ctx.self, host.uid);
-  if (ns) { ns.sources.push(...linkIds); S.recomputeStackGrants(ns); log(ctx, `${ctx.self} 어플 합체: 링크 카드 ${linkIds.length}장을 진화원으로 겹치고 ${C(c.id).nameKo}(으)로 진화`); }
+  const cost = Math.max(0, S.appFusionCheck(state, ctx.self, host, c.id).cost + S.continuousEvoCostDiscount(state, ctx.self, host, c.id) + S.hookEvoCostDiscount(state, ctx.self, host, c.id)); // 8-4-2-3
+  S.appFusion(state, ctx.self, host.uid, c.id, cost, 'hand');
 };
 
 // "A를 자신의 디지몬 1마리의 진화원 아래에 놓는 것으로, 그 디지몬을 패/트래시의 X로 진화 조건을 무시하고 코스트를 지불하지 않고 진화시킬 수 있다."

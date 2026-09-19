@@ -20,15 +20,11 @@ export function totalCount(zoneObj) {
 }
 
 export function copiesInDeck(draft, cardId) {
-  return (draft.main[cardId] || 0) + (draft.digitama[cardId] || 0);
+  // 2-3-4-5/6: cards treated as another card number count toward the same limit group.
+  return S.copiesTowardLimit(draft, cardId);
 }
 
-export function maxCopiesFor(cardId) {
-  // default 4 (1-4-1-2-2); 2-3-4-6 〈룰〉 "이 카드와 동일한 카드 넘버의 카드는 덱에 N장까지 넣을 수 있다" raises it
-  const t = `${S.card(cardId)?.effectKo || ''}\n${S.card(cardId)?.inheritedKo || ''}`;
-  const m = t.match(/동일한\s*카드\s*넘버의\s*카드는\s*덱에\s*(\d+)\s*장\s*까지/);
-  return m ? Number(m[1]) : 4;
-}
+export const maxCopiesFor = S.maxCopiesFor;
 
 export function addCard(draft, cardId) {
   const c = S.card(cardId);
@@ -36,7 +32,7 @@ export function addCard(draft, cardId) {
   const zoneLimit = zone === 'digitama' ? 5 : 50;
   if (totalCount(draft[zone]) >= zoneLimit) return { ok: false, reason: `${zone === 'digitama' ? '디지타마덱' : '메인덱'} 최대 ${zoneLimit}장` };
   const have = copiesInDeck(draft, cardId);
-  if (have >= maxCopiesFor(cardId)) return { ok: false, reason: '카드당 최대 4장' };
+  if (have >= maxCopiesFor(cardId)) return { ok: false, reason: `같은 카드 넘버(별칭 포함) 최대 ${maxCopiesFor(cardId)}장` };
   draft[zone][cardId] = (draft[zone][cardId] || 0) + 1;
   return { ok: true };
 }
@@ -49,15 +45,7 @@ export function removeCard(draft, cardId) {
   if (draft[zone][cardId] <= 0) delete draft[zone][cardId];
 }
 
-export function validate(draft) {
-  const mainN = totalCount(draft.main);
-  const digitamaN = totalCount(draft.digitama);
-  const errors = [];
-  if (mainN !== 50) errors.push(`메인덱 ${mainN}/50장 (정확히 50장이어야 함)`);
-  if (digitamaN > 5) errors.push(`디지타마덱 ${digitamaN}/5장 (5장 이하)`);
-  for (const zone of ['main', 'digitama']) for (const [id, n] of Object.entries(draft[zone])) if (n > maxCopiesFor(id)) errors.push(`${id} ${n}장 (최대 ${maxCopiesFor(id)}장, 룰 1-4-1-2-2)`);
-  return { ok: errors.length === 0, errors, mainN, digitamaN };
-}
+export function validate(draft) { return S.deckLegality(draft); }
 
 // Convert a draft into the {name, main, digitama} shape state.js/DECKS expects.
 export function toDeckDefRecord(draft) {

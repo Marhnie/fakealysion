@@ -77,7 +77,7 @@ function bounceAtEnd(state, p, uid) {
     detachStack(state, p, st);
     state.players[p].deck.push(st.cardId);
     S.log(state, `${p} ${C(st.cardId).nameKo} 턴 종료 시 덱 아래로 되돌림 (진화원 파기)`);
-  });
+  }, { player: p, label: '이 턴 종료 시 덱 아래로 되돌림' });
 }
 // Automatic (non-optional) extra discount: hook descriptors (s1evoDiscount) + unconditional script mods.
 export function evoAutoDelta(state, p, stack, targetId, from = 'hand') {
@@ -629,7 +629,7 @@ SCRIPTS['BT7-040::메인'] = [fn(async (ctx) => {
   const k = await ctx.choose('multipleChoice', { prompt: '《디지버스트》로 파기할 진화원 장수', options: ['사용 안 함', ...Array.from({ length: max }, (_, i) => `${i + 1}장`)] });
   const n = k || 0;
   if (!n) return;
-  const removed = S.trashEvoSources(ctx.state, me, st.uid, n, 'bottom', S.digiburstPickSources(st, n));
+  const removed = S.trashEvoSources(ctx.state, me, st.uid, n, 'bottom', await S.digiburstChooseSources(ctx.state, me, st, n, ctx.choose));
   for (const id of removed) S.queueDigiburstTrashed(ctx.state, me, id, st.uid);
   // 「라센몬」의 효과로 진화원에서 파기된 BT8-081 (진화원 효과)
   for (const id of removed) {

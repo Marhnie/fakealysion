@@ -1,4 +1,5 @@
 import { SCRIPTS as CARD_SCRIPTS, OPS as CARD_OPS } from './cards/index.js';
+const S_COLOR_EN = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
 // Structured effect DSL interpreter.
 // A "script" is an array of instructions. Each instruction is a plain object
 // with an `op`. Instructions that need a target the player must pick return
@@ -97,11 +98,18 @@ function fxSourceOf(ctx) {
   }
   return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' };
 }
+const PICK_KINDS = new Set(['pickStack', 'pickStackAnySide', 'pickFromHand', 'pickFromZoneIndex', 'pickFromRevealed']);
 function wrapChoose(ctx) {
   if (ctx._fxWrapped) return;
   ctx._fxWrapped = true;
   const orig = ctx.choose;
   ctx.choose = async (kind, payload) => {
+    // 1-3-6: when a rule/effect makes you choose cards, you must choose at least 1 — unless the effect text is an
+    // optional one ("…할 수 있다" / "N장까지"). The UI hides its cancel button for required picks that have candidates.
+    if (PICK_KINDS.has(kind) && payload && payload.required === undefined && ctx.trigger && typeof ctx.trigger.text === 'string') {
+      const optional = /수\s*있다|까지|없어도|않아도|않을\s*수/.test(ctx.trigger.text.replace(/\([^()]*\)/g, ''));
+      payload = { ...payload, required: !optional };
+    }
     const { state, S } = ctx;
     if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && payload.player && payload.player !== ctx.self) {
       const fk = payload.fxKind || FX_KIND_OF_OP[state._fxOp] || 'other';
@@ -150,11 +158,15 @@ export async function runScript(script, ctx) {
   wrapChoose(ctx);
   const prevSrc = state._fxSrc;
   state._fxSrc = fxSourceOf(ctx);
+  state._rcDepth = (state._rcDepth || 0) + 1; // 17-1-2-2: no rule check while an effect is being processed
   try {
     for (const instr of script || []) {
       await runOne(instr, ctx);
     }
-  } finally { state._fxSrc = prevSrc; }
+  } finally {
+    state._fxSrc = prevSrc;
+    if (--state._rcDepth <= 0) { state._rcDepth = 0; S.flushRuleChecks(state); }
+  }
 }
 
 async function runOne(instr, ctx) {
@@ -165,8 +177,11 @@ async function runOne(instr, ctx) {
   const prevOp = state._fxOp;
   state._fxOp = instr.op;
   fxDepth++;
+  if (top) state._secDecBatch = new Set(); // 15-5-2: simultaneous multi-security loss inside one instruction triggers once
   try { await runOneCore(instr, ctx); }
-  finally { fxDepth--; state._fxOp = prevOp; }
+  finally { fxDepth--; state._fxOp = prevOp; if (top) state._secDecBatch = null; }
+  // a deletion parked on an optional survive prompt (state.deleteStack → pendingReplacements) must be settled before the next op runs
+  if (state.pendingReplacements?.length) await new Promise(r => (state._replWaiters ||= []).push(r));
   if (top) fxEmit(ctx, instr, snap);
 }
 
@@ -211,7 +226,7 @@ async function runOneCore(instr, ctx) {
         player: who, revealed, eligible, min: instr.pick?.min ?? 0, max: instr.pick?.max ?? eligible.length,
         prompt: instr.prompt || '공개된 카드 중 가져갈 카드 선택',
       });
-      S.resolveReveal(state, who, instr.n, chosenIdxs || [], chosenIdxs || [], instr.restTo || 'bottom');
+      await S.resolveRevealOrdered(state, ctx.choose, who, instr.n, chosenIdxs || [], chosenIdxs || [], instr.restTo || 'bottom');
       break;
     }
     case 'trashHand': {
@@ -290,7 +305,11 @@ async function runOneCore(instr, ctx) {
       if (idx == null) break;
       const cardId = pl.hand[idx];
       const j = S.parseJogress(cardId);
-      S.fuseStacks(state, who, src.uid, partner.uid, cardId, j ? j.cost : 0, 'hand');
+      // 8-2-2-5: the printed jogress cost still goes through evolve-cost modifiers (one-time mods are restored if the fusion is rejected).
+      const evoSnap = S.snapshotEvoCostMods(state, who);
+      let jcost = j ? j.cost : 0;
+      if (j) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, who, cardId) + S.continuousEvoCostDiscount(state, who, src, cardId) + S.hookEvoCostDiscount(state, who, src, cardId));
+      if (!S.fuseStacks(state, who, src.uid, partner.uid, cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
       break;
     }
     case 'playThisFree': { // this card (revealed by a security check / sitting in the trash) enters the battle area for free
@@ -308,7 +327,26 @@ async function runOneCore(instr, ctx) {
       const eligibleIdxs = okIdx(zone);
       const chosenIdx = await ctx.choose('pickFromZoneIndex', { player: who, zone, eligibleIdxs, prompt: instr.prompt || `${zone === 'trash' ? '트래시' : '핸드'}에서 무료로 등장시킬 카드 선택` });
       if (chosenIdx == null) break;
-      S.playFreeFromZone(state, who, zone, chosenIdx, { rested: !!instr.rested, noTriggers: !!instr.noTriggers });
+      // 7-2-2-13: an effect-driven play may DigiXros too — offer the candidate materials one by one (at least 1, otherwise no DigiXros).
+      let xrosOpts = {};
+      const playId = pl[zone][chosenIdx];
+      if (playId && S.card(playId).category === 'digimon' && S.parseDigiXros(playId)) {
+        const cands = S.digiXrosOptions(state, who, chosenIdx, playId, zone);
+        if (cands.length) {
+          const go = await ctx.choose('multipleChoice', { prompt: `${S.card(playId).nameKo}: 《디지크로스》 — 재료를 아래에 놓고 등장시키시겠습니까?`, options: ['한다', '하지 않는다'] });
+          if (go === 0) {
+            const keys = new Set();
+            for (const o of cands) {
+              if (cands.length === 1) { keys.add(o.key); break; }
+              const k = await ctx.choose('multipleChoice', { prompt: `${S.card(o.cardId).nameKo} (${o.kind === 'hand' ? '패' : o.kind === 'battle' ? '배틀 에어리어' : o.kind === 'tamer' ? '테이머 아래' : '트래시'})을(를) 아래에 놓겠습니까?`, options: ['놓는다', '놓지 않는다'] });
+              if (k === 0) keys.add(o.key);
+            }
+            const plan = keys.size ? S.planDigiXrosPicked(state, who, chosenIdx, keys, playId, zone) : null;
+            if (plan) xrosOpts = { materials: plan.materials, restTamers: plan.restTamers || [] };
+          }
+        }
+      }
+      S.playFreeFromZone(state, who, zone, chosenIdx, { rested: !!instr.rested, noTriggers: !!instr.noTriggers, ...xrosOpts });
       break;
     }
     case 'unsuspend': {
@@ -362,7 +400,8 @@ async function runOneCore(instr, ctx) {
     }
     case 'modifyDPAll': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      for (const s of state.players[targetPlayer].battle) S.modifyDP(state, targetPlayer, s.uid, instr.amount, instr.duration || 'turn');
+      S.addDpAllMod(state, targetPlayer, instr.amount, instr.duration || 'turn'); // 15-11-2-2: reaches Digimon that enter later (records the present set first)
+      for (const s of [...state.players[targetPlayer].battle]) S.modifyDP(state, targetPlayer, s.uid, instr.amount, instr.duration || 'turn');
       break;
     }
     case 'saveUnderTamer': {
@@ -612,6 +651,8 @@ async function runOneCore(instr, ctx) {
       if (!(me === 'p1' ? state.memory < 0 : state.memory > 0)) { S.log(state, `${me} 《진격》 — 메모리가 상대측 1 이상이 아니라 어택할 수 없음`); break; }
       const stR = plR.battle.find(x => x.uid === ctx.sourceStackUid);
       if (!stR || stR.suspended || S.card(stR.cardId).category !== 'digimon') { S.log(state, `${me} 《진격》 — 어택할 수 있는 디지몬이 없음`); break; }
+      if (instr.srcMin != null && stR.sources.length < instr.srcMin) break; // conditional 진격: "진화원이 N장 있을 때"
+      if (instr.srcColor && !stR.sources.some(id => (S.card(id).colors || []).includes(instr.srcColor))) break; // "진화원에 <색>인 카드가 있을 때"
       if (!(await ctx.choose('confirmEffect', { player: me, prompt: '《진격》 — 이 디지몬으로 어택할까요?' }))) break;
       if (ctx.startAttack) ctx.startAttack(me, stR.uid);
       break;
@@ -832,7 +873,7 @@ async function runOneCore(instr, ctx) {
         const st = own.battle.find(x => x.uid === ctx.sourceStackUid) || (own.raising?.uid === ctx.sourceStackUid ? own.raising : null);
         if (!st) break;
         const n = Math.min(instr.count, st.sources.length);
-        const idxs = instr.digiburst ? S.digiburstPickSources(st, n) : null;
+        const idxs = instr.digiburst ? await S.digiburstChooseSources(state, targetPlayer, st, n, ctx.choose) : null;
         const removed = S.trashEvoSources(state, targetPlayer, st.uid, n, 'bottom', idxs);
         if (instr.digiburst) for (const id of removed) S.queueDigiburstTrashed(state, targetPlayer, id, st.uid);
         break;
@@ -854,7 +895,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'memoryBorrowAndRepay':
       S.grantMemory(state, ctx.self, instr.n, ctx.sourceCardId);
-      S.scheduleEndOfTurn(state, () => S.grantMemory(state, ctx.self, -instr.n));
+      S.scheduleEndOfTurn(state, () => S.grantMemory(state, ctx.self, -instr.n), { player: ctx.self, cardId: ctx.sourceCardId, label: `이 턴 종료 시 메모리 -${instr.n}` });
       break;
     case 'setMemoryIfLE': {
       const val = ctx.self === 'p1' ? state.memory : -state.memory;
@@ -1455,6 +1496,12 @@ function compileInner(text) {
   {
     const RAID = '[《≪]\\s*진격\\s*[》≫]\\s*(?:\\([^()]*\\))?';
     if (new RegExp(`^${RAID}(?:\\s*[.。].*)?$`, 's').test(t.trim()) || new RegExp(`[.。]\\s*그\\s*후,?\\s*${RAID}\\s*[.。]?\\s*$`).test(t.trim())) script.push({ op: 'raid' });
+    else {
+      // Conditional forms (16-16-2: the condition gates the effect itself): "이 디지몬에게 진화원이 N장 있을 때, 《진격》" (BT10-070),
+      // "이 디지몬의 진화원에 <색>인 카드가 있을 때, 《진격》" (BT9-068).
+      const cm = t.match(new RegExp(`(?:^|[.。]\\s*)(?:이\\s*디지몬(?:에게|의|은)?\\s*진화원(?:이|에)?\\s*)?(?:(\\d+)\\s*장|(레드|블루|옐로우?|그린|블랙|퍼플|화이트)인\\s*카드가)\\s*있을\\s*때,?\\s*${RAID}`));
+      if (cm) script.push(cm[1] ? { op: 'raid', srcMin: Number(cm[1]) } : { op: 'raid', srcColor: S_COLOR_EN[cm[2]] });
+    }
   }
 
   // Blocker / Jamming / Piercing / Rush keyword grants.
@@ -1539,6 +1586,8 @@ function parseConditionText(c) {
     return (ctx) => { const st = stackOf(ctx); return !!st && st.sources.some(id => { const cd = ctx.S.card(id); return l.some(n => cd.nameKo === n || cd.nameKo.includes(n) || (cd.types || []).includes(n)); }); };
   }
   if (/^조그레스\s*진화\s*하고\s*있었다면$/.test(c)) return (ctx) => !!stackOf(ctx)?.viaFusion;
+  // 7-2-2-9/10: "디지크로스하고 있었다면" / "N장 디지크로스하고 있었다면" — stack.xrosCount = cards actually placed under by DigiXros
+  if ((m = c.match(/^(?:(\d+)\s*장\s*)?디지크로스\s*하고\s*있었(?:다면|을\s*때)$/))) { const n = Number(m[1] || 1); return (ctx) => (stackOf(ctx)?.xrosCount || 0) >= n; }
   if (/^자신의\s*턴이라면$/.test(c)) return (ctx) => ctx.state.activePlayer === ctx.self;
   if (/^상대의\s*턴이라면$/.test(c)) return (ctx) => ctx.state.activePlayer !== ctx.self;
   if (/^이\s*디지몬이\s*레스트\s*상태라면$/.test(c)) return (ctx) => !!stackOf(ctx)?.suspended;
@@ -1583,6 +1632,16 @@ function compileWithCost(text) {
 export function compileToScript(text) {
   // 14-2-5 / 13-1-8: a 【시큐리티】 "배틀 종료 시, <효과>" is held until the battle with this security Digimon has ended (see S.queueAfterBattle).
   { const abm = text.trim().match(/^배틀\s*종료\s*시,?\s*(.+)$/s); if (abm) return [{ op: 'afterBattle', text: abm[1] }]; }
+  // 7-2-2-9/10: "…. 그 후, (N장) 디지크로스하고 있었다면/있었을 때, <효과>" — the clause after it only runs when the stack was actually DigiXros'ed (stack.xrosCount).
+  { const xm = text.match(/^(.*?)(?:그\s*후,?\s*)?((?:\d+\s*장\s*)?디지크로스\s*하고\s*있었(?:다면|을\s*때)),?\s*(.+)$/s);
+    if (xm && !/^\s*디지크로스\s*-/.test(xm[3])) {
+      const clean = (t) => t.split('\n').filter(l => !/^\s*(?:디지크로스\s*-|〈룰〉)/.test(l)).join('\n').trim();
+      const prefix = clean(xm[1]) ? compileToScript(clean(xm[1])) : [];
+      const test = parseConditionText(xm[2].replace(/\s+/g, ' ').trim());
+      const suffix = clean(xm[3]) ? compileToScript(clean(xm[3])) : [];
+      if (!test) return prefix; // never run the gated clause blindly
+      return [...prefix, ...(suffix.length ? [{ op: 'condition', if: { test }, then: suffix, else: [] }] : [])];
+    } }
   const inner = compileWithCost(text);
   const trimmed = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
   const cm = trimmed.match(/^([^,.。\n]{2,80}?(?:라면|다면)),\s*(.*)$/s);

@@ -45,7 +45,7 @@ const nameIs = (c, n) => aliasInfo(c).exact.includes(n);
 const nameHas = (c, n) => { const a = aliasInfo(c); return (c.nameKo || '').includes(n) || a.exact.some(x => x.includes(n)) || a.incl.some(x => x.includes(n)); };
 
 // asks the acting player something optional; headless (no window) always says yes
-function askUser(msg) { try { if (typeof window !== 'undefined' && typeof window.confirm === 'function') return window.confirm(msg); } catch (e) { /* ignore */ } return true; }
+function askUser(msg) { return S.replAsk(msg, true); } // replacement prompts are asked by state.js's resumable gate (deleteStack); no blocking dialog here
 async function confirmCtx(ctx, prompt, who) { return !!(await ctx.choose('confirmEffect', { player: who || ctx.self, prompt })); }
 // pick from a list of ids using the generic reveal-picker; returns indexes
 async function pickCards(ctx, player, ids, { eligible, min = 0, max = 1, prompt }) {
@@ -590,7 +590,7 @@ OPS.s2_asDigimon = async (instr, ctx) => { // BT12-092 / BT13-008: treated as a 
   if (!st) return;
   st.s2AsDigimon = true; st.s2NoEvolve = true;
   S.modifyDP(state, ctx.self, st.uid, instr.dp || 3000, 'turn');
-  S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; });
+  S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; }, { expire: true }); // duration end, not a trigger
   S.log(state, `${C(st.cardId).nameKo}: 턴 종료까지 디지몬·DP ${instr.dp || 3000}으로도 취급, 진화할 수 없음`);
 };
 OPS.s2_stackEvoMod = async (instr, ctx) => { // BT14-013
@@ -973,7 +973,7 @@ SCRIPTS['EX4-031::진화 시'] = [{ op: 's2_dpPerCount', target: 'opponent', amo
 SCRIPTS['EX4-062::자신의 메인 페이즈 개시 시'] = [{ op: 's2_if', test: (ctx) => digimonStacks(ctx.state, ctx.self).length >= 2, then: [{ op: 'gainMemory', who: 'self', n: 1 }] }];
 SCRIPTS['EX4-063::자신의 메인 페이즈 개시 시'] = [{ op: 's2_if', test: (ctx) => digimonStacks(ctx.state, ctx.self).length <= 1,
   then: [{ op: 's2_playFree', zones: ['hand'], pred: (c) => nameIs(c, '테리어몬') || nameIs(c, '로프몬'), prompt: '코스트 없이 등장시킬 「테리어몬」/「로프몬」',
-    then: async (ctx, st) => { st.s2NoEvolve = true; const until = untilOppTurnEnd(ctx.state, ctx.self); (ctx.state.endOfTurnEffects = ctx.state.endOfTurnEffects || []).push({ turnNumber: until, fn: () => { const s2 = ctx.state.players[ctx.self].battle.find(x => x.uid === st.uid); if (s2) S.deleteStack(ctx.state, ctx.self, st.uid, 'trash', 'ownEffect'); } }); } }] }];
+    then: async (ctx, st) => { st.s2NoEvolve = true; const until = untilOppTurnEnd(ctx.state, ctx.self); (ctx.state.endOfTurnEffects = ctx.state.endOfTurnEffects || []).push({ turnNumber: until, player: ctx.self, label: '자신의 턴 종료 시 소멸', fn: () => { const s2 = ctx.state.players[ctx.self].battle.find(x => x.uid === st.uid); if (s2) S.deleteStack(ctx.state, ctx.self, st.uid, 'trash', 'ownEffect'); } }); } }] }];
 const gaia = [{ op: 's2_destroyOthers' }];
 SCRIPTS['EX4-069::메인'] = gaia;
 SCRIPTS['EX4-069::시큐리티'] = gaia;

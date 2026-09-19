@@ -60,6 +60,7 @@ export function beginGame(state, firstPlayer) {
 const PHASE_ORDER = ['unsuspend', 'draw', 'breeding', 'main'];
 
 export function nextPhase(state) {
+  if (state.turnEnding) return; // turn end resolving (6-6-2): phase is frozen
   const active = state.activePlayer;
   const pl = state.players[active];
   if (state.phase === 'unsuspend') {
@@ -130,6 +131,7 @@ export function autoAdvance(state) {
   let guard = 0;
   while (guard++ < 25) {
     if (state.winner) return;
+    if (state.turnEnding) return; // 6-6-2: turn end resolving — the phase stays put until settleTurnEnd() finishes it
     // Never cascade past a phase that still has triggered effects waiting to
     // resolve (e.g. turn-start effects queued the moment the turn began, or
     // a mainPhaseStart trigger) — otherwise unsuspend/draw/breeding all fly
@@ -157,22 +159,18 @@ export function autoAdvance(state) {
   }
 }
 
-export function endTurn(state, viaMemoryCondition = false) {
+// Turn end is a two-step process (rules 6-6-1..6-6-4):
+//   1. beginTurnEnd  — the turn-end condition is met; the game stays in the SAME phase, still the finishing
+//      player's turn (state.turnEnding is set). 【자신의/상대의/서로의 턴 종료 시】 effects, held "이 턴 종료 시"
+//      effects (18-1) and turn-end keywords (《급습》/《볼텍스》/《에그제큐트》…) are queued as ordinary pending
+//      triggers (turn player's first, ordered like any simultaneous triggers — 4-3-2).
+//   2. settleTurnEnd/finishTurnEnd — once nothing is left to resolve (6-6-2) the turn really finishes: "이 턴 종료까지"
+//      durations expire and the opponent's turn begins (6-6-3) — unless memory is no longer on the opponent's side (6-6-4).
+export function beginTurnEnd(state, viaMemoryCondition = false) {
+  if (state.turnEnding || state.winner) return;
   const finishing = state.activePlayer;
-  S.runEndOfTurnEffects(state);
-  S.clearExpiredModifiers(state);
-  // 6-6-4: if an end-of-turn effect pushed memory back off the opponent's
-  // side before the turn actually finishes ending, the turn-end is called
-  // off and play continues in the same phase. This only applies to a turn
-  // ending BECAUSE of the memory condition (6-6-1/6-1-4) — a manual
-  // phase-advance or an explicit Pass (which fixes memory itself) always
-  // ends the turn outright regardless of what end-of-turn effects do.
-  if (viaMemoryCondition && !S.isTurnAutoEnding(state)) {
-    S.log(state, `${finishing} 턴 종료 처리 중 메모리가 되돌아와 턴 종료 취소 (6-6-4)`);
-    return;
-  }
-  // 【자신의/상대의/서로의 턴 종료 시】 — ~196 printed segments that were never
-  // queued anywhere (only scheduled one-shot end-of-turn fns ran).
+  state.turnEnding = { player: finishing, via: !!viaMemoryCondition, expired: false };
+  S.log(state, `--- ${finishing} 턴 종료 시 (${state.phase} 페이즈 그대로, 6-6-1) ---`);
   for (const pp of ['p1', 'p2']) {
     const ppl = state.players[pp];
     const kinds = pp === finishing ? ['turnEndOwn', 'turnEndBoth'] : ['turnEndOpp', 'turnEndBoth'];
@@ -181,6 +179,31 @@ export function endTurn(state, viaMemoryCondition = false) {
   S.s7QueueZoneTurnEnd(state, finishing); // s7: [트래시]/[시큐리티] turn-end abilities
   S.queueTurnEndKeywords(state, finishing); // s5: 《볼텍스》
   S.queueTrashTurnEnd(state, finishing); // s6: [트래시]【자신의 턴 종료 시】
+  S.queueScheduledTurnEnd(state, finishing); // 18-1: held "이 턴 종료 시 …" effects join the same simultaneous-trigger queue
+}
+
+// Finishes a begun turn end if nothing is left to resolve. Returns true when the turn actually finished.
+// (Callers that can have an attack / open choice in progress must gate on that themselves — main.js does.)
+export function settleTurnEnd(state) {
+  const te = state.turnEnding;
+  if (!te || state.winner) return false;
+  if (state.pending.some(t => !t.resolved)) return false; // 6-6-2: still resolving, stay in the phase
+  if (!te.expired) {
+    // 6-6-4: an end-of-turn effect pushed memory back to the finishing player's side (or 0) -> the turn does not
+    // end and play continues in the same phase. Only for a turn ending BECAUSE of the memory condition; a plain
+    // phase-advance (non-via) always ends. Nothing has expired yet, so the cancel leaves all durations intact.
+    if (te.via && !S.isTurnAutoEnding(state)) {
+      state.turnEnding = null;
+      S.log(state, `${te.player} 턴 종료 처리 중 메모리가 되돌아와 턴 종료 취소 (6-6-4)`);
+      return false;
+    }
+    te.expired = true;
+    S.runExpiringEndOfTurnEffects(state);
+    S.clearExpiredModifiers(state); // "이 턴 종료까지" durations end now; rule checks this exposes resolve before the turn flips
+    if (state.pending.some(t => !t.resolved)) return false;
+  }
+  state.turnEnding = null;
+  const finishing = te.player;
   const next = S.opponentOf(finishing);
   state.activePlayer = next;
   state.turnNumber += 1;
@@ -189,6 +212,12 @@ export function endTurn(state, viaMemoryCondition = false) {
   S.resetTurnEffectUses(state);
   S.log(state, `--- ${finishing} 턴 종료, ${next} 턴 ${state.turnNumber} 시작 (메모리 ${state.memory}) ---`);
   queueTurnStartTriggers(state);
+  return true;
+}
+
+export function endTurn(state, viaMemoryCondition = false) {
+  beginTurnEnd(state, viaMemoryCondition);
+  settleTurnEnd(state);
 }
 
 // 6-5-1-7-1: declaring Pass during your Main Phase immediately sets the
@@ -197,6 +226,7 @@ export function endTurn(state, viaMemoryCondition = false) {
 // on your own side or at 0 — once it's already on the opponent's side the
 // turn-end condition (6-1-4) is already met without needing to pass.
 export function declarePass(state) {
+  if (state.turnEnding) return; // already in the turn-end phase
   const active = state.activePlayer;
   state.memory = active === 'p1' ? -3 : 3;
   S.log(state, `${active} 패스 선언 → 메모리 상대측 3으로 고정`);
@@ -218,10 +248,10 @@ export function surrender(state, p) {
 export function checkAutoEndTurn(state) {
   // 6-1-4-1: the turn ends only when nothing is left to resolve — a just-queued 【등장 시】/【진화 시】 (which may
   // itself move the memory back) must resolve first; main.js render() re-checks once the queue is empty.
-  if (state.pending.some(t => !t.resolved)) return false;
+  if (state.turnEnding || state.pending.some(t => !t.resolved)) return false;
   if (S.isTurnAutoEnding(state)) {
     endTurn(state, true);
-    return true;
+    return true; // NOTE: only "begun" — with turn-end effects waiting, the turn finishes later via settleTurnEnd()
   }
   return false;
 }

@@ -59,8 +59,7 @@ const stM = (spec) => { const m = M(spec); return (st) => m(st.cardId); };
 
 // Synchronous yes/no for replacement effects (deleteStack & co. are synchronous): a real dialog in the browser, "yes" elsewhere.
 function askSync(msg, def = true) {
-  try { if (typeof globalThis.confirm === 'function') return !!globalThis.confirm(msg); } catch (e) { /* ignore */ }
-  return def;
+  return S.replAsk(msg, def);
 }
 
 // ==================================================================== choosing
@@ -162,7 +161,7 @@ async function evolveEffect(ctx, o) {
   const eligibleFor = (st, zone) => pl[zone].map((id, i) => i).filter(i => {
     const id = pl[zone][i];
     if (!cm(id)) return false;
-    if (o.ignoreCond) return true;
+    if (o.ignoreCond) return ctx.E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, me, st)).ok; // 8-1-2-2
     return printedEvoCost(ctx, st, id) != null;
   });
   stacks = stacks.filter(st => (o.zones || ['hand']).some(z => eligibleFor(st, z).length));
@@ -289,7 +288,7 @@ async function linkFree(ctx, host, o) {
   }
   const li = linkInfo(id);
   const cost = o.costMinus ? Math.max(0, li.cost - o.costMinus) : 0;
-  S.linkCardTo(state, me, host.uid, id, id, cost, srcKind);
+  S.linkCardTo(state, me, host.uid, id, id, cost, srcKind, await S.linkDiscardIdx(state, me, host.uid, ctx.choose));
   return true;
 }
 // Discard one link card of `st` (cost / effect); fires the "링크 카드가 효과로 파기되었을 때" watchers.
@@ -307,42 +306,19 @@ async function linkCostDiscard(ctx, st) {
   return discardLinkCard(ctx.state, ctx.self, st) != null;
 }
 
-// ---- app fusion ("자신의 디지몬 1마리를 패의 디지몬 카드로 어플 합체할 수 있다")
-function appFusionInfo(id) {
-  const line = (C(id).effectKo || '').split('\n').find(l => l.includes('〔어플 합체〕'));
-  if (!line) return null;
-  const names = [...line.matchAll(/「([^」]+)」/g)].map(m => m[1]);
-  return names.length ? { names } : null;
-}
-// A stack can app-fuse into `cardId` when its top card and one link card are two different kinds among the printed names.
-function fusionLink(st, cardId) {
-  const inf = appFusionInfo(cardId);
-  if (!inf) return -1;
-  const top = C(st.cardId).nameKo;
-  if (!inf.names.includes(top)) return -1;
-  return (st.linkCards || []).findIndex(l => l.cardId && inf.names.includes(C(l.cardId).nameKo) && C(l.cardId).nameKo !== top);
-}
-async function appFusion(ctx) {
+// ---- app fusion ("자신의 디지몬 1마리를 패(/트래시)의 디지몬 카드로 어플 합체할 수 있다") — 8-4 rule flow lives in S.appFusionCheck / S.appFusion (state.js)
+async function appFusion(ctx, zone = 'hand', pred = null) {
   const { state } = ctx, me = ctx.self, pl = state.players[me];
-  const stacks = digimonsOf(state, me).filter(st => pl.hand.some(id => isDigimon(id) && fusionLink(st, id) >= 0));
+  const ok = (st, id) => isDigimon(id) && (!pred || pred(id)) && S.appFusionCheck(state, me, st, id).ok;
+  const stacks = digimonsOf(state, me).filter(st => pl[zone].some(id => ok(st, id)));
   if (!stacks.length) { S.log(state, `${me} 어플 합체할 수 있는 조합이 없음`); return false; }
   const st = await pickStackOf(ctx, me, stacks, '어플 합체할 디지몬 선택');
   if (!st) return false;
-  const idx = await pickZoneCard(ctx, me, 'hand', (id) => isDigimon(id) && fusionLink(st, id) >= 0, '어플 합체할 패의 카드 선택');
+  const idx = await pickZoneCard(ctx, me, zone, (id) => ok(st, id), `어플 합체할 ${zone === 'hand' ? '패' : '트래시'}의 카드 선택`);
   if (idx == null) return false;
-  const id = pl.hand[idx];
-  const li = fusionLink(st, id);
-  const [lc] = st.linkCards.splice(li, 1);
-  pl.hand.splice(idx, 1);
-  // the link card is stacked on top of the host, the fusion card goes on top of everything (cost 0)
-  S._s4.discardLinkCardsOnNewCard(state, me, st);
-  st.sources.push(st.cardId, lc.cardId);
-  st.cardId = id;
-  S.log(state, `${me} 어플 합체: ${C(st.sources[st.sources.length - 2]).nameKo}+${C(lc.cardId).nameKo} → ${C(id).nameKo}`);
-  S.drawCards(state, me, 1);
-  S.recomputeStackGrants(st);
-  if (state.players[me].battle.includes(st)) { S.queueTriggersForStack(state, me, st, 'digivolve'); S.emitGameEvent(state, 'digivolve', { owner: me, stack: st, cause: 'effect' }); }
-  return true;
+  const id = pl[zone][idx];
+  const cost = Math.max(0, S.appFusionCheck(state, me, st, id).cost + S.continuousEvoCostDiscount(state, me, st, id) + S.hookEvoCostDiscount(state, me, st, id)); // 8-4-2-3
+  return !!S.appFusion(state, me, st.uid, id, cost, zone);
 }
 
 // ---- security face-up helpers
@@ -387,7 +363,7 @@ const fourKingsPlay = () => RUN(async (ctx) => {
   const st = S.playDigimonFresh(state, me, hi);
   if (!st) return;
   const uid = st.uid;
-  S.scheduleEndOfTurn(state, () => { if (findSt(state, me, uid)) S.deleteStack(state, me, uid, 'trash', 'ownEffect'); });
+  S.scheduleEndOfTurn(state, () => { if (findSt(state, me, uid)) S.deleteStack(state, me, uid, 'trash', 'ownEffect'); }, { player: me, label: '이 턴 종료 시 소멸' });
 });
 const fourKingsDeleted = (color) => RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me], cardId = ctx.sourceCardId;
@@ -1477,6 +1453,29 @@ SC('BT23-079', '자신의 턴', '자신의 디지몬이 링크했을 때', RUN(a
   dpMod(state, me, t, 3000, untilOppTurnEnd(state, me));
   await appFusion(ctx);
 }));
+// ---- 어플 합체 tamers: 【자신의 턴】 자신의 디지몬이 링크했을 때, 이 테이머를 레스트시키는 것으로, <효과>. 또한, … 어플 합체할 수 있다.
+const linkedTamerHook = (id) => HK(id, { tag: '자신의 턴', has: '자신의 디지몬이 링크했을 때', events: { linked: (state, hp, holder, info) => isTam(holder) && !holder.suspended && info.owner === hp && !!info.stack } });
+for (const id of ['BT21-084', 'BT22-087', 'BT24-087']) linkedTamerHook(id);
+const linkedTamer = (id, label, effect, zone = 'hand', pred = null) => SC(id, '자신의 턴', '자신의 디지몬이 링크했을 때', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, self = srcSt(ctx);
+  if (!self || self.suspended) return;
+  if (!(await optional(ctx, me, label))) return;
+  S.restStack(state, me, self.uid);
+  await effect(ctx);
+  await appFusion(ctx, zone, pred);
+}));
+linkedTamer('BT21-084', '이 테이머를 레스트시키고 《1 드로우》, 어플 합체', async (ctx) => { S.drawCards(ctx.state, ctx.self, 1); });
+linkedTamer('BT22-087', '이 테이머를 레스트시키고 상대 디지몬 DP -2000, 어플 합체', async (ctx) => {
+  const { state } = ctx, me = ctx.self, o = opp(me);
+  const t = await pickStackOf(ctx, o, digimonsOf(state, o), 'DP를 낮출 상대 디지몬 선택', 'dpDown');
+  if (t) dpMod(state, o, t, -2000, state.turnNumber);
+});
+linkedTamer('BT24-087', '이 테이머를 레스트시키고 《1 드로우》·패 1장 파기, 트래시의 카드로 어플 합체', async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me];
+  S.drawCards(state, me, 1);
+  const hi = await pickZoneCard(ctx, me, 'hand', () => true, '파기할 패 1장 선택');
+  if (hi != null) pl.trash.push(takeFrom(state, me, 'hand', hi));
+}, 'trash', (id) => (C(id).types || []).some(t => ['시스템', '라이프', '변화'].includes(t)));
 HK('BT23-102', { tag: '서로의 턴', has: '시큐리티가 줄어들었을 때', limit: 1, events: { securityDecrease: () => true } });
 SC('BT23-102', '서로의 턴', '시큐리티가 줄어들었을 때', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self;
@@ -1578,7 +1577,7 @@ SC('EX10-072', '상대의 턴 종료 시', '앞면의 디지몬 카드', RUN(asy
   const uid = st.uid;
   const tn = state.turnNumber + 1;
   state.endOfTurnEffects = state.endOfTurnEffects || [];
-  state.endOfTurnEffects.push({ turnNumber: tn, fn: () => {
+  state.endOfTurnEffects.push({ turnNumber: tn, player: me, label: '자신의 턴 종료 시, 등장시킨 디지몬 소멸', fn: () => {
     if (pl.battle.some(s => s.uid === uid)) S.deleteStack(state, me, uid, 'trash', 'ownEffect');
   } });
 }));

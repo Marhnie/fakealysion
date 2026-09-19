@@ -54,8 +54,7 @@ async function pickZone(ctx, who, zone, pred, prompt) {
 }
 function syncAsk(state, prompt) {
   if (state._s5auto !== undefined) return state._s5auto;
-  if (typeof window !== 'undefined' && window.confirm) return window.confirm(prompt);
-  return true;
+  return S.replAsk(prompt, true); // asked by the resumable replacement gate in state.deleteStack; outside it a plain confirm
 }
 function del(state, p, st, self) { return S.deleteStack(state, p, st.uid, 'trash', p === self ? 'ownEffect' : 'effect'); }
 
@@ -246,7 +245,7 @@ async function linkFree(ctx, o) {
   const stacks = o.stack ? [o.stack] : digs(state, who);
   const opts = [];
   for (const st of stacks) {
-    const add = (zone, id, idx) => { if (C(id).category === 'digimon' && o.pred(C(id)) && linkSlotFor(st, id)) opts.push({ st, zone, id, idx }); };
+    const add = (zone, id, idx) => { if (C(id).category === 'digimon' && o.pred(C(id)) && S.linkCheck(state, who, st, id).ok) opts.push({ st, zone, id, idx }); };
     if (o.zones.includes('hand')) pl.hand.forEach((id, i) => add('hand', id, i));
     if (o.zones.includes('trash')) pl.trash.forEach((id, i) => add('trash', id, i));
     if (o.zones.includes('sources')) { const so = o.ownSourcesOf || st; so.sources.slice(S.fdCount(so)).forEach((id, i) => add('sources', id, i + S.fdCount(so))); }
@@ -259,11 +258,11 @@ async function linkFree(ctx, o) {
   const k = await pickFromList(ctx, who, ids, ids.map((_, i) => i), '링크할 카드 선택');
   if (k == null) return false;
   const pick = mine[k];
-  const slot = linkSlotFor(st, pick.id);
+  const slot = { grantedBy: pick.id };
   if (pick.zone === 'hand') pl.hand.splice(pl.hand.indexOf(pick.id), 1);
   else if (pick.zone === 'trash') removeFrom(pl.trash, pick.id);
   else { const so = o.ownSourcesOf || st; const j = so.sources.lastIndexOf(pick.id); if (j >= 0) so.sources.splice(j, 1); S.recomputeStackGrants(so); }
-  S.linkCardTo(state, who, st.uid, pick.id, slot.grantedBy, 0, 'free');
+  S.linkCardTo(state, who, st.uid, pick.id, slot.grantedBy, 0, 'free', await S.linkDiscardIdx(state, who, st.uid, ctx.choose));
   return true;
 }
 

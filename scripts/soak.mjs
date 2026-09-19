@@ -35,6 +35,7 @@ async function drainPending(state) {
     const t = state.pending.find(x => !x.resolved);
     if (!t) return;
     try {
+      if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; } // held end-of-turn effect (18-1)
       const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text);
       let script = specific || Fx.compileToScript(t.text);
       const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, startAttack() {},
@@ -43,6 +44,11 @@ async function drainPending(state) {
     } catch (e) { note('pending', e); }
     S.resolvePending(state, t.uid);
   }
+}
+// Turn end is two-step (6-6): resolve everything the turn-end phase queued, then let the engine finish (or cancel) it.
+async function finishTurn(state) {
+  let guard = 0;
+  while (state.turnEnding && !state.winner && guard++ < 10) { await drainPending(state); E.settleTurnEnd(state); }
 }
 function invariants(state, tag) {
   if (state.memory < -10 || state.memory > 10) note('invariant', new Error(tag + ' memory out of range ' + state.memory));
@@ -105,10 +111,11 @@ for (let g = 0; g < G && true; g++) {
         } catch (e) { note('action r=' + r.toFixed(1), e); }
         await drainPending(state);
         invariants(state, 'after action');
-        try { if (E.checkAutoEndTurn(state)) break; } catch (e) { note('autoEnd', e); break; }
+        try { if (E.checkAutoEndTurn(state)) { await finishTurn(state); break; } } catch (e) { note('autoEnd', e); break; }
       }
-      if (!state.winner && state.activePlayer === p && state.phase === 'main') { try { E.endTurn(state, false); } catch (e) { note('endTurn', e); break; } }
+      if (!state.winner && state.activePlayer === p && state.phase === 'main') { try { E.endTurn(state, false); await finishTurn(state); } catch (e) { note('endTurn', e); break; } }
       await drainPending(state);
+      // 6-6-4: a cancelled turn end leaves the same player in main phase — the next loop iteration keeps playing it.
     } catch (e) { note('turn', e); break; }
   }
 }
