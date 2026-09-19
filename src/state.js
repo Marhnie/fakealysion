@@ -42,6 +42,21 @@ export async function loadData() {
     if (FORM_KO[c.form]) add.push(FORM_KO[c.form]);
     for (const t of add) if (!(c.types || []).includes(t)) c.types = [...(c.types || []), t];
   }
+  // s6: the BT23 Appmon link cards print their link block on ONE line ("〈링크〉특징 「어플몬」 : 코스트2(설명) 【링크 시】 … 〈링크 중〉이 디지몬의 DP +3000.") which no segment parser sees;
+  // rewrite it into the standard multi-line link layout ("DP +3000 / 링크: … : 코스트2 / 【링크 시】 …") that parseLinkGrant / queueLinkTriggers / parseStaticGrants already read.
+  for (const c of Object.values(CARDS)) {
+    const t = c.inheritedKo;
+    if (!t || !t.startsWith('〈링크〉')) continue;
+    const m = t.match(/^〈링크〉(.+?)\s*[:：]\s*코스트\s*(\d+)\s*(?:\([^()]*\))?\s*(.*?)\s*(?:〈링크 중〉\s*이 디지몬의\s*DP\s*([+-]\d+)\s*\.?)?$/s);
+    if (!m) continue;
+    const lines = [];
+    if (m[4]) lines.push(`DP ${m[4]}`);
+    lines.push(`링크: ${m[1].trim()} : 코스트${m[2]}`);
+    if (m[3].trim()) lines.push(...m[3].trim().split(/(?<=[.)다])\s+(?=[【《])/).map(x => x.trim()).filter(Boolean));
+    c.inheritedKo = lines.join('\n');
+  }
+  // BT23-021 도스코몬 prints 【진화 시】【어택 시】 right after the 〔어플 합체〕 sentence without a line break
+  { const c = CARDS['BT23-021']; if (c && c.effectKo) c.effectKo = c.effectKo.replace(/(링크 카드를 위에 겹쳐 진화시킨다)\s*(【)/, '$1\n$2'); }
   // s6: "〈룰〉특징: 유형 「수생형」을 가진다." — a printed rule line that adds traits to the card itself.
   for (const c of Object.values(CARDS)) {
     const text = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
@@ -2723,10 +2738,12 @@ export function optionColorOk(state, p, cardId) {
   // 16-42: 《사용조건《<지정 카드>》》 — a Digimon/Tamer in the area matching the designated card lets this option ignore its color condition.
   const uc = txt.match(/[《≪]\s*사용\s*조건\s*[《≪]\s*([^》≫]+?)\s*[》≫]\s*[》≫]/);
   if (uc) { const pr = evoTargetPredicate(uc[1].trim()); if (pr && stacks.some(st => st !== pl.raising && pr(card(st.cardId)))) return true; }
+  if (/(?:^|\n)\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/.test(txt)) return true; // unconditional (P-206 …)
   const ig = txt.match(/([^.\n]*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/);
   if (!ig) return false;
   const cond = ig[1].trim();
   if (!cond) return true;
+  { const nm2 = cond.match(/^(?:배틀\s*)?에어리어에\s*자신의\s*「([^」]+)」(?:이|가)\s*없는$/); if (nm2) return !pl.battle.some(st => card(st.cardId).nameKo === nm2[1]); } // LM-054/055/056: "배틀 에어리어에 자신의 「X」가 없는 동안"
   if (/앞면(?:인|의)?\s*시큐리티가\s*없는/.test(cond)) return secFaceUpCount(pl) === 0; // EX9-072: face-up security cards are modelled (s5)
   const dm = cond.match(/^(?:에어리어에\s*)?(.*?)\s*자신의\s*(디지몬\/테이머|테이머\/디지몬|디지몬|테이머)(?:이|가)\s*있는$/);
   const dmCats = dm ? (/\//.test(dm[2]) ? ['digimon', 'tamer'] : [dm[2] === '테이머' ? 'tamer' : 'digimon']) : null; // "디지몬/테이머" = either kind (BT21-097, EX9-070)

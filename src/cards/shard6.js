@@ -468,6 +468,8 @@ SC('EX10-019', '등장 시', '자신의 트래시 또는 이 디지몬의 진화
 SC('EX10-030', '등장 시', '자신의 패 또는 이 디지몬의 진화원에서, Lv.4 이하', linkEffect({ zones: ['hand', 'sources'], card: { lvMax: 4 } }));
 SC('BT23-022', '진화 시', '자신의 패 또는 이 디지몬의 진화원에서, Lv.4 이하', linkEffect({ zones: ['hand', 'sources'], card: { lvMax: 4 } }));
 SC('BT23-033', '등장 시', '자신의 트래시 또는 이 디지몬의 진화원에서, Lv.4 이하', linkEffect({ zones: ['trash', 'sources'], card: { lvMax: 4 } }));
+SC('BT23-021', '진화 시', '진화원에서, Lv.3의 디지몬 카드 1장을 이 디지몬에게', linkEffect({ zones: ['hand', 'sources'], card: { lv: 3 } }));
+SC('BT23-021', '링크 시', '이 디지몬은 배틀에서 소멸하지 않는다', RUN(async (ctx) => { const st = srcSt(ctx); if (st) S.grantBattleImmunity(ctx.state, ctx.self, st.uid); })); // (as the LINK card: 【링크 시】 → the host)
 SC('BT23-024', '진화 시', '특징 「어플몬」을 가진 디지몬 카드 1장을 이 디지몬에게', linkEffect({ zones: ['hand', 'sources'], card: { trait: ['어플몬'] } }));
 SC('ST22-12', '어택 시', '링크 코스트 -2로 링크', linkEffect({ zones: ['hand', 'sources'], card: { fn: (id) => { const c = C(id); return ['소셜', '내비', '툴'].some(x => c.attribute === x || (c.types || []).includes(x)); } }, costMinus: 2 }));
 SC('EX10-073', '진화 시', '그 후, 이 디지몬의 진화원에서, 디지몬 카드 1장을', RUN(async (ctx) => {

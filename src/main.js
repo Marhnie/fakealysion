@@ -139,7 +139,7 @@ function renderDeckBuilderScreen() {
   ])]));
 
   const filterRow = h('div', { className: 'actions-row' }, [
-    (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
+    (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; if (e.isComposing) return; renderDeckBuilderScreen(); }); inp.addEventListener('compositionend', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
     ...['red', 'blue', 'yellow', 'green', 'black', 'purple', 'white'].map(col => h('button', {
       className: dbFilter.colors.includes(col) ? 'primary' : '',
       onClick: () => { const i = dbFilter.colors.indexOf(col); if (i === -1) dbFilter.colors.push(col); else dbFilter.colors.splice(i, 1); renderDeckBuilderScreen(); },
@@ -156,7 +156,7 @@ function renderDeckBuilderScreen() {
     const have = DB.copiesInDeck(dbDraft, id);
     return cardChip(id, {
       selected: have > 0,
-      sourcesCount: have || undefined,
+      deckCount: have || undefined,
       onClick: () => { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; renderDeckBuilderScreen(); },
     });
   }));
@@ -216,7 +216,7 @@ function renderDeckBuilderScreen() {
 
 function deckLineItem(id, n) {
   return cardChip(id, {
-    sourcesCount: n,
+    deckCount: n,
     onClick: () => { DB.removeCard(dbDraft, id); renderDeckBuilderScreen(); },
   });
 }
@@ -490,6 +490,7 @@ function cardChip(cardId, opts = {}) {
     h('div', { className: 'meta' }, metaChildren),
     opts.keywordBadges?.length ? h('div', { className: 'keyword-badges' }, opts.keywordBadges.map(k => h('span', { className: 'kw-badge' }, k))) : null,
     opts.sourcesCount ? h('div', { className: 'stack-src' }, `진화원 ${opts.sourcesCount}장`) : null,
+    opts.deckCount ? h('div', { className: 'stack-src' }, `${opts.deckCount}장 투입`) : null,
   ]);
 }
 
