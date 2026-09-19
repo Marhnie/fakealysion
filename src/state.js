@@ -57,6 +57,10 @@ export async function loadData() {
   }
   // BT23-021 도스코몬 prints 【진화 시】【어택 시】 right after the 〔어플 합체〕 sentence without a line break
   { const c = CARDS['BT23-021']; if (c && c.effectKo) c.effectKo = c.effectKo.replace(/(링크 카드를 위에 겹쳐 진화시킨다)\s*(【)/, '$1\n$2'); }
+  // BT6-084 / ST12-13 print "※ 명칭: 「A」, 특징: 「B」으로도 취급한다" — normalise to the 〈룰〉 lines cardNameInfo / the trait pass below understand
+  for (const c of Object.values(CARDS)) {
+    if (c.effectKo && /※\s*명칭\s*[:：]/.test(c.effectKo)) c.effectKo = c.effectKo.replace(/※\s*명칭\s*[:：]\s*「([^」]+)」\s*,\s*특징\s*[:：]?\s*「([^」]+)」(?:으로|로)도\s*취급한다\.?/, '〈룰〉명칭: 「$1」로도 취급한다.\n〈룰〉특징: 「$2」를 가진다.');
+  }
   // s6: "〈룰〉특징: 유형 「수생형」을 가진다." — a printed rule line that adds traits to the card itself.
   for (const c of Object.values(CARDS)) {
     const text = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
@@ -579,6 +583,7 @@ function fullEffectInheritTarget(effectKo) {
 // evolution source's inherited effect text.
 export function queueTriggersForStack(state, p, stack, eventKind) {
   if (!stack) return;
+  if (stack.s13NoTrig && stack.s13NoTrig[eventKind] != null && state.turnNumber <= stack.s13NoTrig[eventKind]) { log(state, `${p} ${card(stack.cardId).nameKo}의 ${({ play: '【등장 시】', digivolve: '【진화 시】', attack: '【어택 시】' })[eventKind] || eventKind} 효과는 발휘하지 않음 (효과, s13)`); return; } // batch-4: 「【등장 시】 효과는 발휘하지 않는다」 until the given turn number
   if (eventKind === 'digivolve' && stack.noEvoTrigUntil != null && state.turnNumber <= stack.noEvoTrigUntil) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s8
   if (eventKind === 'digivolve' && hookSuppressTrigger(state, p, stack, '진화 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s5
   if (eventKind === 'play' && hookSuppressTrigger(state, p, stack, '등장 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【등장 시】 효과는 발휘하지 않음 (효과)`); return; }
@@ -1488,7 +1493,7 @@ const KOR_COLOR_NAME = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로
 // s8: wraps the printed-text restriction with (1) an effect-applied "진화할 수 없다" timer and (2) hook-provided
 // ALTERNATIVE evolution rules ("진화 조건을 무시하고 진화 코스트 N으로 …로 진화할 수 있다"): restriction.alt = [{cost, test(tgtCard, srcCard)}].
 export function evolveTargetRestriction(state, p, stack) {
-  for (const lk of state.evolveLocks || []) if (lk.player === p && state.turnNumber <= lk.until && (card(stack.cardId).level || 0) <= lk.levelMax && card(stack.cardId).category === 'digimon') return { cannotEvolve: true };
+  for (const lk of state.evolveLocks || []) if (lk.player === p && state.turnNumber <= lk.until && (card(stack.cardId).level || 0) <= lk.levelMax && card(stack.cardId).category === 'digimon' && (!lk.activeOnly || !stack.suspended)) return { cannotEvolve: true };
   if (stack.cannotEvolveUntil != null && state.turnNumber <= stack.cannotEvolveUntil) return { cannotEvolve: true };
   if (S2.evolveBan(state, p, stack)) return { cannotEvolve: true }; // shard2
   for (const { hp, holder, d } of activeHooks(state)) if (d.noEvolve && hp === p && holder === stack && d.noEvolve(state, hp, holder)) return { cannotEvolve: true }; // s5
@@ -2692,7 +2697,7 @@ export function queueAfterBattle(state) {
 export function playFreeFromZone(state, p, zone, index, opts = {}) {
   const pl = state.players[p];
   if (zone === 'trash' && state.s6TrashLock && state.s6TrashLock[p] != null && state.turnNumber <= state.s6TrashLock[p] && ['digimon', 'tamer'].includes(card(pl.trash[index])?.category)) { log(state, `${p} 효과로 트래시에서 디지몬/테이머를 등장시킬 수 없음`); return null; } // s6 (BT23-014)
-  if (s1HookAny(state, 's1cannotPlay', { p })) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
+  if (s1HookAny(state, 's1cannotPlay', { p }) || timedLocked(state, p, 'effectPlay')) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
   if (pl[zone][index] && isPlayRestricted(state, p, pl[zone][index])) { log(state, `${p} ${card(pl[zone][index]).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); return null; }
   const [id] = pl[zone].splice(index, 1);
   if (!id) return null;
@@ -2754,7 +2759,7 @@ export function optionColorOk(state, p, cardId) {
 
 export function useOptionCard(state, p, handIndex, opts = {}) {
   const pl = state.players[p];
-  if (s1HookAny(state, 's1cannotUseOption', { p })) { log(state, `${p} 옵션 카드를 사용할 수 없음 (효과)`); return null; } // shard1
+  if (s1HookAny(state, 's1cannotUseOption', { p }) || timedLocked(state, p, 'option')) { log(state, `${p} 옵션 카드를 사용할 수 없음 (효과)`); return null; } // shard1
   if (pl.hand[handIndex] && !optionColorOk(state, p, pl.hand[handIndex])) {
     log(state, `${p} ${card(pl.hand[handIndex]).nameKo} 사용 불가: 색 조건 미충족 (같은 색의 디지몬/테이머가 필요, 룰 4-22)`);
     return null;
@@ -2776,7 +2781,7 @@ export function useOptionCard(state, p, handIndex, opts = {}) {
 
 export function placeThisInBattle(state, p, cardId) {
   const pl = state.players[p];
-  if (s1HookAny(state, 's1cannotPlay', { p })) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
+  if (s1HookAny(state, 's1cannotPlay', { p }) || timedLocked(state, p, 'effectPlay')) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
   const idx = pl.trash.lastIndexOf(cardId);
   if (idx !== -1) pl.trash.splice(idx, 1);
   // makeStack(), not a bespoke literal — a bare {uid,cardId,sources,...}
@@ -4304,11 +4309,14 @@ export function hookSuppressTrigger(state, tp, target, tag) {
 }
 // "상대는 DP N 이하의 디지몬을 등장/이동시킬 수 없다" and "Lv.N 이하의 디지몬은 진화할 수 없다" (turn-limited, stored on the state).
 export function addPlayRestriction(state, p, dpMax, untilTurn) { (state.playRestrictions ||= []).push({ player: p, dpMax, until: untilTurn }); log(state, `${p} DP ${dpMax} 이하의 디지몬을 등장/이동시킬 수 없음`); }
+// timed locks: "(다음) 상대의 턴 종료 시까지 상대는 옵션 카드를 사용할 수 없다" (EX1-072) / "…효과로 디지몬을 등장시킬 수 없다" (BT8-097): { player, kind: 'option'|'effectPlay', until }
+export function addTimedLock(state, p, kind, untilTurn) { (state.timedLocks ||= []).push({ player: p, kind, until: untilTurn }); log(state, `${p} ${kind === 'option' ? '옵션 카드를 사용할 수 없음' : '효과로 디지몬을 등장시킬 수 없음'} (턴 ${untilTurn}까지)`); }
+export function timedLocked(state, p, kind) { return (state.timedLocks || []).some(l => l.player === p && l.kind === kind && state.turnNumber <= l.until); }
 export function isPlayRestricted(state, p, cardId) {
   const dp = card(cardId).dp || 0;
   return (state.playRestrictions || []).some(r => r.player === p && state.turnNumber <= r.until && card(cardId).category === 'digimon' && dp <= r.dpMax);
 }
-export function addEvolveLock(state, p, levelMax, untilTurn) { (state.evolveLocks ||= []).push({ player: p, levelMax, until: untilTurn }); log(state, `${p} Lv.${levelMax} 이하의 디지몬은 진화할 수 없음`); }
+export function addEvolveLock(state, p, levelMax, untilTurn, activeOnly = false) { (state.evolveLocks ||= []).push({ player: p, levelMax, until: untilTurn, ...(activeOnly ? { activeOnly: true } : {}) }); log(state, `${p} Lv.${levelMax} 이하의 디지몬은 진화할 수 없음`); }
 // Once-per-turn bookkeeping for hook handlers: true (and marks) if this descriptor hasn't been used this turn by `holder`.
 // Extra names/traits a stack has through printed "…명칭/특징을 얻는다" abilities (descriptor.names / descriptor.types).
 export function hookStackNames(state, p, stack) {
