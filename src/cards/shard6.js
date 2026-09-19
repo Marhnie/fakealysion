@@ -994,6 +994,12 @@ SC('EX10-039', '자신의 메인 페이즈 개시 시', '바그라군」을 가�
 
 // #78 EX10-047 / #79 EX10-052 / #88 EX10-060 (built from existing ops)
 SC('EX10-047', '등장 시', 'DP 합계 6000까지, 상대의 디지몬을 소멸', [{ op: 'costGroup', cost: [{ op: 'trashHand', who: 'self', n: 1 }], then: [{ op: 'destroySum', stat: 'dp', limit: 6000 }] }]);
+SC('EX10-047', '소멸 시', '「묘티스몬」이 기술되어 있는 테이머 카드 1장을', RUN(async (ctx) => {
+  // 자신의 트래시에서 「묘티스몬」이 기술되어 있는 테이머 카드 1장을 코스트 없이 등장 — 자신의 테이머와 같은 명칭의 카드는 불가
+  const { state } = ctx, me = ctx.self;
+  const mine = new Set(tamersOf(state, me).map(s => C(s.cardId).nameKo));
+  await playFreeChoose(ctx, { zones: ['trash'], card: { cat: 'tamer', mention: ['묘티스몬'] }, filter: (id) => !mine.has(C(id).nameKo), prompt: '코스트를 지불하지 않고 등장시킬 「묘티스몬」 테이머 선택 (선택 안 함 가능)' });
+}));
 SC('EX10-052', '진화 시', '상대는 본인의 디지몬/테이머 1마리(명)를 소멸시킬 수 있다', [{ op: 'costGroup', cost: [{ op: 'trashHand', who: 'self', n: 1 }], then: [{ op: 'oppMayPay', pay: 'destroy', else: [{ op: 'recoverTop', who: 'self' }] }] }]);
 SC('EX10-060', '진화 시', '이 효과로 소멸하지 않았다면, 상대의 시큐리티를 위에서부터 1장 파기하고', [{ op: 'oppMayPay', pay: 'destroy', else: [{ op: 'removeSecurity', who: 'opponent' }, { op: 'unsuspend', target: 'thisStack' }] }]);
 

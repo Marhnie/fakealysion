@@ -2056,6 +2056,7 @@ function evoTargetPredicate(desc) {
       cons.push(t => (t.colors || []).some(x => cols.includes(x)));
     }
     if ((m = stripped.match(/Lv\.\s*(\d+)\s*(이상|이하)?/))) { const lv = Number(m[1]); cons.push(m[2] === '이상' ? (t => (t.level || 0) >= lv) : m[2] === '이하' ? (t => t.level != null && t.level <= lv) : (t => t.level === lv)); }
+    if ((m = stripped.match(/DP\s*(\d+)\s*(이상|이하)/))) { const dpn = Number(m[1]); cons.push(m[2] === '이상' ? (t => (t.dp || 0) >= dpn) : (t => t.dp != null && t.dp <= dpn)); }
     if (/다색|2색/.test(stripped)) cons.push(t => (t.colors || []).length >= 2);
     if (!cons.length && (m = c.match(/^((?:「[^」]+」\/?)+)$/))) {
       const list = quoted(m[1]);
