@@ -330,7 +330,7 @@ function renderTopbar() {
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
-    h('button', { onClick: () => { if (state.phase === 'main' && blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { disabled: state.phase === 'main', title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
       className: 'danger', disabled: state.phase !== 'main',
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
