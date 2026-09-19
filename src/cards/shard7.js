@@ -310,6 +310,7 @@ async function linkThisOption(ctx) {
 SCRIPTS['ST22-08::메인'] = [F(async (ctx) => {
   const { state, self } = ctx;
   await linkThisOption(ctx);
+  if (!digimonsOf(state, ctx.opp).length) return; // no opposing Digimon: skip the pointless DP-reference prompt
   const mine = await pickStack(ctx, self, digimonsOf(state, self), 'DP 기준이 될 자신의 디지몬 선택 (취소=소멸 안 함)');
   if (!mine) return;
   const dp = S.effectiveDP(state, self, mine);

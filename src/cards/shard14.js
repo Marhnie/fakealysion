@@ -104,7 +104,7 @@ OPS.n5_playSum = async (i, ctx) => {
     const r = await ctx.choose('pickFromRevealed', { player: p, revealed: ids, eligible: ids.map((id, x) => ({ id, i: x })), min: 0, max: 1, prompt: `등장시킬 카드 선택 (남은 등장 코스트 합계 ${left})` });
     if (!r || !r.length) break;
     const o = opts[r[0]];
-    const st = S.playFreeFromZone(state, p, o.z, o.k, {});
+    const st = S.playFreeFromZone(state, p, o.z, o.k, await FX_HELPERS.xrosOptsFor(ctx, p, o.z, o.k)); // 7-2-2-13
     left -= C(o.id).cost || 0;
     if (st) played.push(st);
   }

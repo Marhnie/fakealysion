@@ -93,11 +93,11 @@ OPS.s16_bt16060 = async (instr, ctx, R) => {
   S.log(state, `${ctx.self} 덱 위 ${ids.length}장 오픈: ${ids.map((id) => C(id).nameKo).join(', ')}`);
   const k = ids.filter((id) => hasT(id, 'D-브리가드', '디지대')).length;
   if (ids.length) {
-    if (k) { for (const s of state.players[ctx.opp].battle) { if (C(s.cardId).category === 'digimon') { s.s16CostMinus = (s.s16CostMinus && s.s16CostTurn === state.turnNumber ? s.s16CostMinus : 0) + k; s.s16CostTurn = state.turnNumber; } } S.log(state, `${ctx.self} 상대의 디지몬 전부의 등장 코스트 -${k} (턴 종료까지)`); }
+    if (k) { for (const s of state.players[ctx.opp].battle) { if (C(s.cardId).category === 'digimon') { S.addCostMod(state, s, -k, state.turnNumber); } } S.log(state, `${ctx.self} 상대의 디지몬 전부의 등장 코스트 -${k} (턴 종료까지)`); }
     await ctx.choose('pickFromRevealed', { player: ctx.self, revealed: ids, eligible: ids.map((id, i) => ({ id, i })).filter((e) => hasT(e.id, 'D-브리가드', '디지대')), min: 0, max: 0, dest: `상대 디지몬 전부 등장 코스트 -${k}`, prompt: `「D-브리가드」/「디지대」 카드 ${k}장 — 상대의 디지몬 전부 등장 코스트 -${k}` });
     await returnRevealed(ctx, ctx.self, ids, 'topOrBottom');
   }
-  const eff = (s) => (C(s.cardId).cost || 0) - (s.s16CostTurn === state.turnNumber ? s.s16CostMinus || 0 : 0);
+  const eff = (s) => S.effectiveCost(state, s);
   const cands = state.players[ctx.opp].battle.filter((s) => C(s.cardId).category === 'digimon' && eff(s) <= 4);
   if (!cands.length) { S.log(state, `${ctx.self} 등장 코스트 4 이하의 상대 디지몬이 없음`); return; }
   const uid = await ctx.choose('pickStack', { player: ctx.opp, uids: cands.map((s) => s.uid), prompt: '소멸시킬 상대 디지몬 선택 (등장 코스트 4 이하)' });

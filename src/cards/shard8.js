@@ -10,7 +10,7 @@
 //  * "상대의 턴 종료까지" expiry number = oppEnd(): T+1 when resolving on my own turn, T when already on the opponent's turn.
 //  * effect-caused zone changes go through S.* so state._fxSrc / game events / immunity (effectBlocked) apply.
 import * as S from '../state.js';
-import { compileToScript, lookupCardSpecific } from '../effects.js';
+import { compileToScript, lookupCardSpecific, FX_HELPERS } from '../effects.js';
 
 export const SCRIPTS = {};
 export const OPS = {};
@@ -455,7 +455,8 @@ OPS.s8_playOrUse = async (i, ctx) => {
     if (z === 'sources') continue;
     const cost = i.free ? 0 : Math.max(0, (C(id).cost || 0) + dl);
     if (cost > 0) S.spendMemory(state, cost);
-    const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k) : S.playFreeFromZone(state, ctx.self, z, k);
+    const xo = catOf(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
+    const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
     if (st) { st.byEffect = { kind: 'play', effect: true, turn: state.turnNumber }; S8(ctx).played = true; }
     return;
   }

@@ -60,7 +60,7 @@ async function pickIdx(ctx, who, zone, pred, prompt) {
 const confirm = async (ctx, who, prompt) => !!(await ctx.choose('confirmEffect', { player: who, prompt }));
 const log = (ctx, msg) => ctx.S.log(ctx.state, msg);
 const untilEndOfTurn = (st) => st.turnNumber;
-const untilOppTurnEnd = (st) => st.turnNumber + 1; // effect granted in own turn lasts through the opponent's next turn
+const untilOppTurnEnd = (st) => S.durationEnd(st, 'opponentTurn'); // 「상대의 턴 종료까지」 (caster-relative)
 
 // Moves a stack out of the battle area into hand / deck bottom (sources go to trash), honouring bounce protections.
 function bounceStack(ctx, p, stack, dest = 'hand') {

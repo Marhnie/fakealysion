@@ -1038,6 +1038,8 @@ function quickApplyButtonsFor(text, player) {
 }
 
 async function ctxChoose(kind, payload) {
+  // nothing to pick from: skip the "대상 없음 / 취소"-only prompt (same result as cancelling it)
+  if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && !payload.uids.length && !payload.required) return null;
   return new Promise(resolve => {
     state.uiChoice = { kind, payload, resolve: (val) => { state.uiChoice = null; resolve(val); render(); } };
     render();
@@ -1714,7 +1716,9 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   };
   const dp = S.effectiveDP(state, p, dec.stack);
   const opp = S.opponentOf(p);
+  if (atkOpts && atkOpts.anyActive) dec.stack.anyActiveOnce = true; // BT4-090: 「이 효과로는 액티브 상태의 상대 디지몬에게도 어택할 수 있다」 = this attack only
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
+  if (dec.stack.anyActiveOnce) delete dec.stack.anyActiveOnce;
   const canHitPlayer = S.canAttackPlayer(state, p, uid);
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
   pa.fireDeclare = fireDeclare;
@@ -1824,7 +1828,7 @@ function renderPendingAttack() {
         } });
       })));
     } else {
-      rows.push(h('div', { className: 'meta' }, '레스트 상태 디지몬이 없어서 직접 공격 불가'));
+      rows.push(h('div', { className: 'meta' }, '어택 대상이 될 레스트 상태의 상대 디지몬이 없음 (플레이어에게만 어택 가능)'));
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.chargeTarget) {
@@ -1864,7 +1868,10 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'actions-row' }, [
         h('span', {}, `${S.card(opt.cardId).nameKo}: ${opt.body}`),
         h('button', {
+          disabled: !!pa.counterUsed,
           onClick: () => {
+            const r = S.activateCounter(state, pa.opp, opt, pa); // rule 9 / 11-3-2: use cost + color condition (options), once per attack
+            if (!r.ok) { S.log(state, `${pa.opp} ${S.card(opt.cardId).nameKo} 카운터 불가: ${r.reason}`); render(); return; }
             state.pending.push({ uid: 'ct' + Math.random().toString(36).slice(2), player: pa.opp, cardId: opt.cardId, stackUid: opt.stackUid, tags: opt.tags, text: opt.body, resolved: false });
             enterBlockCheck(pa); render();
           },

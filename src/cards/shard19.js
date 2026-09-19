@@ -376,6 +376,7 @@ const secHook = (id, tag, d) => { (HOOKS[id] ||= []).push({ tag, zone: 'security
 function contSec(id, tag, o) {
   secHook(id, tag, {
     ...(o.dp ? { dp: (state, hp, h, target, tp) => (mineTarget(hp, tp, target) && o.pred(target) ? o.dp : 0) } : {}),
+    ...(o.link ? { linkPlus: (state, hp, h, target) => (dgStack(target) && o.pred(target) && o.link.when(state, hp) ? o.link.n : 0) } : {}),
     ...(o.kw || o.kw2 ? { grantKw: (state, hp, h, target) => {
       if (!dgStack(target) || !o.pred(target)) return [];
       const out = [...(o.kw || [])];
@@ -397,7 +398,7 @@ contSec('BT25-095', '서로의 턴', { pred: (s) => TS(s) && colorAny(s, ['red',
 contSec('BT24-090', '서로의 턴', { pred: (s) => TS(s) && colorAny(s, ['blue', 'yellow']), kw: ['블로커'], kw2: { when: (st, hp) => ownBattleNamed(st, hp, '넵튠몬', '베누스몬'), names: ['연계'] } });
 contSec('BT25-094', '자신의 턴', { pred: (s) => TS(s) && colorAny(s, ['red', 'blue']), kw: ['연계'], kw2: { when: (st, hp) => ownBattleNamed(st, hp, '아폴로몬', '디아나몬'), names: ['속공'] } });
 contSec('BT25-099', '자신의 턴', { pred: (s) => TS(s) && colorAny(s, ['green', 'black']), kw: ['연계'], kw2: { when: (st, hp) => ownBattleNamed(st, hp, '바쿠스몬', '케레스몬'), names: ['관통'] } });
-contSec('BT25-102', '서로의 턴', { pred: (s) => TS(s) && colorAny(s, ['black', 'red']), kw: ['블로커'] }); // 「불카누스몬」이 있는 동안의 《링크 +1》은 수동
+contSec('BT25-102', '서로의 턴', { pred: (s) => TS(s) && colorAny(s, ['black', 'red']), kw: ['블로커'], link: { n: 1, when: (st, hp) => ownBattleNamed(st, hp, '불카누스몬') } });
 contSec('BT25-097', '서로의 턴', { pred: (s) => TS(s) && colorAny(s, ['yellow', 'purple']), kw: ['연계'], kw2: { when: (st, hp) => ownBattleNameIncl(st, hp, '유노몬'), names: ['스케이프고트'] } });
 secHook('BT26-100', '서로의 턴', {
   grantKw: (state, hp, h, target) => (dgStack(target) && hasType(C(target.cardId), '타이탄족') ? ['블로커'] : []),

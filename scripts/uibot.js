@@ -21,7 +21,7 @@ B.step = async () => {
     let b = pri(/^다음 단계|^바로 진행/) || pri(/카운터 단계로/) || pri(/^넘기기/);
     if (!b) {
       const ok = pri(/^확인/);
-      const chip = mod.querySelector('.stack-list .card-chip, .hand-list .card-chip');
+      const chip = mod.querySelector('.stack-list .card-chip:not(.selected), .hand-list .card-chip:not(.selected)');
       if (ok) b = ok; else if (chip) { chip.click(); return log('modalChip[' + mod.textContent.slice(0, 40) + ']'); }
     }
     if (!b) b = pri(/본체 공격/) || pri(/^예|발동한다|체크|닫기/) || bs[0];

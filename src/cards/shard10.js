@@ -225,10 +225,10 @@ sc('BT4-090::진화 시', async (ctx, R) => {
   const st = meStack(ctx); if (!st) return;
   await ops(ctx, R, [{ op: 'unsuspend', target: 'thisStack' }]);
   if (st.suspended || !(await confirm(ctx, '이 디지몬으로 상대의 디지몬에게 어택하시겠습니까? (액티브 상태의 디지몬에게도 가능)'))) return;
-  S.grantKeyword(ctx.state, ctx.self, st.uid, '액티브공격', true, 'turn');
-  const legal = S.legalDigimonTargets(ctx.state, ctx.self, st.uid);
+  st.anyActiveOnce = true; // only THIS attack may hit active Digimon (printed duration), not the rest of the turn
+  let legal; try { legal = S.legalDigimonTargets(ctx.state, ctx.self, st.uid); } finally { delete st.anyActiveOnce; }
   const t = await pickStack(ctx, ctx.opp, P(ctx, ctx.opp).battle.filter(s => legal.includes(s.uid)), '어택할 상대 디지몬 선택');
-  if (t && ctx.startAttack) ctx.startAttack(ctx.self, st.uid, t.uid);
+  if (t && ctx.startAttack) ctx.startAttack(ctx.self, st.uid, t.uid, { anyActive: true });
 });
 
 // BT5-019 패의 레드 디지몬 1장을 진화원 가장 위에 둘 수 있다. 그 후, 진화원의 「오메가샤우트몬」/「지크그레이몬」 1장마다 DP 5000 이하 상대 디지몬 1마리 소멸.
@@ -627,7 +627,7 @@ sc('BT10-099::메인', async (ctx) => {
     const t = await pickStack(ctx, ctx.opp, digsOf(ctx, ctx.opp).filter(s => !chosen.includes(s)), '《시큐리티 어택 -1》을 줄 상대 디지몬');
     if (!t) break;
     chosen.push(t);
-    S.grantKeyword(ctx.state, ctx.opp, t.uid, '시큐리티어택', -1, 'opponentTurn');
+    S.grantKeyword(ctx.state, ctx.opp, t.uid, '시큐리티어택', -1, 'nextOpponentTurn'); // 「다음 상대의 턴 종료까지」 — [시큐리티]로 상대 턴에 발휘되면 그 다음 상대 턴까지
   }
 });
 
@@ -718,5 +718,8 @@ sc('BT10-024::등장 시', async (ctx, R) => {
   await ops(ctx, R, [{ op: 'grantKeyword', target: 'self', thisStack: true, keyword: '속공', duration: 'turn' }]);
   if ((st.xrosCount || 0) < 1) return;
   const n = st.sources.length;
-  for (let i = 0; i < 3; i++) await ops(ctx, R, [{ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: 'opponentTurn', filter: { srcMax: n } }]);
+  ctx._distinctPicks && delete ctx._distinctPicks['BT10-024'];
+  for (let i = 0; i < 3; i++) await ops(ctx, R, [{ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: 'nextOpponentTurn', filter: { srcMax: n }, distinct: 'BT10-024' }]);
+  // 「어택과 블록을 할 수 없다」: the same (distinct) Digimon also cannot block
+  for (const uid of ctx._distinctPicks?.['BT10-024'] || []) { const t = digsOf(ctx, ctx.opp).find(x => x.uid === uid); if (t) (t.s1 ||= {}).noBlock = S.durationEnd(ctx.state, 'nextOpponentTurn'); }
 });
