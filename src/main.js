@@ -386,7 +386,7 @@ function renderTopbar() {
     h('div', { className: 'gauge-mid' }),
     h('div', { className: 'gauge-fill', style: '' }),
   ]);
-  bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? '50%' : `${pct}%`;
+  bar.querySelector('.gauge-fill').style.left = state.memory >= 0 ? `${50 - state.memory / 20 * 100}%` : '50%';
   bar.querySelector('.gauge-fill').style.width = `${Math.abs(state.memory) / 20 * 100}%`;
   if (state.winner) {
     return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
@@ -399,7 +399,7 @@ function renderTopbar() {
     h('span', {}, `활성: ${state.activePlayer}`),
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
-    h('span', {}, `메모리 ${state.memory >= 0 ? '+' : ''}${state.memory}`),
+    h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
     h('button', { disabled: state.phase === 'main', title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
       className: 'danger', disabled: state.phase !== 'main',
@@ -959,15 +959,23 @@ function renderPlayerPanel(p) {
 // Horizontal memory-gauge number line (-10..0..+10 with a position marker),
 // shared between both panels — mirrors the physical "메모리 게이지" strip.
 function renderMemoryTrack() {
+  // 아래쪽 플레이어(P1)가 플러스, 위쪽 플레이어(P2)가 마이너스. 플러스는 왼쪽으로 진행.
+  const m = state.memory;
   const cells = [];
-  for (let n = 10; n >= 0; n--) cells.push(n);
-  for (let n = 1; n <= 10; n++) cells.push(n);
+  for (let n = 10; n >= 1; n--) cells.push({ n, side: 'bottom' });
+  cells.push({ n: 0, side: 'zero' });
+  for (let n = 1; n <= 10; n++) cells.push({ n, side: 'top' });
+  const activeIdx = m > 0 ? 10 - m : m === 0 ? 10 : 10 + Math.abs(m);
   const numRow = h('div', { className: 'mem-numbers' },
-    cells.map((n, i) => h('span', { className: 'mem-num' + (i === 10 ? ' mem-zero' : '') }, String(n))));
-  const pos = ((state.memory + 10) / 20) * 100;
+    cells.map((c, i) => h('span', { className: `mem-num mem-${c.side}` + (i === activeIdx ? ' mem-active' : '') }, String(c.n))));
+  const who = m > 0 ? '아래 P1' : m < 0 ? '위 P2' : '';
   return h('div', { className: 'mem-track' }, [
+    h('div', { className: 'mem-head' }, [
+      h('div', { className: 'mem-side mem-side-bottom' + (m > 0 ? ' on' : '') }, [h('span', {}, '◀ 아래 P1 (플러스)'), m > 0 ? h('b', {}, `+${m}`) : null]),
+      h('div', { className: 'mem-readout' }, m === 0 ? '메모리 0' : `메모리 ${who} ${Math.abs(m)}`),
+      h('div', { className: 'mem-side mem-side-top' + (m < 0 ? ' on' : '') }, [m < 0 ? h('b', {}, `${m}`) : null, h('span', {}, '위 P2 (마이너스) ▶')]),
+    ]),
     numRow,
-    h('div', { className: 'mem-marker', style: `left:${pos}%` }),
   ]);
 }
 
