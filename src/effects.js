@@ -41,6 +41,8 @@ function matchesFilter(S, target, filter, state) {
   const traits = eff ? eff.traits : (c.types || []);
   const colors = eff ? eff.colors : (c.colors || []);
   const nameHas = (n) => names.some(x => x.includes(n)) || inclNames.some(x => x.includes(n));
+  if (filter.idIn && !filter.idIn.includes(cardId)) return false; // (revealTop: only the revealed cards that can actually be evolved into / used)
+  if (filter.levelAny && !filter.levelAny.includes(c.level)) return false; // "Lv.4 또는 Lv.5의 …"
   if (filter.level != null && c.level !== filter.level) return false;
   if (filter.levelMax != null && (c.level || 0) > filter.levelMax) return false;
   if (filter.levelMin != null && (c.level || 0) < filter.levelMin) return false;
@@ -67,6 +69,7 @@ ${c.inheritedKo || ''}`.includes(`《${filter.keywordText}`)) return false;
     if (filter.hasSources && !(target.sources || []).length) return false;
     if (filter.srcMax != null && (target.sources || []).length > filter.srcMax) return false;
     if (filter.srcMin != null && (target.sources || []).length < filter.srcMin) return false;
+    if (filter.srcHas && !(target.sources || []).some(id => matchesFilter(S, id, filter.srcHas))) return false; // "진화원에 「X」/2색 이상인 카드를 가진 …" (any evolution-source card matches)
   }
   if (filter.costMax != null && (c.cost || 0) > filter.costMax) return false;
   if (filter.costMin != null && (c.cost || 0) < filter.costMin) return false;
@@ -101,7 +104,7 @@ function maxSlotMatching(S, cards, avail, slots) { // slots: [filter]; avail: in
   for (let k = 0; k < slots.length; k++) if (tryK(k, new Set())) n++;
   return n;
 }
-async function pickByGroups(ctx, who, cards, groups, kind, basePrompt, mkEligible) {
+async function pickByGroups(ctx, who, cards, groups, kind, basePrompt, mkEligible, required = false) {
   const { S } = ctx;
   const slots = [];
   for (const g of groups) for (let k = 0; k < (g.max || 1); k++) slots.push({ g, k, filter: g.filter });
@@ -116,10 +119,223 @@ async function pickByGroups(ctx, who, cards, groups, kind, basePrompt, mkEligibl
     const el = cand.filter(i => 1 + maxSlotMatching(S, cards, avail.filter(x => x !== i), rest) >= best);
     const lbl = sl.g.label ? `${sl.g.label} ${sl.g.max > 1 ? `${sl.k + 1}/${sl.g.max}` : '1'}장` : '';
     const prompt = `${basePrompt}${lbl ? ` — ${lbl}` : ''}`;
-    const sel = await ctx.choose(kind, mkEligible ? mkEligible(el, prompt) : { player: who, revealed: cards, eligible: el.map(i => ({ id: cards[i], i })), min: 0, max: 1, prompt });
-    for (const i of (sel || [])) if (el.includes(i) && !chosen.includes(i)) chosen.push(i);
+    const sel = await ctx.choose(kind, mkEligible ? mkEligible(el, prompt) : { player: who, revealed: cards, eligible: el.map(i => ({ id: cards[i], i })), min: 0, max: 1, prompt, ...(required && el.length ? { required: true } : {}) });
+    for (const i of (sel || [])) if (el.includes(i) && !chosen.includes(i)) { chosen.push(i); (chosen.gi ||= {})[i] = groups.indexOf(sl.g); }
   }
   return chosen;
+}
+
+// ---- "덱 위에서부터 N장 오픈 → 그중 <조건> N장을 <패에 추가 / 등장 / 진화원 / 파기> → 나머지는 <덱 아래/위/파기>" (batch reveal-2) ----
+// revealPick instr: { op, who:'self', n, optReveal, steps:[{ groups:[{filter,max,all,upTo,distinctColors,label}], costSum, optional, dests:[{k:'hand'|'trash'|'play'|'use'|'srcThis'|'srcOwn', rested, filter}] }],
+//   restTo:'bottom'|'top'|'trash'|'hand'|'topOrBottom' }.  Steps run in order on the cards still revealed; every pick is limited to matching cards;
+// the deck holds the unpicked cards until the rest is placed (the player orders them). ctx._lastPlacedSource counts 진화원 placements ("이 효과로 놓았다면").
+function revealCriterion(dsc) {
+  dsc = dsc.trim().replace(/특징으로\s*특징으로/g, '특징으로').replace(/,\s*$/, '');
+  let m;
+  if ((m = dsc.match(/^(.*?)(?:를|을)?\s*가지거나\s*(\d)\s*색의\s*카드$/))) { const a = strictCardFilter(m[1] + '를 가진 카드'); if (a) return { anyOf: [a, { colorCount: Number(m[2]) }] }; }
+  if ((m = dsc.match(/^((?:「[^」]+」\s*\/?\s*)+)\s*(?:또는|이나)\s*([^「].*)$/))) return { anyOf: [{ exactAny: [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]) }, revealCriterion(m[2])] };
+  const f = criterionFilter(dsc);
+  if (f && f.anyOf && /거나\s/.test(dsc)) { // "명칭에 「A」를 포함하거나 특징으로 「B」를 가진 퍼플인 디지몬 카드": the trailing color/Lv./cost words describe the shared noun -> apply to every alternative
+    const last = f.anyOf[f.anyOf.length - 1], shared = {};
+    for (const k of ['colors', 'colorCount', 'colorCountMin', 'level', 'levelMax', 'levelMin', 'costMax', 'costMin']) if (last[k] != null) shared[k] = last[k];
+    if (Object.keys(shared).length) return { anyOf: f.anyOf.map(sub => ({ ...shared, ...sub })) };
+  }
+  return f;
+}
+function revealGroups(desc) {
+  desc = desc.trim();
+  if (!desc) return null;
+  if (/씩$/.test(desc)) return parsePickGroups(desc);
+  const groups = [];
+  for (let part of desc.split(/(?<=장|전부)\s*(?:과|와)\s*(?=\S)/)) {
+    part = part.trim();
+    let distinctColors = false;
+    if (/색이\s*서로\s*다른/.test(part)) { distinctColors = true; part = part.replace(/,?\s*색이\s*서로\s*다른\s*/, ' ').replace(/(있|가지|갖)고\s+/, '$1는 ').trim(); }
+    const one = (p) => {
+      let mm;
+      if ((mm = p.match(/^(.*?)\s*전부$/))) return { max: 99, all: true, dsc: mm[1].trim() };
+      if ((mm = p.match(/^(.*?)\s*(\d+)\s*장(까지)?$/))) return { max: Number(mm[2]), dsc: mm[1].trim(), upTo: !!mm[3] };
+      return { max: null, dsc: p.trim() };
+    };
+    const orParts = part.split(/(?<=장)\s*또는\s*/);
+    if (orParts.length > 1) {
+      const os = orParts.map(one); if (os.some(o => o.max == null || o.all)) return null;
+      groups.push({ filter: { anyOf: os.map(o => (o.dsc ? revealCriterion(o.dsc) : {})) }, max: Math.max(...os.map(o => o.max)), label: part });
+      continue;
+    }
+    const o = one(part);
+    const f = o.dsc ? revealCriterion(o.dsc) : null;
+    groups.push({ ...(f && Object.keys(f).length ? { filter: f } : {}), max: o.max ?? 1, ...(o.max == null ? { noCount: true } : {}), ...(o.all ? { all: true } : {}), ...(distinctColors ? { distinctColors: true } : {}), ...(o.upTo ? { upTo: true } : {}), label: (o.dsc || '카드') });
+  }
+  return groups.length ? groups : null;
+}
+function parseRevealDest(s) {
+  s = s.trim().replace(/[.。]\s*$/, '');
+  const one = (x) => {
+    let m;
+    x = x.trim();
+    if (/^패(?:에|로)\s*(?:추가|넣)/.test(x)) return { k: 'hand' };
+    if (/^파기/.test(x)) return { k: 'trash' };
+    if (/^코스트를?\s*지불하지\s*않고/.test(x)) return /사용/.test(x) ? { k: 'use' } : { k: 'play', rested: /레스트\s*상태로/.test(x) };
+    if (/^이\s*디지몬의\s*진화원\s*아래에/.test(x)) return { k: 'srcThis' };
+    if ((m = x.match(/^(.*?)자신의\s*디지몬(?:\s*1\s*마리)?의\s*진화원\s*아래에/))) { const pre = m[1].trim(); const f = pre ? parseCardFilter(pre + ' 디지몬 카드') : null; return pre && !f ? null : { k: 'srcOwn', filter: f }; }
+    return null;
+  };
+  const dests = s.split(/(?<=거나),?\s*/).map(one);
+  if (!dests.length || dests.some(d => !d) || dests.length > 2) return null;
+  return { dests, optional: /수\s*있다/.test(s) };
+}
+function compileRevealPick(t) {
+  const m0 = t.match(/자신의\s*덱\s*위에서(?:부터)?\s*(\d+)\s*장(?:을)?\s*오픈(?:한다|할\s*수\s*있다|하고)/);
+  if (!m0) return null;
+  const sents = splitSentences(t.replace(/[〈<]룰[〉>].*$/s, '')).map(x => x.trim());
+  let steps = null, tailRest = "";
+  const bi = sents.findIndex(x => /^그\s*중(?:에서|에|의)?(?:\s|(?=[《「]))/.test(x)); // ("그중《흡수진화》를 …" has no space)
+  const ci = sents.findIndex(x => /^그\s*카드가\s/.test(x));
+  const finish = (desc, destStr, sum) => {
+    const groups = revealGroups(desc), pd = parseRevealDest(destStr);
+    if (!pd || (desc.trim() && !groups)) return null;
+    const g = groups || [{ max: 1, label: '카드', noCount: true }];
+    if (sum != null) for (const x of g) if (x.noCount) x.max = 99;
+    return { groups: g, ...(sum != null ? { costSum: sum } : {}), optional: pd.optional || g.every(x => x.upTo), dests: pd.dests };
+  };
+  if (bi >= 0) {
+    const body = sents[bi].replace(/^그\s*중(?:에서|에|의)?\s*/, '').replace(/[.。]$/, '').replace(/,?\s*(?:나머지|남은\s*카드)(?:는|를)\s*[^,]*$/, (x) => { tailRest = x; return ''; }); // "…패에 추가하고 나머지는 덱 아래로 되돌린다" in one sentence
+    steps = [];
+    for (const seg of body.split(/(?<=[하놓]고),\s*/)) {
+      let sum = null;
+      const sm = seg.match(/등장\s*코스트\s*합계\s*(\d+)\s*까지\s*/);
+      let sg = seg; if (sm) { sum = Number(sm[1]); sg = seg.replace(sm[0], ''); }
+      const mm = sg.match(/^(.*)(?:을|를)\s*((?:패(?:에|로)\s*(?:추가|넣)|코스트를?\s*지불하지|이\s*디지몬의\s*진화원|(?:[가-힣]+인\s*)?자신의\s*디지몬(?:\s*1\s*마리)?의\s*진화원|파기).*)$/s);
+      if (!mm) return null;
+      const st = finish(mm[1], mm[2], sum);
+      if (!st) return null;
+      steps.push(st);
+    }
+  } else if (ci >= 0) {
+    const mm = sents[ci].match(/^그\s*카드가\s*(.*?)(?:(?:이)?(?:라면|다면)|일\s*때|일\s*경우),?\s*(.*)$/s); // ("…디지몬 카드일 때 코스트를 지불하지 않고 등장시킬 수 있다" — P-070)
+    if (!mm) return null;
+    const st = finish(mm[1], mm[2], null); if (!st) return null;
+    st.groups.forEach(x => { x.max = 1; }); st.optional = /수\s*있다/.test(mm[2]); steps = [st];
+  } else if (sents.some(x => /^오픈한\s*카드(?:는|를)/.test(x)) && !/오픈한\s*카드가/.test(t)) steps = []; // reveal only: "오픈한 카드는 원하는 순서대로 덱 위 또는 아래로만 되돌린다" (nothing may be picked)
+  else return null;
+  const rs = sents.find(x => /^(?:나머지|오픈한\s*카드|남은\s*카드)(?:는|를)/.test(x)) || tailRest || '';
+  const restTo = /파기/.test(rs) ? 'trash' : /덱(?:\s*의)?\s*위\s*(?:또는|\/|나)\s*(?:덱(?:\s*의)?\s*)?아래/.test(rs) ? 'topOrBottom' : /패에\s*추가/.test(rs) ? 'hand' : /덱(?:\s*의)?\s*위로/.test(rs) ? 'top' : /덱(?:\s*의)?\s*아[래도]/.test(rs) ? 'bottom' : null;
+  if (!restTo) return null;
+  return { op: 'revealPick', who: 'self', n: Number(m0[1]), ...(/상대\s*디지몬\s*1\s*마리마다,?\s*자신의\s*덱/.test(t) ? { nMulOpp: true } : {}), optReveal: /오픈할\s*수\s*있다/.test(m0[0]), steps, restTo };
+}
+async function runRevealPick(instr, ctx) {
+  const { state, S } = ctx, who = ctx.self, pl = state.players[who];
+  if (instr.optReveal) { const ok = await ctx.choose('confirmEffect', { player: who, prompt: `덱 위에서부터 ${instr.n}장을 오픈하시겠습니까?` }); if (!ok) return; }
+  let nWant = instr.n;
+  if (instr.nMulOpp) { nWant *= state.players[ctx.opp].battle.filter(s => S.card(s.cardId).category === 'digimon').length; if (!nWant) { S.log(state, '상대의 디지몬이 없어 오픈하지 않음'); return; } } // "상대 디지몬 1마리마다, 덱 위에서부터 N장"
+  const n = Math.min(nWant, pl.deck.length);
+  const revealed = pl.deck.slice(0, n);
+  if (!n) { S.log(state, `${who} 덱에 카드가 없어 오픈할 수 없음`); return; }
+  S.log(state, `${who} 덱 위 ${n}장 오픈: ${revealed.map(id => S.card(id).nameKo).join(', ')}`);
+  if (!instr.steps.length && instr.restTo !== 'topOrBottom') await ctx.choose('pickFromRevealed', { player: who, revealed, eligible: [], min: 0, max: 0, prompt: `덱 위 ${n}장을 오픈했습니다 (확인만 합니다)`, dest: 'none' }); // reveal-only effects: show the cards
+  const gone = new Set();
+  const posOf = (i) => { let p = 0; for (let k = 0; k < i; k++) if (!gone.has(k)) p++; return p; };
+  const take = (i) => { const p = posOf(i); gone.add(i); return pl.deck.splice(p, 1)[0]; };
+  const nm = (i) => S.card(revealed[i]).nameKo;
+  ctx._lastPlacedSource = 0;
+  ctx._lastUsedOption = false;
+  const thisStk = () => [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === ctx.sourceStackUid) || null;
+  const putSource = (i, tgt) => { const id = take(i); tgt.sources.splice(S.fdCount(tgt), 0, id); ctx._lastPlacedSource++; S.recomputeStackGrants(tgt); S.log(state, `${who} ${S.card(id).nameKo}을(를) ${S.card(tgt.cardId).nameKo}의 진화원 아래에 놓음`); };
+  const canDo = (d, i) => {
+    if (d.k === 'play') return S.card(revealed[i]).category !== 'option';
+    if (d.k === 'use') return S.card(revealed[i]).category === 'option' && !S.s1HookAny(state, 's1cannotUseOption', { p: who }) && !S.timedLocked(state, who, 'option') && S.optionColorOk(state, who, revealed[i]);
+    if (d.k === 'srcThis') return !!thisStk();
+    if (d.k === 'srcOwn') return candidateStacks(ctx, who, { filter: d.filter }).length > 0;
+    return true;
+  };
+  const apply = async (d, i) => {
+    if (d.k === 'hand') pl.hand.push(take(i));
+    else if (d.k === 'trash') { const id = take(i); pl.trash.push(id); S.log(state, `${who} ${S.card(id).nameKo} 파기`); }
+    else if (d.k === 'play') { const st = S.playFreeFromZone(state, who, 'deck', posOf(i), { rested: !!d.rested, noTriggers: !!d.noTriggers }); if (st) { gone.add(i); ctx._lastPick = { player: who, uid: st.uid }; recordPickInfo(ctx, who, st.uid); } }
+    else if (d.k === 'use') {
+      const id = take(i); pl.trash.push(id); S.log(state, `${who} ${S.card(id).nameKo} 코스트를 지불하지 않고 사용`); ctx._lastUsedOption = true;
+      S.queueTriggersFor(state, who, id, 'use'); S.emitGameEvent(state, 'optionUsed', { owner: who, stack: null, cardId: id, cause: 'effect', useCost: 0 });
+    } else if (d.k === 'srcThis') putSource(i, thisStk());
+    else if (d.k === 'srcOwn') {
+      const cs = candidateStacks(ctx, who, { filter: d.filter });
+      const u = cs.length === 1 ? cs[0].uid : await ctx.choose('pickStack', { player: who, uids: cs.map(x => x.uid), prompt: '카드를 진화원 아래에 놓을 디지몬 선택' });
+      const tgt = cs.find(x => x.uid === u) || cs[0]; if (tgt) putSource(i, tgt);
+    }
+  };
+  for (const step of instr.steps) {
+    const remaining = revealed.map((_, i) => i).filter(i => !gone.has(i));
+    if (!remaining.length) break;
+    const rem = remaining.map(i => revealed[i]);
+    const groups = step.groups;
+    const dl = step.dests.length === 1 && (step.dests[0].k === 'hand' || step.dests[0].k === 'play') ? step.dests[0].k : step.dests.map(d => ({ hand: '패에 추가', trash: '파기', play: '코스트 없이 등장', use: '코스트 없이 사용', srcThis: '이 디지몬의 진화원 아래에 놓기', srcOwn: '자신의 디지몬의 진화원 아래에 놓기' }[d.k])).join(' 또는 ');
+    const usable = (i) => groups.some(g => matchesFilter(S, revealed[i], g.filter)) && step.dests.some(d => canDo(d, i));
+    const distinctOk = (g, chosen, i) => !g.distinctColors || chosen.every(j => !(S.card(revealed[j]).colors || []).some(c => (S.card(revealed[i]).colors || []).includes(c)));
+    const cands = remaining.filter(usable);
+    const elOf = (list) => list.map(i => ({ id: revealed[i], i: remaining.indexOf(i) }));
+    let picked = [];
+    if (!cands.length) {
+      await ctx.choose('pickFromRevealed', { dest: dl, player: who, revealed: rem, eligible: [], min: 0, max: 0, prompt: `공개된 카드 중 조건에 맞는 카드가 없습니다 (${groups.map(g => g.label).join(' / ')})` });
+      S.log(state, `${who} 오픈한 카드 중 조건에 맞는 카드가 없음`);
+    } else if (step.costSum != null) {
+      let budget = step.costSum;
+      const done = [];
+      for (let k = 0; k < 20; k++) {
+        const el = cands.filter(i => !gone.has(i) && !done.includes(i) && (S.card(revealed[i]).cost || 0) <= budget);
+        if (!el.length) break;
+        const r = await ctx.choose('pickFromRevealed', { dest: dl, player: who, revealed: rem, eligible: elOf(el), min: step.optional || done.length ? 0 : 1, max: 1, prompt: `등장시킬 카드 선택 (남은 등장 코스트 합계 ${budget})` });
+        const gi = (r || []).map(x => remaining[x]).find(x => el.includes(x)); if (gi == null) break;
+        done.push(gi); budget -= S.card(revealed[gi]).cost || 0;
+        await apply(step.dests.find(d => canDo(d, gi)), gi);
+      }
+    } else if (groups.some(g => g.all)) {
+      picked = cands.filter(i => groups.some(g => g.all && matchesFilter(S, revealed[i], g.filter)));
+      await ctx.choose('pickFromRevealed', { dest: dl, player: who, revealed: rem, eligible: elOf(picked), min: picked.length, max: picked.length, prompt: `조건에 맞는 카드 전부(${picked.length}장)를 패에 추가합니다 — 확인` }); // (shows the reveal; "전부" is not optional)
+      S.log(state, `${who} 조건에 맞는 카드 전부: ${picked.map(nm).join(', ')}`);
+    } else if (groups.length > 1) {
+      const idxs = await pickByGroups(ctx, who, rem, groups, 'pickFromRevealed', '공개된 카드 중 선택',
+        (el, prompt) => ({ dest: dl, player: who, revealed: rem, eligible: el.filter(li => step.dests.some(d => canDo(d, remaining[li]))).map(li => ({ id: rem[li], i: li })), min: step.optional ? 0 : 1, max: 1, prompt }));
+      picked = idxs.map(li => remaining[li]);
+    } else {
+      const g = groups[0], chosen = [], mx = Math.min(g.max, 99);
+      for (let k = 0; k < (g.distinctColors ? mx : 1); k++) {
+        const el = cands.filter(i => !chosen.includes(i) && distinctOk(g, chosen, i));
+        if (!el.length) break;
+        const want = g.distinctColors ? 1 : mx;
+        const r = await ctx.choose('pickFromRevealed', { dest: dl, player: who, revealed: rem, eligible: elOf(el), min: step.optional || g.upTo || (g.distinctColors && k > 0) ? 0 : Math.min(want, el.length), max: want, prompt: `공개된 카드 중 선택${g.max > 1 ? ` (최대 ${g.max}장)` : ''} — ${g.label || ''}` });
+        const got = [...new Set(r || [])].map(x => remaining[x]).filter(i => el.includes(i)).slice(0, want);
+        if (!got.length) break;
+        chosen.push(...got);
+      }
+      picked = chosen;
+    }
+    for (const gi of picked) {
+      if (gone.has(gi)) continue;
+      const opts = step.dests.filter(d => canDo(d, gi));
+      if (!opts.length) continue;
+      let d = opts[0];
+      if (opts.length > 1) { const lab = { hand: '패에 추가', srcThis: '이 디지몬의 진화원 아래에 놓기', srcOwn: '자신의 디지몬의 진화원 아래에 놓기', trash: '파기', play: '등장', use: '사용' }; const c = await ctx.choose('multipleChoice', { prompt: `${nm(gi)}: 어떻게 하시겠습니까?`, options: opts.map(o => lab[o.k]) }); d = opts[typeof c === 'number' && c >= 0 && c < opts.length ? c : 0]; }
+      await apply(d, gi);
+    }
+  }
+  // the rest
+  const restIds = revealed.filter((_, i) => !gone.has(i));
+  if (!restIds.length) return;
+  pl.deck.splice(0, restIds.length);
+  const to = instr.restTo;
+  if (to === 'trash') { pl.trash.push(...restIds); S.log(state, `${who} 나머지 ${restIds.length}장 파기: ${restIds.map(id => S.card(id).nameKo).join(', ')}`); S.emitGameEvent(state, 'deckDiscard', { owner: who, stack: null, cause: 'effect', ids: restIds.slice() }); return; }
+  if (to === 'hand') { pl.hand.push(...restIds); S.log(state, `${who} 나머지 ${restIds.length}장을 패에 추가`); return; }
+  let top = [], bottom = [];
+  if (to === 'top') top = restIds; else if (to === 'bottom') bottom = restIds;
+  else {
+    const r = await ctx.choose('pickFromRevealed', { player: who, revealed: restIds, eligible: restIds.map((id, i) => ({ id, i })), min: 0, max: restIds.length, prompt: '덱 위에 되돌릴 카드 선택 (선택하지 않은 카드는 덱 아래로)', dest: '덱 위로 (나머지는 덱 아래로)' });
+    const set = new Set((r || []).filter(x => Number.isInteger(x) && x >= 0 && x < restIds.length));
+    restIds.forEach((id, i) => (set.has(i) ? top : bottom).push(id));
+  }
+  top = await S.orderPlacement(ctx.choose, who, top, '덱 위에 되돌릴 카드의 순서를 정하세요 (위쪽부터)');
+  bottom = await S.orderPlacement(ctx.choose, who, bottom, '덱 아래로 되돌릴 카드의 순서를 정하세요 (위쪽부터)');
+  pl.deck.unshift(...top); pl.deck.push(...bottom);
+  S.log(state, `${who} 나머지 ${restIds.length}장을 덱 ${top.length ? `위 ${top.length}장` : ''}${top.length && bottom.length ? ' / ' : ''}${bottom.length ? `아래 ${bottom.length}장` : ''}으로 되돌림`);
 }
 
 // "자신의 패/트래시(/이 디지몬의 진화원)에서 A와 B 1장씩을 <덱 아래로 되돌린다 | 이 디지몬의 진화원에 놓는다 | 코스트 없이 등장시킨다>" — instr:
@@ -157,6 +373,7 @@ function candidateStacks(ctx, who, instr) {
     const key = refStat === 'dp' ? (refEq ? 'dp' : 'dpMax') : refStat === 'level' ? (refEq ? 'level' : 'levelMax') : (refEq ? 'costEq' : 'costMax');
     f = info && info[refStat] != null ? { ...rest, [key]: info[refStat] } : rest;
   }
+  if (f?.lvVsHand) { const { lvVsHand, ...rest } = f; const n = state.players[lvVsHand.side === 'self' ? ctx.self : ctx.opp].hand.length; f = { ...rest, [lvVsHand.dir === '이상' ? 'levelMin' : 'levelMax']: n }; } // Lv. compared with a hand size read at resolution time
   if (f?.dpMaxSelf) { const src = [state.players[ctx.self].raising, ...state.players[ctx.self].battle].filter(Boolean).find(x => x.uid === ctx.sourceStackUid); f = { ...f, dpMax: src ? S.effectiveDP(state, ctx.self, src) : 0 }; } // "이 디지몬의 DP 이하의 …"
   let arr = state.players[who].battle.filter(s => (f?.category || instr.anyKind ? true : S.card(s.cardId).category === 'digimon') && (!instr.excludeSelf || s.uid !== ctx.sourceStackUid) && matchesFilter(S, s, f, state));
   const ex = f?.extreme;
@@ -178,6 +395,7 @@ function parseCardFilter(phrase) {
   if (!phrase) return null;
   phrase = phrase.replace(/Lv\.\s+(\d)/g, 'Lv.$1').replace(/」\s*(?:또는|이나)\s*「/g, '」/「');
   phrase = phrase.replace(/(레드|블루|옐로우?|그린|블랙|퍼플|화이트)\s*(?:또는|이나)\s*(?=(?:레드|블루|옐로우?|그린|블랙|퍼플|화이트))/g, '$1/'); // "옐로 또는 퍼플의 …" = 옐로/퍼플 (OR of colors)
+  let lvAny = null; phrase = phrase.replace(/Lv\.(\d+)\s*(?:또는|\/)\s*Lv\.(\d+)((?:\s*(?:또는|\/)\s*Lv\.\d+)*)/, (a, x, y, z) => { lvAny = [Number(x), Number(y), ...[...z.matchAll(/\d+/g)].map(q => Number(q[0]))]; return ''; }); // "Lv.4 또는 Lv.5의 …"
   const flat = phrase.replace(/「[^」]*」/g, '「」').replace(/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:\/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트))*(?:인|의|(?:을|를)\s*포함하는)/g, 'C');
   if (/또는|거나/.test(flat) || /(?<!」)\/|\/(?!「)/.test(flat)) {
     // "<A 카드> 또는 <B 카드>" — two complete card phrases: an OR of two filters (BT11-086 …); anything vaguer stays null
@@ -202,6 +420,7 @@ function parseCardFilter(phrase) {
   if (!f.nameAny && (m = rest.match(/^\s*((?:「[^」]+」\/?)+)\s*(?:을|를)\s*포함하는/))) f.nameAny = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
   if (!f.keywordText && (m = rest.match(/《([^》]+)》\s*(?:을|를)\s*(?:가진|갖는)/))) f.keywordText = m[1];
   if ((m = rest.match(/((?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트)(?:\/(?:레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트))*)(?:인|의)/))) f.colors = m[1].split('/').map(x => FILTER_COLOR[x]);
+  if (lvAny) f.levelAny = lvAny;
   if ((m = rest.match(/Lv\.(\d+)\s*이하/))) f.levelMax = Number(m[1]);
   else if ((m = rest.match(/Lv\.(\d+)\s*이상/))) f.levelMin = Number(m[1]);
   else if ((m = rest.match(/Lv\.(\d+)/))) f.level = Number(m[1]);
@@ -317,6 +536,7 @@ export function costGroupPayable(ctx, instr) {
     if (c.op === 'rest' && c.target === 'self') return candidateStacks(ctx, ctx.self, { ...c, anyKind: !c.digimonOnly }).length >= instr.cost.filter(x => x.op === 'rest' && x.target === 'self').reduce((a, x) => a + (x.n || 1), 0);
     if (c.op === 'unsuspend' && c.thisStack !== false) return !!st && !!st.suspended;
     if (c.op === 'moveEach') return moveEachPayable(ctx, c); // every listed criterion needs its own card (15-7-3: no partial cost)
+    if (c.op === 'placeUnderSource') { const pl0 = state.players[ctx.self]; return candidateStacks(ctx, ctx.self, { filter: c.targetFilter }).length > 0 && c.zones.some(z => pl0[z].filter(id => matchesFilter(S, id, c.filter)).length >= (c.n || 1)); }
     if (c.op === 'securityTopToHand') return state.players[ctx.self].security.length >= (c.n || 1);
     if (c.op === 'trashEvoSources' && c.thisStack) return !!st && st.sources.length >= c.count;
     return true;
@@ -357,6 +577,75 @@ function resDiff(a, b, op) {
   return { deleted: Math.max(0, a.sb - b.sb) + Math.max(0, a.ob - b.ob), played: Math.max(0, b.sb - a.sb) + Math.max(0, b.ob - a.ob), discarded: op === 's13_trimTo' ? Math.max(0, a.sh - b.sh) + Math.max(0, a.oh - b.oh) + Math.max(0, a.ss - b.ss) + Math.max(0, a.os - b.os) : op === 'trashHand' || op === 'oppMayPay' ? Math.max(0, a.sh - b.sh) + Math.max(0, a.oh - b.oh) : op === 'removeSecurity' ? Math.max(0, a.ss - b.ss) + Math.max(0, a.os - b.os) : 0,
     added: Math.max(0, b.sh - a.sh), rested: Math.max(0, b.susp - a.susp), bounced: Math.max(0, b.oh - a.oh) + Math.max(0, b.sh - a.sh) };
 }
+// ---- revealTop helpers: per-group destinations (hand / trash / play / evolve / useOption / sourcesThis / tamerUnder / sourcesOf / security) ----
+// evolve target stacks: 'this' = the effect's own Digimon, 'attacker' = the Digimon that attacked (watcher event), otherwise any own Digimon
+function revealEvoTargets(ctx, who, g) {
+  const { state, S } = ctx;
+  const bt = state.players[who].battle.filter(s => S.card(s.cardId).category === 'digimon');
+  if (g.evoTarget === 'this') return bt.filter(s => s.uid === ctx.sourceStackUid);
+  if (g.evoTarget === 'attacker') { const a = bt.filter(s => s.uid === ctx.trigger?.evtStackUid); if (a.length) return a; }
+  return bt;
+}
+function revealCanEvo(ctx, who, st, id) {
+  const { state, S } = ctx;
+  if (!ctx.E || !ctx.E.canEvolveAny) return true;
+  return ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(state, who, st), S.evolveTargetRestriction(state, who, st)).ok;
+}
+// narrow the pick criteria to revealed cards that can really be used that way (an Option can't be played; a card that can't evolve onto the target isn't offered)
+function adaptRevealPick(ctx, who, pick, revealed) {
+  if (!pick) return pick;
+  const { state, S } = ctx;
+  const narrow = (g) => {
+    const dest = g.dest || pick.action || 'hand';
+    let ids = null;
+    if (dest === 'play') ids = revealed.filter(id => S.card(id).category !== 'option');
+    else if (dest === 'evolve') { const sts = revealEvoTargets(ctx, who, { ...pick, ...g }); ids = revealed.filter(id => S.card(id).category === 'digimon' && sts.some(st => revealCanEvo(ctx, who, st, id))); }
+    else if (dest === 'useOption') ids = revealed.filter(id => S.card(id).category === 'option' && S.optionColorOk(state, who, id));
+    return ids ? { ...g, filter: { ...(g.filter || {}), idIn: ids } } : g;
+  };
+  if (pick.groups) return { ...pick, groups: pick.groups.map(narrow) };
+  const one = narrow({ filter: pick.filter });
+  return one.filter === pick.filter ? pick : { ...pick, filter: one.filter };
+}
+async function routeRevealed(ctx, who, instr, ids, dests, gps) {
+  const { state, S } = ctx;
+  const pl = state.players[who];
+  const base = pl.hand.length - ids.length;
+  for (let k = ids.length - 1; k >= 0; k--) { // the cards were appended to the hand in order; walking backwards keeps the earlier indices valid
+    const id = ids[k], dest = dests[k], g = { ...(instr.pick || {}), ...(gps[k] || {}) }, ix = base + k;
+    if (dest === 'hand' || pl.hand[ix] !== id) continue;
+    const nm = S.card(id).nameKo;
+    if (dest === 'trash') { pl.hand.splice(ix, 1); pl.trash.push(id); S.log(state, `${who} ${nm} 파기 (오픈한 카드)`); }
+    else if (dest === 'security') { pl.hand.splice(ix, 1); S.addToSecurity(state, who, id, g.secPos || 'top'); }
+    else if (dest === 'play') {
+      if (S.card(id).category === 'option') continue;
+      const st = S.playFreeFromZone(state, who, 'hand', ix, { rested: !!g.rested, noTriggers: !!g.noTriggers });
+      if (st) { ctx._lastPick = { player: who, uid: st.uid }; ctx._revealPlayed = (ctx._revealPlayed || 0) + 1; }
+    } else if (dest === 'evolve') {
+      const cands = revealEvoTargets(ctx, who, g).filter(st => revealCanEvo(ctx, who, st, id));
+      if (!cands.length) { S.log(state, `${who} ${nm}: 진화시킬 수 있는 디지몬이 없음`); continue; }
+      const uid = cands.length === 1 ? cands[0].uid : await ctx.choose('pickStack', { player: who, uids: cands.map(s => s.uid), prompt: `${nm}(으)로 진화시킬 디지몬 선택` });
+      if (uid && S.digivolve(state, who, uid, id, 0, 'hand')) ctx._revealEvolved = true;
+    } else if (dest === 'useOption') {
+      if (S.card(id).category !== 'option' || !S.optionColorOk(state, who, id) || S.s1HookAny(state, 's1cannotUseOption', { p: who }) || S.timedLocked(state, who, 'option')) continue;
+      pl.hand.splice(ix, 1); pl.trash.push(id);
+      S.log(state, `${who} ${nm} 코스트를 지불하지 않고 사용`);
+      ctx._lastUsedOption = true;
+      S.queueTriggersFor(state, who, id, 'use');
+      S.emitGameEvent(state, 'optionUsed', { owner: who, stack: null, cardId: id, cause: 'effect', useCost: 0 });
+    } else if (dest === 'sourcesThis' || dest === 'tamerUnder' || dest === 'sourcesOf') {
+      let st = null;
+      if (dest === 'sourcesOf') { const cs = candidateStacks(ctx, who, { filter: g.targetFilter, anyKind: true }); const u = cs.length <= 1 ? cs[0]?.uid : await ctx.choose('pickStack', { player: who, uids: cs.map(s => s.uid), prompt: `${nm}을(를) 진화원 아래에 놓을 대상 선택` }); st = cs.find(s => s.uid === u) || null; }
+      else st = [pl.raising, ...pl.battle].filter(Boolean).find(s => s.uid === ctx.sourceStackUid) || null;
+      if (!st) { S.log(state, `${who} ${nm}을(를) 놓을 대상이 없음`); continue; }
+      pl.hand.splice(pl.hand[ix] === id ? ix : pl.hand.lastIndexOf(id), 1);
+      if (dest === 'tamerUnder') st.sources.unshift(id); else st.sources.splice(S.fdCount(st), 0, id); // bottom of the (face-up) sources
+      S.recomputeStackGrants(st);
+      S.log(state, `${who} ${nm}을(를) ${S.card(st.cardId).nameKo} 아래에 놓음`);
+    }
+  }
+}
+
 async function runOne(instr, ctx) {
   const { state } = ctx;
   if (instr.exclSame) { // "이 효과로는 자신의 테이머/디지몬과 같은 명칭의 카드는 등장시킬 수 없다": the names on the board now become an excluded-name filter
@@ -435,23 +724,50 @@ async function runOneCore(instr, ctx) {
       instr._result = id;
       break;
     }
+    case 'revealPick': await runRevealPick(instr, ctx); break;
     case 'revealTop': {
-      const revealed = S.revealTop(state, who, instr.n);
-      const eligible = revealed.map((id, i) => ({ id, i })).filter(x => matchesFilter(S, x.id, instr.pick?.filter));
+      let dWho = who;
+      if (instr.nMulOpp || instr.pick?.maxMulOpp) { // "상대 디지몬 1마리마다": N per opposing Digimon (0 Digimon -> nothing happens)
+        const oc = state.players[ctx.opp].battle.filter(s => S.card(s.cardId).category === 'digimon').length;
+        if (!oc) { S.log(state, '상대의 디지몬이 없어 효과를 처리하지 않음'); break; }
+        instr = { ...instr, ...(instr.nMulOpp ? { n: instr.n * oc } : {}), ...(instr.pick?.maxMulOpp ? { pick: { ...instr.pick, max: (instr.pick.max || 1) * oc } } : {}) };
+      }
+      if (instr.optionalReveal && !(await ctx.choose('confirmEffect', { player: who, prompt: `덱 위 ${instr.n}장을 오픈할까요?` }))) break; // "오픈할 수 있다"
+      if (instr.whoChoice) { // "자신/상대의 덱 위에서부터 N장 오픈" — '/' = OR: the player chooses whose deck
+        const wi = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '어느 쪽 덱을 오픈할까요?', options: ['자신의 덱', '상대의 덱'] });
+        if (wi === 1) dWho = ctx.opp;
+      }
+      const revealed = S.revealTop(state, dWho, instr.n);
+      if (revealed.length) S.log(state, `${dWho} 덱 위 ${revealed.length}장 오픈: ${revealed.map(id => S.card(id).nameKo).join(', ')}`);
+      instr = { ...instr, n: revealed.length, pick: adaptRevealPick(ctx, dWho, instr.pick, revealed) }; // (a deck with fewer cards than N reveals what is left)
+      // "등장 코스트 N 이하" / "코스트를 지불하지 않고 등장" — Options have no appearance cost and can never be played, so they are not offered
+      const eligible = revealed.map((id, i) => ({ id, i })).filter(x => matchesFilter(S, x.id, instr.pick?.filter) && !(instr.pick?.action === 'play' && S.card(x.id).category === 'option'));
       let chosenIdxs;
-      if (instr.pick?.groups) { // several "<조건> N장과 <조건> N장" groups: pick up to N per group, a card counts for one group only
-        chosenIdxs = await pickByGroups(ctx, who, revealed, instr.pick.groups, 'pickFromRevealed', instr.prompt || '공개된 카드 중 가져갈 카드 선택');
-      } else chosenIdxs = await ctx.choose('pickFromRevealed', {
-        player: who, revealed, eligible, min: instr.pick?.min ?? 0, max: instr.pick?.max ?? eligible.length,
-        prompt: instr.prompt || '공개된 카드 중 가져갈 카드 선택',
-      });
-      const rvRes = await S.resolveRevealOrdered(state, ctx.choose, who, instr.n, chosenIdxs || [], chosenIdxs || [], instr.restTo || 'bottom');
-      if (instr.pick?.action === 'play' && rvRes?.toHand?.length) { // "…코스트를 지불하지 않고 등장시킬 수 있다": the chosen cards were moved to hand above — play exactly those
-        const plR = state.players[who];
-        for (let k = 0; k < rvRes.toHand.length; k++) {
-          const ix = plR.hand.length - (rvRes.toHand.length - k);
-          if (ix >= 0 && plR.hand[ix] === rvRes.toHand[k] && S.card(plR.hand[ix]).category !== 'option') S.playFreeFromZone(state, who, 'hand', ix, { rested: !!instr.pick.rested, noTriggers: !!instr.pick.noTriggers });
-        }
+      if (instr.pick?.noPick) chosenIdxs = []; // reveal only (BT18-068 / BT24-005): every card goes back
+      else if (instr.pick?.all && !instr.pick?.groups) { // "…카드 전부를 패에 추가한다 / 파기한다": every matching card, no choice (the reveal is still shown)
+        chosenIdxs = eligible.map(x => x.i);
+        await ctx.choose('pickFromRevealed', { player: dWho, revealed, eligible, min: eligible.length, max: eligible.length, prompt: eligible.length ? `조건에 맞는 카드 전부(${eligible.length}장)를 처리합니다 — 확인` : '공개된 카드 중 조건에 맞는 카드가 없습니다', dest: instr.pick?.action || 'hand' });
+      }
+      else if (instr.pick?.groups) { // several "<조건> N장과 <조건> N장" groups: pick up to N per group, a card counts for one group only
+        if (!instr.pick.groups.some(g => revealed.some(id => matchesFilter(S, id, g.filter)))) await ctx.choose('pickFromRevealed', { player: dWho, revealed, eligible: [], min: 0, max: 0, prompt: '공개된 카드 중 해당하는 카드가 없습니다', dest: 'none' }); // show the reveal even when nothing matches
+        chosenIdxs = await pickByGroups(ctx, dWho, revealed, instr.pick.groups, 'pickFromRevealed', instr.prompt || '공개된 카드 중 가져갈 카드 선택', undefined, !instr.pick.optional);
+      } else {
+        const maxP = instr.pick?.max ?? eligible.length;
+        chosenIdxs = await ctx.choose('pickFromRevealed', {
+          player: dWho, revealed, eligible, min: instr.pick?.min ?? 0, max: maxP, required: !instr.pick?.optional && !!eligible.length,
+          prompt: instr.prompt || (instr.pick?.action === 'play' ? '공개된 카드 중 코스트 없이 등장시킬 카드 선택' : '공개된 카드 중 가져갈 카드 선택'), dest: instr.pick?.action === 'play' ? 'play' : 'hand',
+        });
+        chosenIdxs = [...new Set(chosenIdxs || [])].filter(i => eligible.some(x => x.i === i)).slice(0, maxP); // only revealed cards that really match can be taken
+      }
+      chosenIdxs = chosenIdxs || [];
+      const destOf = (i) => (instr.pick?.groups ? instr.pick.groups[chosenIdxs.gi?.[i]]?.dest : null) || instr.pick?.action || 'hand';
+      ctx._revealAdded = chosenIdxs.filter(i => destOf(i) === 'hand').length; // "이 효과로 추가했다면" (only cards that really went to the hand)
+      ctx._revealPlayed = 0; ctx._revealEvolved = false;
+      const keepIdxs = instr.restTo === 'hand' ? revealed.map((_, i) => i) : chosenIdxs; // "남은 카드는 패에 추가한다": everything not picked is added too
+      const rvRes = await S.resolveRevealOrdered(state, ctx.choose, dWho, instr.n, chosenIdxs, keepIdxs, instr.restTo || 'bottom');
+      if (rvRes?.toHand?.length) { // the chosen cards were moved to the hand above — route exactly those to their real destination (play / evolve / trash / under …)
+        const ordered = revealed.map((_, i) => i).filter(i => keepIdxs.includes(i));
+        await routeRevealed(ctx, dWho, instr, rvRes.toHand, ordered.map(i => (chosenIdxs.includes(i) ? destOf(i) : 'hand')), ordered.map(i => instr.pick?.groups?.[chosenIdxs.gi?.[i]] || null));
       }
       break;
     }
@@ -626,7 +942,7 @@ async function runOneCore(instr, ctx) {
     case 'unsuspend': {
       if (instr.last) { const lp = resolveLast(ctx); if (lp) S.unsuspendStack(state, lp.player, lp.uid); break; }
       const upl = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const targetUid = instr.target === 'thisStack' ? ctx.sourceStackUid : await ctx.choose('pickStack', { player: upl, uids: (instr.filter || instr.excludeSelf ? candidateStacks(ctx, upl, { ...instr, anyKind: !instr.digimonOnly }) : state.players[upl].battle).map(s => s.uid), prompt: instr.prompt || '액티브로 만들 디지몬 선택' });
+      const targetUid = instr.target === 'thisStack' ? ctx.sourceStackUid : await ctx.choose('pickStack', { player: upl, uids: candidateStacks(ctx, upl, { ...instr, anyKind: !instr.digimonOnly }).map(s => s.uid), prompt: instr.prompt || '액티브로 만들 디지몬 선택' });
       if (targetUid) S.unsuspendStack(state, upl, targetUid);
       break;
     }
@@ -646,7 +962,7 @@ async function runOneCore(instr, ctx) {
       }
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       for (let i = 0; i < (instr.n || 1); i++) {
-        const uids = (instr.filter || instr.excludeSelf ? candidateStacks(ctx, targetPlayer, { ...instr, anyKind: !instr.digimonOnly }) : state.players[targetPlayer].battle).map(s => s.uid);
+        const uids = candidateStacks(ctx, targetPlayer, { ...instr, filter: { ...(instr.filter || {}), suspended: false }, anyKind: !instr.digimonOnly }).map(s => s.uid); // only a Digimon that is still active can be rested ("N마리 레스트" = N different ones)
         if (!uids.length) break;
         const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
         if (!targetUid) break;
@@ -1068,7 +1384,8 @@ async function runOneCore(instr, ctx) {
       await runScript(instr.cost.filter(x => x.op !== 'manualCost'), ctx);
       const paid = bat0 - state.players[ctx.self].battle.length >= needSac && ['p1', 'p2'].every(pp => h0[pp] - state.players[pp].hand.length >= needHand[pp] && s0[pp] - state.players[pp].security.length >= needSec[pp])
         && instr.cost.every(c => c.op !== 'restStack' || !st || st.suspended)
-        && instr.cost.every(c => c.op !== 'moveEach' || c._moved >= moveEachSlots(c));
+        && instr.cost.every(c => c.op !== 'moveEach' || c._moved >= moveEachSlots(c))
+        && instr.cost.every(c => c.op !== 'placeUnderSource' || (ctx._lastPlacedSource || 0) >= (c.n || 1));
       if (!paid) { S.log(state, `${ctx.self} 비용을 전부 지불하지 못해 이후 효과를 처리하지 않음 (15-7-2)`); break; }
       await runScript(instr.then, ctx);
       break;
@@ -1114,6 +1431,7 @@ async function runOneCore(instr, ctx) {
         S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} ${dest === 'deckBottom' ? '덱 아래로' : '핸드로'}, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
         // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — exclude linkIds.
         S.applyOverflowBatch(state, targetPlayer, [...stack.sources, stack.cardId]);
+        S.hookLeaveTriggers(state, targetPlayer, stack, targetPlayer === ctx.self ? 'ownEffect' : 'effect'); // "패/덱으로 되돌아갈 때" leave abilities (EX4-021/060)
       };
       const matching = () => candidateStacks(ctx, targetPlayer, { filter: instr.filter && Object.keys(instr.filter).length ? instr.filter : undefined, excludeSelf: instr.excludeSelf, anyKind: false }).filter(s =>
         (!instr.filter || matchesFilter(S, s, instr.filter, state))
@@ -1195,6 +1513,22 @@ async function runOneCore(instr, ctx) {
         S.log(state, `${who} ${S.card(idU2).nameKo}을(를) ${S.card(tgtU.cardId).nameKo}의 진화원 아래에 놓음`);
       }
       S.recomputeStackGrants(tgtU);
+      break;
+    }
+    case 'playFromSources': { // 자신의 디지몬 1마리의 진화원에서 카드 N장(까지)을 코스트 없이 등장 (ST2-15, BT7-096/097, BT11-098)
+      const plS = state.players[who];
+      const okS = (id) => S.card(id).category !== 'option' && matchesFilter(S, id, instr.filter);
+      const csS = candidateStacks(ctx, who, { filter: instr.targetFilter }).filter(x => x.sources.some(okS));
+      if (!csS.length) { S.log(state, `${who} 진화원에서 등장시킬 수 있는 카드가 없음`); break; }
+      if (instr.optional && !(await ctx.choose('confirmEffect', { player: who, prompt: '진화원의 카드를 코스트를 지불하지 않고 등장시키겠습니까?' }))) break;
+      const uS = csS.length === 1 ? csS[0].uid : await ctx.choose('pickStack', { player: who, uids: csS.map(x => x.uid), prompt: '진화원에서 카드를 등장시킬 디지몬 선택' });
+      const stS = csS.find(x => x.uid === uS); if (!stS) break;
+      const nS = Math.min(instr.n || 1, stS.sources.filter(okS).length);
+      const idxS = await S.chooseSourceIdxs(state, who, stS, nS, ctx.choose, okS, `${S.card(stS.cardId).nameKo}의 진화원에서 코스트 없이 등장시킬 카드 ${nS}장 선택`);
+      const takenS = idxS.map(i => stS.sources[i]);
+      for (const i of [...idxS].sort((a, b) => b - a)) stS.sources.splice(i, 1);
+      S.recomputeStackGrants(stS);
+      for (const id of takenS) { plS.trash.push(id); S.playFreeFromZone(state, who, 'trash', plS.trash.length - 1, { rested: !!instr.rested, noTriggers: !!instr.noTriggers, fromSources: true }); }
       break;
     }
     case 'placeSecurity': { // 패/트래시의 카드 1장을 시큐리티 위/아래에 (앞면으로) 놓는다
@@ -1371,7 +1705,7 @@ async function runOneCore(instr, ctx) {
       break;
     }
     default:
-      if (CARD_OPS[instr.op]) await CARD_OPS[instr.op](instr, ctx, { runScript, runOne, matchesFilter, candidateStacks, compileToScript, lookupCardSpecific });
+      if (CARD_OPS[instr.op]) await CARD_OPS[instr.op](instr, ctx, { runScript, runOne, matchesFilter, candidateStacks, compileToScript, lookupCardSpecific, runRevealPick, pickByGroups });
       break;
   }
 }
@@ -1516,6 +1850,8 @@ function parsePickGroups(desc) {
   let descs = [desc];
   const cm = desc.match(new RegExp(`(${COLOR_WORD}(?:\\s*(?:와|과)\\s*${COLOR_WORD})+)(인|의)`));
   if (cm) descs = cm[1].split(/\s*(?:와|과)\s*/).map(c => desc.replace(cm[0], c + cm[2]));
+  const lm = desc.match(/(Lv\.\d+(?:\s*(?:와|과)\s*Lv\.\d+)+)(인|의)/); // "Lv.5와 Lv.6의 디지몬 카드 1장씩" -> one criterion per level
+  if (lm) descs = lm[1].split(/\s*(?:와|과)\s*/).map(c => desc.replace(lm[0], c + lm[2]));
   const groups = [];
   for (const dd of descs) {
     const parts = dd.split(/(?<=」|카드|장|씩)\s*(?:과|와|,)\s*(?=\S)/).map(x => x.trim()).filter(Boolean);
@@ -1531,6 +1867,63 @@ function parsePickGroups(desc) {
   }
   return groups.length ? groups : null;
 }
+// verify-reveal-1: re-reads the whole "덱 위에서부터 N장 오픈한다. 그중 … " text of a compiled revealTop and fills in what the first pass can't:
+//   per-clause destinations (패에 추가 / 파기 / 코스트 없이 등장 / 이 디지몬(으로부터) 진화 / 코스트 없이 사용 / 진화원·테이머 아래 / 시큐리티 위), 「전부」, "상대 디지몬 1마리마다",
+//   "그 카드가 <조건>일 때 …", and where the rest goes (파기 / 패에 추가 / 덱 위·아래). A clause it can't read leaves the first-pass result untouched.
+function refineRevealTop(t, ins) {
+  const T = t.replace(/\([^()]*\)/g, '');
+  const sents = splitSentences(T);
+  if (/상대\s*디지몬\s*1\s*마리마다,?\s*자신의\s*덱/.test(T)) ins.nMulOpp = true;
+  const rIdx = sents.findIndex(x => /(?:남은\s*카드|나머지|오픈한\s*카드)(?:는|를|을)/.test(x));
+  if (rIdx >= 0) {
+    const r = sents[rIdx];
+    ins.restTo = /파기한다/.test(r) ? 'trash' : /패에\s*추가한다/.test(r) ? 'hand' : /덱(?:\s*의)?\s*위(?:\s*또는|나)\s*(?:덱(?:\s*의)?\s*)?아래/.test(r) ? 'either' : /덱(?:\s*의)?\s*위(?:로|에)/.test(r) ? 'top' : 'bottom';
+  }
+  const P = sents.find(x => /그\s*중|그\s*카드가/.test(x));
+  if (!P || /^자신의\s*디지몬\s*1\s*마리는/.test(P.trim()) || /합계/.test(P)) return;
+  const noTrig = /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(T);
+  const mkGroups = (desc) => {
+    desc = desc.trim().replace(/^[,\s]+/, '');
+    if (/전부$/.test(desc)) { const d = desc.replace(/\s*전부$/, ''); const fl = criterionFilter(d); return [{ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 99, all: true, label: d }]; }
+    if (/^\d+\s*장(?:까지)?씩?$/.test(desc)) return [{ max: Number(desc.match(/\d+/)[0]), label: '카드' }];
+    return parsePickGroups(desc);
+  };
+  const gs = [];
+  let mm;
+  if ((mm = P.match(/^그\s*카드가\s*(.*?)\s*(?:이)?(?:라면|다면|일\s*때|일\s*경우),?\s*(.*?)[.。]?$/s))) { // top-1 reveal: only a matching card may be taken / played
+    const fl = criterionFilter(mm[1]);
+    const play = /등장/.test(mm[2]);
+    if (!play && !/패(?:에|로)\s*추가/.test(mm[2])) return;
+    gs.push({ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 1, dest: play ? 'play' : 'hand', label: mm[1], ...(play ? { rested: /레스트\s*상태로/.test(mm[2]), noTriggers: noTrig } : {}) });
+  } else {
+    const body = P.replace(/^.*?그\s*중(?:에서|에)?\s*/, '').replace(/[.。]\s*$/, '').replace(/(?:을|를)\s*전부\s+(?=파기|패에)/g, ' 전부를 '); // "테이머 카드를 전부 파기한다" -> "… 전부를 파기한다"
+    const clauses = body.split(/(?<=추가한다|추가하고|파기한다|파기하고|등장시킬\s*수\s*있다|등장시킨다|진화할\s*수\s*있다|사용할\s*수\s*있다|놓는다|둔다)\s*,?\s*(?=\S)/).map(x => x.trim()).filter(Boolean);
+    for (const c of clauses) {
+      let dest, gg, ex = {};
+      if ((mm = c.match(/^(.*?)\s*(\d+)\s*장(?:까지)?(?:에|으로|로),?\s*(이\s*디지몬|어택한\s*디지몬|자신의\s*디지몬\s*1\s*마리)(?:에서|으로부터|을|를)?\s*코스트를?\s*지불하지\s*않고\s*진화할\s*수\s*있다$/s))) { dest = 'evolve'; gg = mkGroups(mm[1] + ' ' + mm[2] + '장'); ex = { evoTarget: /^이/.test(mm[3]) ? 'this' : /^어택/.test(mm[3]) ? 'attacker' : 'any' }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*패(?:에|로)\s*추가(?:한다|하고)$/s))) { dest = 'hand'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*파기(?:한다|하고)$/s))) { dest = 'trash'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*,?\s*(레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고\s*(레스트\s*상태로\s*)?등장(?:시킬\s*수\s*있다|시킨다)$/s))) { dest = 'play'; gg = mkGroups(mm[1]); ex = { rested: !!(mm[2] || mm[3]), noTriggers: noTrig }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*코스트를?\s*지불하지\s*않고\s*사용할\s*수\s*있다$/s))) { dest = 'useOption'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*디지몬의\s*진화원\s*아래에\s*놓는다$/s))) { dest = 'sourcesThis'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*테이머\s*아래에\s*놓는다$/s))) { dest = 'tamerUnder'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*「([^」]+)」\s*1\s*마리의\s*진화원의\s*가장\s*아래에\s*놓는다$/s))) { dest = 'sourcesOf'; gg = mkGroups(mm[1]); ex = { targetFilter: { exactAny: [mm[2]] } }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*시큐리티\s*위에\s*(?:뒷면으로\s*)?(?:둔다|놓는다)$/s))) { dest = 'security'; gg = mkGroups(mm[1]); ex = { secPos: 'top' }; }
+      else return;
+      if (!gg) return;
+      for (const g of gg) gs.push({ ...g, dest, ...ex });
+    }
+  }
+  if (!gs.length) return;
+  const optional = /수\s*있다|장까지/.test(P);
+  const pick = { min: 0, max: gs.reduce((a, g) => a + g.max, 0), ...(optional ? { optional: true } : {}) };
+  if (gs.length === 1) {
+    const { dest, filter, max, all, label, ...ex } = gs[0];
+    Object.assign(pick, { max }, filter ? { filter } : {}, dest !== 'hand' ? { action: dest } : {}, all ? { all: true } : {}, ex);
+  } else { if (gs.some(g => g.all)) return; pick.groups = gs; }
+  if (/상대\s*디지몬\s*1\s*마리마다/.test(P)) pick.maxMulOpp = true;
+  ins.pick = pick;
+}
 // "<zone>에서 <descriptor> N장을 코스트를 지불하지 않고 등장" (hand/trash) -> playFree ops; tokens -> spawnToken; evolution-source plays stay manual
 function compilePlayFree(t) {
   const sn = splitSentences(t).find(x => /\[\[TOK:/.test(x)) || splitSentences(t).find(x => /코스트를?\s*지불하지\s*않고/.test(x) && /등장/.test(x)) || t;
@@ -1542,6 +1935,11 @@ function compilePlayFree(t) {
   }
   if ((m = sn.match(/(상대는\s*)?「([^」]+)」\[\[TOK:([^\]]+)\]\]\s*토큰\s*(\d+)\s*마리(?:를)?/))) {
     return [{ op: 'spawnToken', who: m[1] ? 'opponent' : 'self', def: parseTokenDef(m[2], decodeURIComponent(m[3])), n: Number(m[4]), rested, optional: /수\s*있다/.test(sn) }];
+  }
+  if (/진화원/.test(sn.split(/코스트를?\s*지불하지/)[0]) && (m = sn.match(/^(.*?)자신의\s*디지몬(?:\s*(\d+)\s*마리)?의\s*진화원(?:인|에서|의)\s*,?\s*(.*?)\s*(\d+)\s*장(까지)?(?:을|를)?\s*,?\s*(?:선택하고,?\s*그\s*카드(?:를|을)\s*)?코스트를?\s*지불하지\s*않고\s*(?:(?:테이머\s*또는\s*)?다른\s*디지몬으로서\s*)?등장시(킨다|킬\s*수\s*있다)/))) {
+    // "자신의 디지몬 1마리의 진화원(에서/인) <카드> N장(까지)을 코스트를 지불하지 않고 (다른 디지몬으로서) 등장" — the sources of ONE of the player's stacks (ST2-15, BT7-096/097, BT11-098)
+    const tm = parseTargetMods(m[1] || ''); const tOk = !tm._left;
+    if (tOk) return [{ op: 'playFromSources', who: 'self', filter: criterionFilter(m[3].replace(/\s+/g, ' ')), n: Number(m[4]), upTo: !!m[5], ...(Object.keys(tm).length ? { targetFilter: tm } : {}), optional: /수/.test(m[6]), noTriggers, rested }];
   }
   if (/진화원/.test(sn.split(/코스트를?\s*지불하지/)[0])) return [{ op: 'noop', note: `진화원의 카드를 코스트 없이 등장시키는 효과 — 수동으로 처리하세요: ${sn.replace(/\s+/g, ' ').slice(0, 100)}` }];
   const re = /(?:자신의\s*)?(패|트래시)(?:\s*(?:또는|\/)\s*(패|트래시))?(?:에서|의)?,?\s*(.*?)\s*(\d+)\s*장(까지)?(?:씩)?(?:을|를|은)?\s*,?\s*(?:색\s*조건을\s*무시하고\s*)?(?:레스트\s*상태로\s*)?,?\s*코스트를?\s*지불하지\s*않고/s;
@@ -1692,12 +2090,19 @@ function parseTargetMods(pre) {
     if (take(/(소멸한|소멸시킨|되돌린|파기한)\s*(디지몬|카드)와\s*같은\s*Lv\.?(?:의|인)?$/, m => { f.ref = /파기한/.test(m[1]) ? 'discard' : 'pick'; f.refStat = 'level'; f.refEq = true; })) continue;
     if (take(/이\s*디지몬(?:의)?\s*DP\s*이하(?:인|의)$/, () => { f.dpMaxSelf = true; })) continue;
     if (take(/DP\s*(\d+)\s*(이하|이상)(?:인|의)?$/, m => { f[m[2] === '이하' ? 'dpMax' : 'dpMin'] = Number(m[1]); })) continue;
+    if (take(/(자신|상대)의\s*패\s*매수\s*(이상|이하)의\s*Lv\.?(?:의|인)?$/, m => { f.lvVsHand = { side: m[1] === '자신' ? 'self' : 'opp', dir: m[2] }; })) continue; // EX6-071/BT23-097: "자신/상대의 패 매수 이상의 Lv.의 …"
     if (take(/Lv\.\s*(\d+)\s*(이하|이상)?(?:인|의)?$/, m => { f[m[2] === '이하' ? 'levelMax' : m[2] === '이상' ? 'levelMin' : 'level'] = Number(m[1]); })) continue;
     if (take(/(?:등장\s*)?코스트\s*(\d+)\s*(이하|이상)(?:인|의)?$/, m => { f[m[2] === '이하' ? 'costMax' : 'costMin'] = Number(m[1]); })) continue;
     if (take(/(레스트|액티브)\s*상태(?:인|의)$/, m => { f.suspended = m[1] === '레스트'; })) continue;
     if (take(/진화원(?:을|이)?\s*(?:갖지\s*않은|갖지\s*않는|가지지\s*않은|가지지\s*않는)$/, () => { f.noSources = true; })) continue;
     if (take(/진화원\s*매수가\s*(\d+)\s*장\s*(이하|이상)(?:의|인)?$/, m => { f[m[2] === '이하' ? 'srcMax' : 'srcMin'] = Number(m[1]); })) continue;
     if (take(/진화원(?:을)?\s*(?:가진|갖는)$/, () => { f.hasSources = true; })) continue;
+    // stack filters on the evolution sources: "진화원에 「X」를 가진" / "진화원에 2색 이상인 카드를 가진" / "진화원을 N장 이상 가진"; "명칭에 「A」를 포함하거나 진화원에 「B」를 가진" = OR
+    if (take(/명칭에\s*((?:「[^」]+」\s*\/?\s*)+)\s*(?:을|를)?\s*포함하거나\s*진화원에\s*((?:「[^」]+」\s*\/?\s*)+)\s*(?:을|를)?\s*(?:가진|갖는|가지는)$/, m => { const nl = (x) => [...x.matchAll(/「([^」]+)」/g)].map(y => y[1]); const l2 = nl(m[2]); (f.anyOf ||= []).push({ nameAny: nl(m[1]) }, { srcHas: { exactAny: l2 } }); })) continue;
+    if (take(/진화원(?:에|에서)\s*((?:「[^」]+」\s*\/?\s*)+)\s*(?:을|를)?\s*(?:가진|갖는|가지는)$/, m => { const l = [...m[1].matchAll(/「([^」]+)」/g)].map(y => y[1]); f.srcHas = { exactAny: l }; })) continue;
+    if (take(/진화원에\s*(\d)\s*색\s*이상인\s*카드를\s*(?:가진|갖는|가지는)$/, m => { f.srcHas = { colorCountMin: Number(m[1]) }; })) continue;
+    if (take(/진화원\s*을\s*(\d+)\s*장\s*이상\s*(?:가진|갖는|가지는)$/, m => { f.srcMin = Number(m[1]); })) continue;
+    if (take(/(\d)\s*색\s*이상(?:인|의)$/, m => { f.colorCountMin = Number(m[1]); })) continue;
     if (take(/《([^》]+)》\s*(?:를|을|이|가)\s*(?:가진|갖는)$/, m => { f.keywordText = m[1].trim(); })) continue;
     // "명칭에 「A」를 포함하거나 특징으로 「B」를 가진 …" = OR of the two criteria (BT6-084, ST12-13, BT14-086 …)
     if (take(/명칭에\s*((?:「[^」]+」\s*\/?\s*)+)\s*(?:을|를)?\s*포함하거나\s*특징(?:으로|에|은)?\s*((?:「[^」]+」\s*\/?\s*)+)\s*(?:을|를)?\s*(가진|갖는|가지는|포함하는)$/, m => { const nl = (x) => [...x.matchAll(/「([^」]+)」/g)].map(y => y[1]); (f.anyOf ||= []).push({ nameAny: nl(m[1]) }, m[3] === '포함하는' ? { traitIncludes: nl(m[2]) } : { traitAny: nl(m[2]) }); })) continue;
@@ -1852,7 +2257,9 @@ function compileInner(text) {
   }
 
   // Reveal top N of own deck, add matching card(s) to hand (or play them for free), rest to bottom.
-  if ((m = t.match(/(?:자신의\s*)?덱(?:을)?\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*(?:오픈|공개)/))) {
+  const rvPick = compileRevealPick(t);
+  if (rvPick) script.push(rvPick);
+  else if ((m = t.match(/(?:자신의\s*)?덱(?:을)?\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*(?:오픈|공개)/))) {
     // "그중 <조건> 카드 N장(과 <조건> 카드 N장)을 패에 추가한다 / 코스트를 지불하지 않고 등장시킬 수 있다" — the picker only offers matching cards, up to N per group.
     const pm = t.replace(/(?:을|를)\s*(\d+\s*장씩)\s*(패(?:에|로)\s*추가)/, ' $1을 $2').match(/그\s*중(?:에서|에)?\s*(.*?)\s*(?:을|를)\s*(패(?:에|로)\s*(?:추가(?:한다|하고)|넣는다)|코스트를?\s*지불하지\s*않고\s*(?:레스트\s*상태로\s*)?등장(?:시킬\s*수\s*있다|시킨다|할\s*수\s*있다))/s);
     const action = pm && !/패(?:에|로)/.test(pm[2]) ? 'play' : 'hand';
@@ -1861,9 +2268,14 @@ function compileInner(text) {
     // "그 카드가 <조건>라면 패에 추가한다" (top-1 reveal): only a matching card may be taken
     if (!pm) { const cdm = t.match(/그\s*카드가\s*(.*?)\s*(?:이)?(?:라면|다면),?\s*패에\s*추가한다/s); if (cdm) { const pfc = parseCardFilter(cdm[1]); if (pfc) groups = [{ filter: pfc, max: 1 }]; } }
     const max = groups ? groups.reduce((a, g) => a + g.max, 0) : 1;
+    // verify-reveal-3: no "그중" clause = the cards are only looked at ("오픈한 카드는 덱 위 또는 아래로만 되돌린다"): nothing may be picked; "…수 있다"/"N장까지" = optional pick, otherwise the player must take a matching card
+    const noPick = !pm && !groups && !/그\s*중/.test(t);
+    const pickOpt = !!pm && /(?:장까지|수\s*있다)/.test(pm[0]);
     script.push({ op: 'revealTop', who: 'self', n: Number(m[1]),
-      pick: { min: 0, max, ...(groups && groups.length === 1 && groups[0].filter ? { filter: groups[0].filter } : {}), ...(groups && groups.length > 1 ? { groups } : {}), ...(action === 'play' ? { action: 'play', rested: /레스트\s*상태로/.test(pm[2]), noTriggers: /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(t) } : {}) },
-      restTo: /남은\s*카드(?:는|를)\s*(?:원하는\s*순서대로\s*)?파기한다|나머지는\s*파기한다/.test(t) ? 'trash' : /덱\s*(?:의)?\s*위(?:로)?\s*(?:되돌|돌려)/.test(t) ? 'top' : 'bottom' });
+      ...(/오픈(?:하?여)?\s*할\s*수\s*있다/.test(t) ? { optionalReveal: true } : {}), ...(/자신\s*\/\s*상대의\s*덱/.test(t) ? { whoChoice: true } : {}),
+      pick: { min: 0, max: noPick ? 0 : max, ...(noPick ? { noPick: true } : {}), ...(pickOpt ? { optional: true } : {}),...(groups && groups.length === 1 && groups[0].filter ? { filter: groups[0].filter } : {}), ...(groups && groups.length > 1 ? { groups } : {}), ...(action === 'play' ? { action: 'play', rested: /레스트\s*상태로/.test(pm[2]), noTriggers: /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(t) } : {}) },
+      restTo: /남은\s*카드(?:는|를)\s*(?:원하는\s*순서대로\s*)?파기한다|나머지는\s*파기한다/.test(t) ? 'trash' : /덱(?:\s*의)?\s*위(?:\s*또는|나)\s*(?:덱(?:\s*의)?\s*)?아래(?:로|에)?만?\s*(?:되돌|돌려)/.test(t) ? 'either' : /덱\s*(?:의)?\s*위(?:로)?\s*(?:되돌|돌려)/.test(t) ? 'top' : 'bottom' });
+    refineRevealTop(t, script[script.length - 1]);
   }
 
   // "이 디지몬과 <다른 자신의 디지몬>으로 (코스트를 지불하여) 패의 디지몬 카드/「X」로 조그레스 진화할 수 있다."
@@ -1877,7 +2289,7 @@ function compileInner(text) {
     script.push({ op: 'playThisFree' });
   } else
   // Play a card without paying cost, from hand or trash (or a token / evolution-source card).
-  if ((/코스트를?\s*(?:지불하지\s*않고|支払わ)|코스트\s*없이/.test(t) || /\[\[TOK:[^\]]+\]\]\s*토큰[^.]*등장/.test(t)) && /등장/.test(t) && !script.some(o => o.op === 'revealTop' && o.pick?.action === 'play')) {
+  if ((/코스트를?\s*(?:지불하지\s*않고|支払わ)|코스트\s*없이/.test(t) || /\[\[TOK:[^\]]+\]\]\s*토큰[^.]*등장/.test(t)) && /등장/.test(t) && !script.some(o => (o.op === 'revealTop' && o.pick?.action === 'play') || (o.op === 'revealPick' && o.steps.some(s => s.dests.some(d => d.k === 'play'))))) {
     const pfOps = compilePlayFree(t);
     if (pfOps) script.push(...pfOps);
     else {
@@ -1895,9 +2307,9 @@ function compileInner(text) {
   }
 
   // "자신의 패(/트래시)에서 <조건> 카드 N장(까지)을 (이 디지몬|자신의 디지몬|육성 에어리어의 자신의 「X」)의 진화원 아래에 놓을 수 있다/놓는다"
-  if ((m = t.match(/자신(?:의)?\s*(패\s*\/\s*트래시|패|트래시)에서,?\s*((?:[^.。]|Lv\.)*?카드)\s*(\d+)\s*장(까지)?(?:를|을)?\s*(이\s*디지몬의|육성\s*에어리어의\s*자신의\s*「[^」]+」의|자신의\s*디지몬(?:\s*1\s*마리)?의)\s*진화원\s*아래에\s*놓(을\s*수\s*있다|는다)/))) {
+  if ((m = t.match(/자신(?:의)?\s*(패\s*\/\s*트래시|패|트래시)에서,?\s*((?:[^.。]|Lv\.)*?카드)\s*(\d+)\s*장(까지)?(?:를|을)?\s*,?\s*(이\s*디지몬의|육성\s*에어리어의\s*자신의\s*「[^」]+」의|[^.。,]*?자신의\s*디지몬(?:\s*1\s*마리)?의)\s*진화원(?:의\s*가장)?\s*아래(?:쪽)?에\s*놓(을\s*수\s*있다|는다)/))) {
     const dscU = m[2], fU = strictCardFilter(dscU), tn = m[5].match(/「([^」]+)」/);
-    script.push({ op: 'placeUnderSource', who: 'self', zones: m[1].includes('/') ? ['hand', 'trash'] : [m[1] === '패' ? 'hand' : 'trash'], filter: fU || { desc: dscU }, n: Number(m[3]), ...(/^이/.test(m[5]) ? { thisStack: true } : /^육성/.test(m[5]) ? { raising: true, targetFilter: { exactAny: [tn[1]] } } : {}), optional: m[4] === '까지' || /수\s*있다/.test(m[6]) });
+    script.push({ op: 'placeUnderSource', who: 'self', zones: m[1].includes('/') ? ['hand', 'trash'] : [m[1] === '패' ? 'hand' : 'trash'], filter: fU || { desc: dscU }, n: Number(m[3]), ...(/^이/.test(m[5]) ? { thisStack: true } : /^육성/.test(m[5]) ? { raising: true, targetFilter: { exactAny: [tn[1]] } } : (() => { const tmU = parseTargetMods(m[5].replace(/자신의s*디지몬(?:s*1s*마리)?의s*$/, '')); return !tmU._left && Object.keys(tmU).length ? { targetFilter: tmU } : {}; })()), optional: m[4] === '까지' || /수\s*있다/.test(m[6]) });
   }
 
   // "자신의 패(/트래시)에서 <조건> 카드 N장을 시큐리티 위|아래에 [앞면으로] 놓을 수 있다/놓는다" (EX6-021/068, BT19-036/096, BT18-038 …)
@@ -2133,9 +2545,9 @@ function compileInner(text) {
   // Option card, after resolving) returns to hand instead of trashing.
   // Second most common 시큐리티 pattern (53 of 178).
   if (/이\s*카드를\s*패(?:에\s*추가|로\s*되돌린)한다|이\s*카드를\s*패로\s*되돌린다/.test(t)) {
-    if (/^\s*이\s*카드의\s*【메인】\s*효과를\s*발휘한다\.\s*\S/.test(t)) script.push({ op: 'runOwnMain' });
+    if (/^\s*이\s*카드의\s*【메인】\s*효과를\s*(?:발휘|발동)한다\.\s*\S/.test(t)) script.push({ op: 'runOwnMain' });
     script.push({ op: 'addSelfToHand' });
-  }
+  } else if (/^\s*이\s*카드의\s*【메인】\s*효과를\s*(?:발휘|발동)한다\.?\s*$/.test(t)) script.push({ op: 'runOwnMain' }); // 【시큐리티】 이 카드의 【메인】 효과를 발동한다. (BT24-092/097, BT25-093/100/101 …): the MAIN effect resolves from the security check
 
   // "상대의 턴 종료까지 자신의 디지몬 N마리는 배틀에서 소멸하지 않는다."
   // (BT16-018/BT19-023/BT20-022, all 등장 시|진화 시, always N=1) —
@@ -2173,7 +2585,7 @@ function compileInner(text) {
   }
 
   // "상대는 본인의 <패 N장 / 디지몬·테이머 1마리(명) / 시큐리티 위 1장>을 파기·소멸시킬 수 있다. 이 효과로 …하지 않았다면, <효과>"
-  if ((m = t.trim().match(/^상대는\s*(?:본인의|스스로의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리(?:\(명\))?|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기|소멸시킬|파기할|소멸시킬)\s*(?:수\s*있다|할\s*수\s*있다)?\s*(?:수\s*있다)?\.\s*이\s*효과로\s*(?:파기|소멸)하지\s*않았다면,\s*(.+)$/s)) || (m = t.trim().match(/^상대는\s*(?:본인의|스스로의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리(?:\(명\))?|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기할|소멸시킬)\s*수\s*있다\.\s*이\s*효과로\s*(?:파기|소멸)하지\s*않았다면,\s*(.+)$/s))) {
+  if ((m = t.trim().match(/^상대는,?\s*(?:본인의|스스로의|상대의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리(?:\(명\))?|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기|소멸시킬|파기할|소멸시킬)\s*(?:수\s*있다|할\s*수\s*있다)?\s*(?:수\s*있다)?\.\s*(?:이\s*효과로\s*)?(?:파기|소멸)하지\s*않았(?:다면|을\s*경우|을\s*때),?\s*(.+)$/s)) || (m = t.trim().match(/^상대는,?\s*(?:본인의|스스로의|상대의)\s*(패(?:의|에서)?\s*(.*?)\s*(\d+)\s*장|디지몬\/테이머\s*1\s*마리(?:\(명\))?|시큐리티를\s*위에서부터\s*1\s*장)(?:을|를)?\s*(?:파기할|소멸시킬)\s*수\s*있다\.\s*(?:이\s*효과로\s*)?(?:파기|소멸)하지\s*않았(?:다면|을\s*경우|을\s*때),?\s*(.+)$/s))) {
     const els = compileToScript(m[4]);
     const kind = /^패/.test(m[1]) ? 'discard' : /^디지몬/.test(m[1]) ? 'destroy' : 'security';
     const flt = kind === 'discard' && m[2] ? (parseCardFilter(m[2].replace(/(?:의|에서)\s*$/, '')) || null) : null;
@@ -2453,11 +2865,18 @@ function parseConditionText(c) {
   if ((m = c.match(/^메모리가\s*상대\s*쪽의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
   if ((m = c.match(/^상대의\s*디지몬이\s*(있다면|없다면)$/))) return (ctx) => (digimonCount(ctx, opp(ctx)) > 0) === (m[1] === '있다면');
   if ((m = c.match(/^자신의\s*테이머가\s*(\d+)\s*명\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).battle.filter(s => cat(ctx, s.cardId) === 'tamer').length); }
+  if ((m = c.match(/^자신의\s*「([^」]+)」의\s*진화원이\s*(\d+)\s*장\s*이상\s*있다면$/))) return (ctx) => [own(ctx).raising, ...own(ctx).battle].filter(Boolean).some(s => ctx.S.effectiveInfo(ctx.state, s).names.includes(m[1]) && s.sources.length >= Number(m[2])); // EX2-053 "자신의 「마더 디·리퍼」의 진화원이 5장 이상 있을 때"
   if ((m = c.match(/^자신의\s*테이머가\s*(있다면|없다면)$/))) return (ctx) => (own(ctx).battle.some(s => cat(ctx, s.cardId) === 'tamer')) === (m[1] === '있다면');
   // zone sizes: "자신/상대의 패/트래시/시큐리티가 N장 이하/이상(이라면|있다면)"
   if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티)(?:가|에)?\s*(\d+)\s*장\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) {
     const f = NUM_CMP(Number(m[3]), m[4]); const who = m[1]; const zone = { 패: 'hand', 트래시: 'trash', 시큐리티: 'security' }[m[2]];
     return (ctx) => f((who === '자신' ? own(ctx) : opp(ctx))[zone].length);
+  }
+  // zone size vs the other side: "자신의 시큐리티(의 매수)가 상대의 시큐리티(의) 매수 이하/이상(이라면)" (ST7-11 …)
+  if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티|덱)(?:의\s*매수)?(?:가|이)\s*(자신|상대)의\s*(패|트래시|시큐리티|덱)(?:의)?\s*매수\s*(이하|이상)(?:이)?라면$/)) && m[1] !== m[3]) {
+    const zn = { 패: 'hand', 트래시: 'trash', 시큐리티: 'security', 덱: 'deck' }, side = (w, ctx) => (w === '자신' ? own(ctx) : opp(ctx));
+    const [w1, z1, w2, z2, dir] = [m[1], zn[m[2]], m[3], zn[m[4]], m[5]];
+    return (ctx) => { const a = side(w1, ctx)[z1].length, b = side(w2, ctx)[z2].length; return dir === '이하' ? a <= b : a >= b; };
   }
   // board counts: "자신/상대의 디지몬/테이머가 N마리·명·장 이하/이상(이라면|있다면)"
   if ((m = c.match(/^(자신|상대)의\s*(디지몬|테이머)(?:가|이)?\s*(\d+)\s*(?:마리|명|장)\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) {
@@ -2538,6 +2957,7 @@ function parseConditionText(c) {
   if (/^이\s*효과로\s*소멸하지\s*않았다면$/.test(c)) return (ctx) => ctx._lastDestroyed === false;
   if (/^이\s*효과로\s*소멸했다면$/.test(c)) return (ctx) => ctx._lastDestroyed === true;
   if (/^이\s*효과로\s*(?:옵션\s*카드를\s*)?사용(?:했|하였)다면$/.test(c)) return (ctx) => ctx._lastUsedOption === true; // useOptionFree
+  if (/^이\s*효과로\s*(?:옵션\s*카드를\s*)?사용하지\s*않았다면$/.test(c)) return (ctx) => ctx._lastUsedOption !== true; // BT6-065 "이 효과로 옵션 카드를 사용하지 않았을 때"
   if (/^이\s*효과로\s*놓았다면$/.test(c)) return (ctx) => (ctx._lastPlacedSource || 0) > 0 || ctx._lastPlacedSecurity === true; // placeUnderSource / placeSecurity
   if ((m = c.match(/^이\s*디지몬(?:이|의\s*레벨이)\s*Lv\.(\d+)\s*(이하|이상)?(?:이)?라면$/))) { const lv = Number(m[1]), mode = m[2]; return (ctx) => { const st = stackOf(ctx); const L = st ? (ctx.S.card(st.cardId).level ?? 0) : -1; return mode === '이하' ? L <= lv : mode === '이상' ? L >= lv : L === lv; }; }
   if (/^자신의\s*턴이라면$/.test(c)) return (ctx) => ctx.state.activePlayer === ctx.self;
@@ -2572,7 +2992,7 @@ function normalizeCost(c) {
 // A card descriptor ("특징 「X」를 가진 카드", "명칭에 「X」를 포함하거나 특징 「Y」를 가진 카드") -> matchesFilter filter, or null when
 // some part of it isn't understood (so callers never silently widen a restriction).
 function strictCardFilter(desc) {
-  desc = desc.trim().replace(/,\s*$/, '').replace(/Lv\.\s+(\d)/g, 'Lv.$1').replace(/」\s*(?:또는|이나)\s*「/g, '」/「');
+  desc = desc.replace(/(레드|블루|옐로우?|그린|블랙|퍼플|화이트)\s*(?:또는|이나)\s*(?=(?:레드|블루|옐로우?|그린|블랙|퍼플|화이트))/g, '$1/').trim().replace(/,\s*$/, '').replace(/Lv\.\s+(\d)/g, 'Lv.$1').replace(/」\s*(?:또는|이나)\s*「/g, '」/「');
   if (/^(?:「[^」]+」\s*(?:\/|또는)?\s*)+$/.test(desc)) return { exactAny: [...desc.matchAll(/「([^」]+)」/g)].map(x => x[1]) }; // ("「A」와 「B」" is an AND-list — never one card's OR: parsePickGroups / the condition parsers own that)
   if (/^(?:디지몬\s*|테이머\s*|옵션\s*)?카드$/.test(desc) && !/디지몬|테이머|옵션/.test(desc)) return {};
   let f = parseCardFilter(desc);
@@ -2603,6 +3023,8 @@ function criterionFilter(dsc) {
     const rhs = criterionFilter(m[2]);
     return { anyOf: [{ exactAny: [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]) }, rhs] };
   }
+  { const ps = dsc.split(/(?<=카드)\s*또는\s*(?=「|특징|명칭|Lv\.)/); // "<A 카드> 또는 「X」 또는 「Y」" = OR of the criteria
+    if (ps.length >= 2) { const fs = ps.map(p => /^(?:「[^」]+」\s*(?:\/|또는)?\s*)+$/.test(p.trim()) ? { exactAny: [...p.matchAll(/「([^」]+)」/g)].map(x => x[1]) } : strictCardFilter(p.trim())); if (fs.every(Boolean)) return { anyOf: fs }; } }
   const cat = /테이머\s*카드/.test(dsc) && !/옵션\s*카드|디지몬\s*카드/.test(dsc) ? 'tamer' : /옵션\s*카드/.test(dsc) && !/테이머\s*카드/.test(dsc) ? 'option' : /디지몬\s*카드/.test(dsc) && !/테이머|옵션/.test(dsc) ? 'digimon' : null;
   return { ...(cat ? { category: cat } : {}), desc: dsc };
 }
@@ -2619,6 +3041,11 @@ function compileCostClause(raw) {
     if (tgD && !tgD.all && tgD.n && !/[가-힣「]/.test(tgD.left)) return Array.from({ length: tgD.n }, () => ({ op: 'destroy', target: 'self', mode: 'choose', ...tgtProps(tgD) }));
     const tgR = findTgt(c, '자신', String.raw`디지몬(?:\/테이머)?`, String.raw`(?:를|을)?\s*레스트시킨다$`);
     if (tgR && !tgR.all && tgR.n && !/[가-힣「]/.test(tgR.left)) return [{ op: 'rest', target: 'self', n: tgR.n, ...(/테이머/.test(tgR.noun) ? {} : { digimonOnly: true }), filter: { ...(tgR.filter || {}), suspended: false }, ...(tgR.excludeSelf ? { excludeSelf: true } : {}) }]; }
+  // "자신의 패(/트래시)에서 <카드> N장을, <조건> 자신의 디지몬 1마리의 진화원(의 가장) 아래에 놓는 것으로" — hand/trash card -> under one of the player's Digimon (BT8-104, BT10-094, EX3-066)
+  if ((m = c.match(/^자신(?:의)?\s*(패\s*\/\s*트래시|패|트래시)에서,?\s*(.*?카드)\s*(\d+)\s*장(?:을|를)?\s*,?\s*(.*?)자신의\s*디지몬(?:\s*1\s*마리)?의\s*진화원(?:의\s*가장)?\s*아래(?:쪽)?에\s*놓(?:는다|는)$/))) {
+    const tm = parseTargetMods(m[4] || '');
+    if (!tm._left) return [{ op: 'placeUnderSource', who: 'self', zones: m[1].includes('/') ? ['hand', 'trash'] : [m[1] === '패' ? 'hand' : 'trash'], filter: criterionFilter(m[2]), n: Number(m[3]), ...(Object.keys(tm).length ? { targetFilter: tm } : {}), asCost: true }];
+  }
   if ((m = c.match(/^메모리(?:를|을)?\s*-\s*(\d+)\s*(?:한다|하는)?$/))) return [{ op: 'gainMemory', who: 'self', n: -Number(m[1]) }];
   if ((m = c.match(/^(\d+)\s*코스트\s*지불(?:한다|하는)?$/))) return [{ op: 'gainMemory', who: 'self', n: -Number(m[1]) }];
   if ((m = c.match(/^자신(?:의)?\s*패(?:를)?\s*(\d+)\s*장(?:을|를)?\s*파기한다$/))) return [{ op: 'trashHand', who: 'self', n: Number(m[1]) }];
@@ -2658,7 +3085,7 @@ function compileWithCost(text) {
   if (/^〈룰〉/.test(cm[1].trim()) || /^(?:벗어나지|소멸하지|파기되지)\s*않는다/.test(cm[2].trim())) return inner;
   let eff = /^이하의\s*효과\s*(?:에서|중)|(?:라면|다면|때|경우)\s*,/.test(cm[2].trim()) || splitSentences(cm[2].trim()).length > 1 ? compileToScript(cm[2]) : compileInner(cm[2]); // whole effect text (effectChoice / later conditional sentences)
   if (!eff.length) eff = [{ op: 'noop', note: `효과를 수동으로 처리하세요: ${cm[2].replace(/\([^()]*\)/g, '').slice(0, 120)}` }];
-  const costOps = compileCostClause(cm[1]);
+  const costOps = compileCostClause(cm[1].replace(/^.*?(?:했을|었을|있을|한)\s*때,?\s*(?=이\s*(?:테이머|디지몬)(?:을|를)\s*레스트\s*시키는$)/, '')); // "<트리거 조건>했을 때, 이 테이머를 레스트시키는 것으로": the trigger part is the watcher's job, only the rest is the cost
   if (!costOps.length) return inner;
   return [{ op: 'costGroup', cost: costOps, then: eff }];
 }
@@ -2669,7 +3096,7 @@ function compileWithCost(text) {
 // a condition we can't evaluate asks the player instead (never runs the gated effect blindly, never silently drops it)
 function manualCondition(label) { const f = (ctx) => ctx.choose('confirmEffect', { player: ctx.self, prompt: `조건 확인(수동): ${label} — 충족합니까?` }); f.manualLabel = label; return f; }
 function normCondText(cond) {
-  return cond.replace(/\s+/g, ' ').trim().replace(/경우$/, '때').replace(/\s*있을\s*때$/, ' 있다면').replace(/\s*없을\s*때$/, ' 없다면').replace(/\s*이하일\s*때$/, ' 이하라면').replace(/\s*이상일\s*때$/, ' 이상이라면')
+  return cond.replace(/\s+/g, ' ').trim().replace(/(진화원\s*을\s*\d+\s*장\s*이상)\s*가지며,\s*/, '$1 가진 ').replace(/(포함하거나),\s*(진화원에)/, '$1 $2').replace(/경우$/, '때').replace(/\s*있을\s*때$/, ' 있다면').replace(/\s*없을\s*때$/, ' 없다면').replace(/\s*이하일\s*때$/, ' 이하라면').replace(/\s*이상일\s*때$/, ' 이상이라면')
     .replace(/^(이\s*효과로.*?)\s*(않았|했)을\s*때$/, '$1 $2다면').replace(/\s*(?:가질|가지고\s*있을|갖고\s*있을)\s*때$/, ' 가진다면').replace(/\s*(?:포함할|포함하고\s*있을)\s*때$/, ' 포함한다면').replace(/\s*기술되어\s*있을\s*때$/, ' 기술되어 있다면').replace(/(\S)\s*일\s*때$/, '$1이라면');
 }
 // (kept below normCondText)
@@ -2687,7 +3114,7 @@ function compileSentenceConds(text, allowFirst = false) {
   if (sents.length < 2) return null;
   const CONDRE =/^(?:(?:그\s*후|또한),?\s*)?((?:[^,.。\n]{2,80}?(?:거나|고|며),\s*)?[^,.。\n]{2,80}?(?:라면|다면|(?:있을|없을|이하일|이상일|않았을|일|적을|많을|가질|같을|다를|포함할|가지고\s*있을|갖고\s*있을|기술되어\s*있을)\s*(?:때|경우)))(?:,\s*|\s+)(.+)$/s;
   const REPRE = /^(?:(?:그\s*후|또한),?\s*)?(.+?(?:라면|다면|(?:있을|없을|않았을)\s*때)),?\s*((?:그\s*)?대신에?,?\s*.+)$/s; // long conditions containing commas, always followed by "대신"
-  const conds = sents.map((x, i) => ((i > 0 || allowFirst) && !/^그\s*카드가[^.]*(?:라면|다면),?\s*패에\s*추가한다/.test(x) ? (x.replace(/Lv\./g, 'Lv\uE000').match(CONDRE) || x.replace(/Lv\./g, 'Lv\uE000').match(REPRE)) : null));
+  const conds = sents.map((x, i) => ((i > 0 || allowFirst) && !/^그\s*카드가[^.]*(?:라면|다면|일\s*때|일\s*경우),?\s*(?:패에\s*추가한다|코스트를?\s*지불하지\s*않고\s*(?:레스트\s*상태로\s*)?등장)/.test(x) ? (x.replace(/Lv\./g, 'Lv\uE000').match(CONDRE) || x.replace(/Lv\./g, 'Lv\uE000').match(REPRE)) : null));
   if (!conds.some(Boolean) || (allowFirst && conds.filter(Boolean).length < 2)) return null;
   const out = []; let buf = [];
   const flush = () => { if (buf.length) out.push(...compileToScript(buf.join(' '))); buf = []; };
@@ -3003,10 +3430,10 @@ function splitSentences(text) {
   return out;
 }
 
-const IGNORABLE_SENTENCE = /^(?:나머지는|남은\s*카드(?:는|를)|오픈한\s*카드는|그\s*중|그중|그렇게\s*했을\s*때|이하의\s*효과|·|〈룰〉|〔[^〕]+〕$|그\s*디지몬이\s*(?:가진|가지는|갖는)\s*진화원은\s*파기한다)/; // (the sources of a Digimon that leaves the battle area are trashed by the leave itself)
+const IGNORABLE_SENTENCE = /^(?:(?:어셈블리|디지크로스)\s*-\s*\d+\s*[:：]|.*[《≪]딜레이[》≫]\s*\.?$|[《≪]머티리얼\s*세이브|나머지는|남은\s*카드(?:는|를)|오픈한\s*카드는|그\s*중|그중|그렇게\s*했을\s*때|이하의\s*효과|·|〈룰〉|〔[^〕]+〕$|그\s*디지몬이\s*(?:가진|가지는|갖는)\s*진화원은\s*파기한다)/; // (the sources of a Digimon that leaves the battle area are trashed by the leave itself)
 
 export function droppedSentences(text) {
-  const sents = splitSentences(text.replace(/〈룰〉.*$/s, ''));
+  const sents = splitSentences(text.replace(/[〈<]룰[〉>].*$/s, ''));
   if (sents.length < 2) return [];
   const sig = (x) => JSON.stringify(x, (k, v) => (typeof v === 'function' ? '<fn>' : v)); // conditions are closures: count their presence (a condition sentence that vanished changes the signature)
   const base = sig(compileToScript(text));
@@ -3083,6 +3510,30 @@ function atIndex() {
   for (const [k, v] of Object.entries(CARD_SCRIPTS)) { const i = k.indexOf('@'); if (i > 0) (AT_INDEX[k.slice(0, i)] ||= []).push([k.slice(i + 1), v]); }
   return AT_INDEX;
 }
+// 16-17 ≪딜레이≫ on an event-triggered placed Option that has no bespoke script: the watcher/turn-start path queues only the trigger sentence
+// ("《딜레이》."), so the bullet effect ("·…") — printed on the following line(s) — is fetched from the card text here.
+// Returns { script, gate } (gate = the leading 있다면/없다면 condition, evaluated BEFORE the card is discarded) or null when the text is no delay effect.
+export function delayBulletPlan(S, cardId, tags, text) {
+  const DL = /[≪《]\s*딜레이\s*[≫》](?:\s*\([^()]*\))?\.?/;
+  const t = String(text || '').trim();
+  if (!DL.test(t)) return null;
+  let norm;
+  if (/^[≪《]\s*딜레이\s*[≫》](?:\s*\([^()]*\))?\.?$/.test(t)) {
+    const c = S.card(cardId);
+    const seg = c && S.parseEffectSegments(c.effectKo).segments.find(sg => sg.tags.join('/') === tags.join('/') && DL.test(sg.body));
+    if (!seg) return null;
+    const lines = seg.body.split(/\r?\n/).slice(1).map(x => x.trim()).filter(Boolean);
+    if (!lines.length) return null;
+    norm = lines.join(' ').replace(/^·\s*/, '');
+  } else {
+    norm = t.replace(DL, '').replace(/\r?\n\s*·?\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  const own = CARD_SCRIPTS[`${cardId}::딜레이`]; // per-card bullet script (shard19 …): runs AFTER the option was discarded, never re-discards
+  const script = own || compileToScript(norm);
+  const gate = !own && script[0] && script[0].op === 'condition' ? script[0].if : null;
+  return { script: gate ? [...(script[0].then || []), ...script.slice(1)] : script, gate, text: norm }; // (the gate was already checked before discarding: run only what is behind it)
+}
+export async function delayGateOk(plan, ctx) { return !plan.gate || !!(await evalCondition(plan.gate, ctx)); }
 export function lookupCardSpecific(cardId, tags, text) {
   if (typeof cardId === 'string' && cardId.includes('~')) cardId = cardId.split('~')[0]; // synthetic "<id>~<tag>" cards (effects gained from an evolution source, EX10-059) run the source card's own scripts
   const key = `${cardId}::${tags[0]}`;

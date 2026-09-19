@@ -965,3 +965,47 @@ sc('ST17-08::진화 시', async (ctx) => {
     t.cannotEvolveUntil = oppEnd(state, ctx.self);
   }
 });
+
+// ================================================================== BT16-015 (소멸 시): 무료 등장 → 그 디지몬의 DP 이하의 상대 디지몬 소멸
+sc('BT16-015::소멸 시', async (ctx, R) => {
+  const { state } = ctx;
+  ctx._lastPick = null;
+  await R.runOne({ op: 'playFree', who: 'self', zone: 'hand', filter: { category: 'digimon', colors: ['red'], dpMax: 11000, traitIncludes: ['조', '새', '병아리', '수', '짐승'] }, rested: false, noTriggers: false, optional: true }, ctx);
+  const played = ctx._lastPick ? stackOf(state, ctx.self, ctx._lastPick.uid) : null;
+  if (!played) return;
+  const dp = S.effectiveDP(state, ctx.self, played);
+  await destroyOppWhere(ctx, (s) => S.effectiveDP(state, ctx.opp, s) <= dp, `소멸시킬 DP ${dp} 이하의 상대 디지몬 선택`);
+});
+
+// ================================================================== BT16-025 (진화 시)
+sc('BT16-025::진화 시', async (ctx) => {
+  const { state } = ctx, st = me(ctx); if (!st) return;
+  const n = st.sources.length;
+  for (const s of [...digs(state, ctx.opp)]) if (s.sources.length <= n) S.restStack(state, ctx.opp, s.uid);
+  if (st.viaFusion) for (const s of digs(state, ctx.opp)) S.setSkipNextUnsuspend(state, ctx.opp, s.uid); // 조그레스 진화하고 있었다면
+});
+
+// ================================================================== EX4-021 / EX4-060 (서로의 턴): 벗어날 때 진화원에서 등장 (hookLeaveTriggers: 소멸·패로 되돌아갈 때)
+async function playNamedFromTrash(ctx, names) {
+  const { state } = ctx, pl = state.players[ctx.self];
+  for (const n of names) {
+    const i = pl.trash.map((id, k) => (nameIs(C(id), n) && C(id).category === 'digimon' ? k : -1)).filter(k => k >= 0).pop();
+    if (i != null) S.playFreeFromZone(state, ctx.self, 'trash', i, {});
+  }
+}
+hk('EX4-021', { tag: '서로의 턴', has: '진화원에서 「메탈그레이몬」', onLeave: () => true });
+sc('EX4-021::서로의 턴', async (ctx) => {
+  const evt = ctx.trigger?.evt || {};
+  const srcs = evt.sources || [];
+  if (!['메탈그레이몬', '다크나이트몬'].some(n => srcs.some(id => nameIs(C(id), n)))) return;
+  if (!(await ask(ctx, '진화원의 「메탈그레이몬」과 「다크나이트몬」을 코스트 없이 등장시킬까요?'))) return;
+  await playNamedFromTrash(ctx, ['메탈그레이몬', '다크나이트몬']);
+});
+hk('EX4-060', { tag: '서로의 턴', has: '진화원의 「크레스가루몬」', onLeave: (state, p, stack, cause) => cause !== 'ownEffect' });
+sc('EX4-060::서로의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  const evt = ctx.trigger?.evt || {};
+  await playNamedFromTrash(ctx, ['크레스가루몬', '블리츠그레이몬']);
+  const id = evt.cardId; if (!id) return;
+  for (const z of ['trash', 'hand', 'deck']) { const i = pl[z].lastIndexOf(id); if (i !== -1) { takeFrom(pl[z], i); S.addToSecurity(state, ctx.self, id, 'bottom'); return; } }
+});

@@ -787,7 +787,7 @@ async function playFreshFromDrag(drag, p) {
   if (category === 'digimon' && S.isPlayRestricted(state, drag.player, drag.cardId)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); dragData = null; render(); return; }
   if (category === 'option') {
     let optDelta = 0; // s8: HOOKS.playDiscount also applies to Option cards ("…옵션 카드를 사용할 때, …사용 코스트 -N")
-    for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) optDelta += await o.apply(ctxChoose) || 0; }
+    for (const o of [...S.hookPlayCostOptions(state, drag.player, drag.cardId), ...(S.optionColorOk(state, drag.player, drag.cardId) ? S.optionCostOptions(state, drag.player, drag.cardId) : [])]) { if (await askYN(drag.player, o.label)) optDelta += await o.apply(ctxChoose) || 0; }
     S.useOptionCard(state, drag.player, drag.idx, { costDelta: optDelta });
   } else {
     let discount = S.card(drag.cardId).category === 'digimon' ? S.tamerPlayCostDiscount(state, drag.player, drag.cardId) + S.traitPlayCostDiscount(state, drag.player, drag.cardId) : 0;
@@ -1051,6 +1051,7 @@ async function ctxChoose(kind, payload) {
 // Confirmed via a full-DB audit: 168 of 175 occurrences of this exact
 // sentence are on Option cards' inheritedKo, always paired with a plain
 // 【메인】-tagged effectKo to re-run.
+const tagLbl = (x) => (x === '__ownDiscard' ? '파기 시' : String(x).replace(/^__/, '')); // pseudo-tags ('__…') shown without the prefix
 function scriptFor(trigger) {
   if (trigger.schedFn) return [{ op: 'sched' }]; // held end-of-turn effect (18-1): run via trigger.schedFn in runPendingScript
   const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text);
@@ -1058,7 +1059,7 @@ function scriptFor(trigger) {
   if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
     const { segments } = S.parseEffectSegments(S.card(trigger.cardId).effectKo || '');
     const mainSeg = segments.find(seg => seg.tags.includes('메인'));
-    if (mainSeg) return Effects.compileToScript(mainSeg.body);
+    if (mainSeg) return Effects.lookupCardSpecific(trigger.cardId, mainSeg.tags, mainSeg.body) || Effects.compileToScript(mainSeg.body); // bespoke 【메인】 scripts (BT25-093 …) must win over the generic compile
   }
   return Effects.compileToScript(trigger.text);
 }
@@ -1095,7 +1096,7 @@ async function runPendingScript(trigger, opts = {}) {
   }
   // 15-4-4-3: a waiting effect can't resolve if its card left the area or turned into a NEW card
   // (evolved / fused) before its turn came. 【소멸 시】 effects are meant to wait after leaving.
-  if (trigger.stackUid && trigger.topId && !trigger.tags.some(t => t.includes('소멸 시'))) {
+  if (trigger.stackUid && trigger.topId && !trigger.evt?.leaving && !trigger.tags.some(t => t.includes('소멸 시'))) {
     const stNow = findStack({ player: trigger.player, uid: trigger.stackUid });
     let why = null;
     if (!stNow || stNow.cardId !== trigger.topId) why = '카드가 벗어나거나 새 카드가 되어 (15-4-4-3)';
@@ -1131,9 +1132,31 @@ async function runPendingScript(trigger, opts = {}) {
   // the same render tick, too fast to actually read. Skipped for effects
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, 700));
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
+    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
+  // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger
+  // sentence; the bullet is read from the card, the option can only be discarded from the turn after it was placed, and discarding it is a player choice.
+  const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
+  if (delayPlan) {
+    const dst = findStack({ player: trigger.player, uid: trigger.stackUid });
+    const cn = S.card(trigger.cardId).nameKo;
+    let why = null;
+    if (!dst || S.card(dst.cardId).category !== 'option') why = '배틀 에어리어에 없어';
+    else if (state.turnNumber <= dst.placedTurn) why = '놓인 턴에는 사용할 수 없어';
+    else if (!(await Effects.delayGateOk(delayPlan, ctx))) why = '조건을 만족하지 않아';
+    if (why) { S.log(state, `${trigger.player} ${cn} 《딜레이》 — ${why} 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
+    if (!(await ctxChoose('confirmEffect', { player: trigger.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${delayPlan.text.slice(0, 90)}` }))) { S.log(state, `${trigger.player} ${cn} 《딜레이》를 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
+    S.discardForDelay(state, trigger.player, dst.uid);
+    ctx.sourceStackUid = null;
+    if (delayPlan.script.length) await Effects.runScript(delayPlan.script, ctx);
+    else state.pending.push({ uid: 'rem' + Math.random().toString(36).slice(2), player: trigger.player, cardId: trigger.cardId, stackUid: null, tags: trigger.tags, text: delayPlan.text, resolved: false, manualOnly: true, note: '《딜레이》 효과를 자동 처리할 수 없음 — 직접 처리하세요' });
+    S.resolvePending(state, trigger.uid);
+    render();
+    return;
+  }
   const script = scriptFor(trigger);
   if (isOptionalAutoEffect(trigger.text, script)) {
-    const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
+    const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.map(tagLbl).join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
     if (!yes) {
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과를 발동하지 않음`);
       S.resolvePending(state, trigger.uid);
@@ -1142,8 +1165,6 @@ async function runPendingScript(trigger, opts = {}) {
     }
   }
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
   await Effects.runScript(script, ctx);
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
@@ -1185,7 +1206,7 @@ function autoRunMandatoryPending() {
     if (pool.length > 1) {
       const uid = await ctxChoose('pickPendingOrder', {
         player: pool[0].player,
-        items: pool.map(t => ({ uid: t.uid, label: `${S.card(t.cardId).nameKo} 【${t.tags.join('】【')}】 ${t.text.replace(/\([^()]*\)/g, '').slice(0, 60)}` })),
+        items: pool.map(t => ({ uid: t.uid, label: `${S.card(t.cardId).nameKo} 【${t.tags.map(tagLbl).join('】【')}】 ${t.text.replace(/\([^()]*\)/g, '').slice(0, 60)}` })),
         prompt: `${pool[0].player}: 동시에 발동 대기 중인 효과 ${pool.length}개 — 먼저 처리할 효과를 선택하세요 (룰 4-3-2${mine.length ? ', 턴 플레이어 우선' : ''})`,
       });
       next = pool.find(t => t.uid === uid) || pool[0];
@@ -1208,7 +1229,7 @@ function renderPendingEffects() {
     const c = S.card(t.cardId);
     const script = t.manualOnly ? [] : scriptFor(t);
     return h('div', { className: `effect-box${script.length && t.uid === runningPendingUid ? ' effect-firing' : ''}`, style: `margin-bottom:6px;${script.length && t.uid !== runningPendingUid ? 'opacity:.6;' : ''}` }, [
-      h('div', { className: 'effect-firing-title' }, `⚡ ${c.nameKo} 【${t.tags.join('】【')}】 발동`),
+      h('div', { className: 'effect-firing-title' }, `⚡ ${c.nameKo} 【${t.tags.map(tagLbl).join('】【')}】 발동`),
       h('div', {}, t.text),
       t.note ? h('div', { className: 'meta' }, '⚠ ' + t.note) : null,
       h('div', { className: 'actions-row', style: 'margin-top:6px;' }, [
@@ -1288,17 +1309,25 @@ function renderUiChoice() {
   } else if (kind === 'pickFromRevealed') {
     if (!state._multiPick) state._multiPick = [];
     const picked = state._multiPick;
+    if (payload.eligible.length && payload.min >= payload.eligible.length && payload.max >= payload.eligible.length && !picked.length && !state._multiPickTouched) picked.push(...payload.eligible.map(x => x.i)); // "전부": every eligible card is preselected (nothing to decide)
     rows.push(h('div', { className: 'hand-list' }, payload.revealed.map((id, i) => {
       const eligible = payload.eligible.some(x => x.i === i);
       return cardChip(id, {
-        selected: picked.includes(i),
-        onClick: eligible ? () => { const p = picked.indexOf(i); if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
+        selected: picked.includes(i), target: eligible,
+        onClick: eligible ?() => { const p = picked.indexOf(i); if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
       });
     })));
-    rows.push(h('div', { className: 'actions-row' }, [
-      h('span', {}, `${picked.length}장 선택 (최대 ${payload.max})`),
-      h('button', { className: 'primary', disabled: picked.length < Math.max(payload.min || 0, payload.required && payload.eligible.length ? 1 : 0), onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); } }, '확인 (핸드로 가져가고 나머지는 자동 처리)'),
-    ]));
+    { // eligible cards are marked in the list above ("✔ 선택 가능" chips are clickable); with none, say so and let the player just continue
+      const noEl = !payload.eligible.length;
+      const DEST_TXT = { play: '코스트 없이 등장', hand: '패에 추가', trash: '파기', evolve: '코스트 없이 진화', useOption: '코스트 없이 사용', use: '코스트 없이 사용', security: '시큐리티 위에 놓기', sourcesThis: '진화원 아래에 놓기', srcThis: '진화원 아래에 놓기', srcOwn: '진화원 아래에 놓기', sourcesOf: '진화원 아래에 놓기', tamerUnder: '테이머 아래에 놓기' };
+      const destTxt = !payload.dest ? '패에 추가' : (DEST_TXT[payload.dest] || payload.dest);
+      const lookOnly = payload.dest === 'none'; // reveal-only prompt (nothing may be picked): just show the cards
+      rows.push(h('div', { className: 'step-info' }, lookOnly ? '오픈한 카드를 확인하세요 — 확인을 누르면 계속합니다.' : noEl ? '조건에 맞는 카드가 없습니다 — 그대로 진행합니다.' : `조건에 맞는 카드 ${payload.eligible.length}장 (${destTxt}) — 선택 가능한 카드만 클릭할 수 있습니다.${payload.required ? ' (반드시 선택)' : ''}`));
+      rows.push(h('div', { className: 'actions-row' }, [
+        h('span', {}, `${picked.length}장 선택 (최대 ${payload.max})`),
+        h('button', { className: 'primary', disabled: picked.length < Math.max(payload.min || 0, payload.required && payload.eligible.length ? 1 : 0), onClick: () => { const result = picked.slice(); state._multiPick = []; resolve(result); } }, noEl ? '확인 (나머지 자동 처리)' : `확인 (${destTxt}, 나머지 자동 처리)`),
+      ]));
+    }
   } else if (kind === 'pickSourcesMulti') {
     if (!state._multiPick) state._multiPick = [];
     const picked = state._multiPick;

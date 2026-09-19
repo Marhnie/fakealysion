@@ -437,6 +437,8 @@ export function emitGameEvent(state, kind, info) {
     state._secDecBatch.add(info.owner);
   }
   for (const hook of EVENT_HOOKS) hook(state, kind, info);
+  queueOwnDiscardTriggers(state, kind, info); // 옵션의 "이 카드가 <영역>에서 [효과로] 파기되었을 때" (덱/패/시큐리티/진화원/배틀 에어리어)
+  queueTrashZoneEventTriggers(state, kind, info); // "[트래시]【자신의/서로의 턴】 자신의 디지몬이 「N」로 진화했을 때, 이 카드를 덱 아래로 되돌리는 것으로 …" (세븐스 옵션)
   const subjCard = info.stack ? card(info.stack.cardId) : null;
   for (const hp of ['p1', 'p2']) {
     const hpl = state.players[hp];
@@ -509,7 +511,10 @@ export function stackTopId(state, p, uid) {
 export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
   const c = card(cardId);
   const wantTags = TRIGGER_TAGS[eventKind] || [];
-  const { segments } = parseEffectSegments(c.effectKo);
+  const parsedSegs = parseEffectSegments(c.effectKo);
+  const segments = parsedSegs.segments;
+  // data quirk: an Option whose whole text lost its 【메인】 header (BT5-094) still has its 【메인】 effect when used
+  if (eventKind === 'use' && c.category === 'option' && !segments.length && parsedSegs.preamble) segments.push({ tags: ['메인'], zoneMarker: null, body: parsedSegs.preamble });
   for (const seg of segments) {
     // s8: "[시큐리티]【서로의 턴】 …" — the zone marker (not a tag) says it is the card's 【시큐리티】 effect
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w))) || (eventKind === 'security' && seg.zoneMarker === '시큐리티');
@@ -944,7 +949,7 @@ export function trashTopOfDeck(state, p, n) {
   const out = [];
   for (let i = 0; i < n && pl.deck.length; i++) out.push(pl.deck.shift());
   pl.trash.push(...out);
-  if (out.length) log(state, `${p} 덱 위 ${out.length}장 파기: ${out.map(id => card(id).nameKo).join(', ')}`);
+  if (out.length) { log(state, `${p} 덱 위 ${out.length}장 파기: ${out.map(id => card(id).nameKo).join(', ')}`); emitGameEvent(state, 'deckDiscard', { owner: p, stack: null, cause: state._fxSrc ? 'effect' : null, ids: out.slice() }); }
   return out;
 }
 
@@ -959,6 +964,10 @@ export function revealTop(state, p, n) {
 export async function resolveRevealOrdered(state, choose, p, n, keepIdx, toHandIdxs, restTo = 'bottom') {
   const revealed = state.players[p].deck.slice(0, n);
   const rest = revealed.filter((id, i) => !toHandIdxs.includes(i));
+  if (restTo === 'either') { // "덱 위 또는 아래로만 되돌린다": the owner picks the side (then the order within it)
+    restTo = 'bottom';
+    if (rest.length && typeof choose === 'function') { const w = await choose('multipleChoice', { player: p, prompt: `공개한 나머지 ${rest.length}장을 덱 위/아래 어느 쪽으로 되돌릴까요?`, options: ['덱 위로', '덱 아래로'] }); restTo = w === 0 ? 'top' : 'bottom'; }
+  }
   let order = null;
   if (restTo !== 'trash' && rest.length > 1 && typeof choose === 'function') {
     order = await choose('orderCards', { player: p, ids: rest, prompt: `덱 ${restTo === 'bottom' ? '아래' : '위'}로 되돌릴 카드 ${rest.length}장의 순서를 정하세요 (위쪽부터)` });
@@ -983,7 +992,7 @@ export function resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo = 'bottom
   });
   if (restOrder && restOrder.length === rest.length && restOrder.every(i => Number.isInteger(i) && i >= 0 && i < rest.length)) rest = restOrder.map(i => rest[i]);
   pl.hand.push(...toHand);
-  if (restTo === 'trash') pl.trash.push(...rest); else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
+  if (restTo === 'trash') { pl.trash.push(...rest); if (rest.length) emitGameEvent(state, 'deckDiscard', { owner: p, stack: null, cause: 'effect', ids: rest.slice() }); } else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
   log(state, `${p} 공개 처리: 핸드로 ${toHand.map(id=>card(id).nameKo).join(',')||'없음'} / 나머지 덱 ${restTo === 'bottom' ? '밑' : '위'}로`);
   return { toHand, rest };
 }
@@ -1003,14 +1012,14 @@ export function addToSecurity(state, p, cardId, position = 'top') {
 export function trashTopSecurityByEffect(state, p) {
   const pl = state.players[p];
   const id = pl.security.shift();
-  if (id) { log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect' }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
+  if (id) { log(state, `${p} 시큐리티 맨 위 카드가 효과로 파기: ${card(id).nameKo} (효과 트리거 대상일 수 있음 — 수동 확인)`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect', cardId: id }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
   return id;
 }
 
 export function trashBottomSecurityByEffect(state, p) {
   const pl = state.players[p];
   const id = pl.security.pop();
-  if (id) { log(state, `${p} 시큐리티 맨 밑 카드가 효과로 파기: ${card(id).nameKo}`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect' }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
+  if (id) { log(state, `${p} 시큐리티 맨 밑 카드가 효과로 파기: ${card(id).nameKo}`); pl.trash.push(id); emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect', cardId: id }); emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' }); }
   return id;
 }
 
@@ -2062,7 +2071,7 @@ function evoTargetPredicate(desc) {
       const list = quoted(m[1]), incl = /포함/.test(m[2] || '');
       cons.push(t => (t.types || []).some(ty => list.some(x => incl ? ty.includes(x) && !(x === '수' && ['수장룡형', '수생형', '수생포유류형', '정보수집 타입', '정보수집 유형'].includes(ty)) : ty === x)));
     }
-    if ((m = c.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) {
+    if ((m = c.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를|이|가)?\s*포함/))) {
       const list = quoted(m[1]);
       cons.push(t => list.some(x => cardNameHas(t, x)));
     }
@@ -2764,13 +2773,13 @@ export function useOptionCard(state, p, handIndex, opts = {}) {
     log(state, `${p} ${card(pl.hand[handIndex]).nameKo} 사용 불가: 색 조건 미충족 (같은 색의 디지몬/테이머가 필요, 룰 4-22)`);
     return null;
   }
-  if (pl.hand[handIndex] && !canPayCost(state, Math.max(0, (card(pl.hand[handIndex]).cost || 0) + (opts.costDelta || 0)))) {
+  if (pl.hand[handIndex] && !canPayCost(state, Math.max(0, optionBaseCost(state, p, pl.hand[handIndex]) + (opts.costDelta || 0)))) {
     log(state, `${p} ${card(pl.hand[handIndex]).nameKo} 사용 불가: 코스트를 지불할 수 없음 (룰 1-3-11-1)`);
     return null;
   }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
-  const cost = Math.max(0, (card(id).cost || 0) + (opts.costDelta || 0)); // s8: hook play-cost discounts (BT25-090 …)
+  const cost = Math.max(0, optionBaseCost(state, p, id) + (opts.costDelta || 0)); // 옵션 자체의 사용 코스트 문구(상대 시큐리티/트래시, 자신의 테이머 등) 반영. s8: hook play-cost discounts (BT25-090 …)
   if (cost > 0) spendMemory(state, cost);
   pl.trash.push(id);
   log(state, `${p} ${card(id).nameKo} 사용 (코스트${cost})`);
@@ -4527,6 +4536,8 @@ export function zoneMainAbilities(state, p, zone) {
 // descriptor.onLeave(state, hp, holder, cause) -> truthy: queue this segment when its holder LEAVES the battle area (holder is already off the board;
 // pending.evt = { leaving: true, cause, sources: [ids the stack had], cardId }). Called from deleteStack and bounce ops.
 export function hookLeaveTriggers(state, p, stack, cause) {
+  // batch-3 (shard12): battle-area holders (delay options …) watching "자신의 디지몬이 배틀 에어리어를 벗어날 때": global 'leaveBattle' event (owner, leaving stack, cause, its evolution cards — already in the trash)
+  dispatchHookEvents(state, 'leaveBattle', { owner: p, stack, cause, sources: stack.sources.slice(), cardId: stack.cardId });
   for (const { id, own } of stackContributors(stack)) {
     const list = CARD_HOOKS[id];
     if (!list) continue;
@@ -4964,6 +4975,133 @@ export function s7QueueZoneTurnEnd(state, finishing) {
           state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: id, stackUid: null, tags: seg.tags, text: seg.body.trim(), resolved: false, zoneTurnEnd: marker });
         }
       }
+    }
+  }
+}
+
+// ---- Option "use" cost statements printed on the option itself (4-22 / 9-1 使用 cost) ----
+// "이 카드를 사용할 때, <조건>이라면 지불하는 사용 코스트 -N" / "<조건> 1장마다 …" / "…을 파기하는 것으로 …" are read from the
+// zones the text names (opponent's battle area / security / trash, own security / trash / tamers / evolution sources).
+// optionBaseCost: the automatic part (printed cost with every condition-only adjustment applied);
+// optionCostOptions: the optional "pay X to reduce" parts (UI confirms each, like hookPlayCostOptions).
+const XAB = (id) => card(id).nameKo === 'X항체' || /명칭\s*:\s*「X항체」로도\s*취급/.test(card(id).effectKo || '');
+const useCostLines = (cardId) => (card(cardId).effectKo || '').split('\n').map(s => s.trim()).filter(l => /사용\s*코스트|지불하는\s*코스트/.test(l) && !/^[【\[]/.test(l));
+export function optionBaseCost(state, p, cardId) {
+  const c = card(cardId);
+  let cost = c.cost || 0;
+  const pl = state.players[p], op = state.players[opponentOf(p)];
+  const mine = pl.battle;
+  const dig = (st) => card(st.cardId).category === 'digimon';
+  const tam = (st) => card(st.cardId).category === 'tamer';
+  const hasName = (n) => [...pl.battle, ...op.battle].some(st => card(st.cardId).nameKo === n);
+  for (const line of useCostLines(cardId)) {
+    let m;
+    if (/패의\s*이\s*카드를\s*사용할\s*때,\s*지불하는\s*코스트는\s*자신의\s*시큐리티의\s*매수와\s*동일/.test(line)) { cost = pl.security.length; continue; } // BT7-100
+    if (/상대\s*디지몬\s*1마리마다,?\s*패의\s*이\s*카드의\s*사용\s*코스트\s*-\s*1/.test(line)) { cost -= op.battle.filter(dig).length; continue; } // BT8-097
+    if (/이\s*카드의\s*사용\s*코스트를\s*0으로/.test(line)) { // P-116: 「A」와 「B」와 「C」가 있는 동안
+      const names = [...line.matchAll(/「([^」]+)」/g)].map(x => x[1]);
+      if (names.length && names.every(hasName)) cost = 0;
+      continue;
+    }
+    if (/자신의\s*시큐리티\s*1장마다,?\s*이\s*카드의\s*사용\s*코스트\s*\+\s*1/.test(line)) { cost += pl.security.length; continue; } // BT26-097
+    if (!(m = line.match(/이\s*카드를\s*사용할\s*때,\s*(.*?)(?:지불하는\s*(?:사용\s*)?코스트|사용\s*코스트)\s*-\s*(\d+)\.?$/))) continue;
+    const cond = m[1].trim().replace(/[,，]$/, ''), n = Number(m[2]);
+    if (/파기하는\s*것으로/.test(cond)) continue; // optional payment — see optionCostOptions
+    if (/블루인 자신의 디지몬 1마리를 블루인 다른/.test(line)) continue;
+    let ok = false, k = 1, t;
+    if ((t = cond.match(/^진화원에\s*「X항체」가\s*있는\s*자신의\s*디지몬이\s*있다면$/))) ok = mine.some(st => dig(st) && st.sources.some(XAB));
+    else if ((t = cond.match(/^상대의\s*디지몬이\s*(\d+)마리\s*이상\s*있다면$/))) ok = op.battle.filter(dig).length >= Number(t[1]);
+    else if ((t = cond.match(/^(그린|레드|블루|옐로|블랙|퍼플|화이트)인\s*레스트\s*상태의\s*자신의\s*디지몬이\s*(\d+)마리\s*이상\s*있다면$/))) { const col = KOR_COLOR_NAME[t[1]] || t[1]; ok = mine.filter(st => dig(st) && st.suspended && stackColors(st).includes(col)).length >= Number(t[2]); }
+    else if ((t = cond.match(/^자신의\s*테이머\s*1명마다$/))) { ok = true; k = mine.filter(tam).length; }
+    else if ((t = cond.match(/^(그린|레드|블루|옐로|블랙|퍼플|화이트)인\s*자신의\s*테이머가\s*있다면$/))) { const col = KOR_COLOR_NAME[t[1]] || t[1]; ok = mine.some(st => tam(st) && stackColors(st).includes(col)); }
+    else if ((t = cond.match(/^자신의\s*「([^」]+)」이?\s*있다면$/))) ok = mine.some(st => card(st.cardId).nameKo === t[1]);
+    else if ((t = cond.match(/^상대의\s*시큐리티가\s*(\d+)장\s*이하라면$/))) ok = op.security.length <= Number(t[1]);
+    else if ((t = cond.match(/^상대의\s*트래시가\s*(\d+)장\s*이상이라면$/))) ok = op.trash.length >= Number(t[1]);
+    else if ((t = cond.match(/^자신의\s*트래시의\s*특징으로\s*「([^」]+)」\/「([^」]+)」를\s*가진,\s*명칭이\s*서로\s*다른\s*카드\s*1장마다$/))) { ok = true; k = new Set(pl.trash.filter(id => (card(id).types || []).some(x => x === t[1] || x === t[2])).map(id => card(id).nameKo)).size; }
+    if (ok) cost -= n * k;
+  }
+  return Math.max(0, cost);
+}
+// Optional reductions that need a real payment: [{ label, apply(choose) -> negative delta }].
+export function optionCostOptions(state, p, cardId) {
+  const out = [];
+  const pl = state.players[p];
+  const nm = card(cardId).nameKo;
+  for (const line of useCostLines(cardId)) {
+    let m;
+    if ((m = line.match(/자신의\s*시큐리티를\s*(\d+)장이\s*될\s*때까지\s*위에서부터\s*파기하는\s*것으로,\s*파기한\s*1장마다\s*지불하는\s*사용\s*코스트\s*-\s*(\d+)/))) { // BT16-100
+      const keep = Number(m[1]), per = Number(m[2]);
+      if (pl.security.length > keep) out.push({ label: `${nm}: 시큐리티를 ${keep}장이 될 때까지 위에서부터 파기하여 1장마다 사용 코스트 -${per}?`, apply() { let n = 0; while (pl.security.length > keep && trashTopSecurityByEffect(state, p)) n++; return -per * n; } });
+    } else if ((m = line.match(/자신의\s*테이머\s*아래의\s*뒷면\s*카드를\s*아래에서부터\s*1장\s*파기하는\s*것으로,\s*(?:사용|지불하는)\s*코스트\s*-\s*(\d+)/))) { // BT25-096 / BT26-098
+      const tm = pl.battle.find(st => card(st.cardId).category === 'tamer' && fdCount(st) > 0), n = Number(m[1]);
+      if (tm) out.push({ label: `${nm}: 테이머 아래의 뒷면 카드를 아래에서부터 1장 파기하여 사용 코스트 -${n}?`, apply() { trashEvoSources(state, p, tm.uid, 1, 'bottom'); return -n; } });
+    } else if (/블루인 자신의 디지몬 1마리를 블루인 다른 자신의 디지몬 1마리의 진화원 아래에 놓는 것으로/.test(line)) { // BT12-102
+      const blue = pl.battle.filter(st => card(st.cardId).category === 'digimon' && stackColors(st).includes('blue'));
+      if (blue.length >= 2) out.push({ label: `${nm}: 블루인 자신의 디지몬 1마리를 다른 블루 디지몬의 진화원 아래에 놓아 사용 코스트 -3?`, async apply(choose) {
+        const from = await choose('pickStack', { player: p, uids: blue.map(s => s.uid), prompt: '진화원 아래에 놓을 블루 디지몬 선택' });
+        const src = blue.find(s => s.uid === from); if (!src) return 0;
+        const rest = blue.filter(s => s !== src);
+        const to = rest.length === 1 ? rest[0].uid : await choose('pickStack', { player: p, uids: rest.map(s => s.uid), prompt: '받는 블루 디지몬 선택' });
+        const dst = rest.find(s => s.uid === to); if (!dst) return 0;
+        pl.battle.splice(pl.battle.indexOf(src), 1);
+        dst.sources.push(...src.sources, src.cardId);
+        log(state, `${p} ${card(src.cardId).nameKo}을(를) ${card(dst.cardId).nameKo}의 진화원 아래에 놓음`);
+        return -3;
+      } });
+    }
+  }
+  return out;
+}
+
+// Trash-zone ("[트래시]") triggered abilities printed on Option cards (BT12-110 / BT15-100 / EX7-072 / EX8-072 / BT19-094 / BT23-097 / BT24-096):
+// "【자신의 턴】/【서로의 턴】 자신의 디지몬이 「N」로 진화했을 때, 이 카드를 덱 아래로 되돌리는 것으로 …" — the card must be in the TRASH
+// (not in the battle area) when the event happens; the script (shard18) pays the "return to deck bottom" cost and resolves the effect.
+function queueTrashZoneEventTriggers(state, kind, info) {
+  if (kind !== 'digivolve' || !info.stack || !info.owner) return;
+  const p = info.owner, pl = state.players[p];
+  if (!pl.trash.length) return;
+  let nm = new Set([card(info.stack.cardId).nameKo]);
+  try { const eff = effectiveInfo(state, info.stack); if (eff && eff.names) for (const n of eff.names) nm.add(n); } catch (e) { /* printed name only */ }
+  for (const id of new Set(pl.trash)) {
+    for (const seg of parseEffectSegments(card(id).effectKo).segments) {
+      if (!(seg.zoneMarker || '').includes('트래시')) continue;
+      const m = seg.body.trim().match(/^자신의\s*디지몬이\s*「([^」]+)」로\s*진화했을\s*때,/);
+      if (!m || !nm.has(m[1])) continue;
+      const t0 = seg.tags[0] || '';
+      if (t0.includes('자신의 턴') && state.activePlayer !== p) continue;
+      if (t0.includes('상대의 턴') && state.activePlayer === p) continue;
+      queuePending(state, { player: p, cardId: id, stackUid: null, tags: seg.tags, text: seg.body.trim(), trashZone: true });
+    }
+  }
+}
+
+// Own-discard triggers printed on OPTION cards as untagged preamble abilities:
+//   "이 카드가 덱/패/시큐리티/진화원/배틀 에어리어에서 [자신의] [효과로] 파기되었을 때, <효과>"  (EX2-071, BT10-108, ST14-12, BT19-097, BT13-106, BT14-100,
+//   BT15-092, BT18-098, ST22-10, EX7-066/070/071, P-180, P-161, BT19-093/095/098, P-159)
+// The card sits in the trash when it triggers; the pending item runs the printed body (shard19 handles the bodies the generic compiler cannot).
+function queueOwnDiscardTriggers(state, kind, info) {
+  let zone = null, ids = [], effect = true;
+  const owner = info.owner;
+  if (!owner) return;
+  if (kind === 'discard' && info.cardId) { zone = 'hand'; ids = [info.cardId]; effect = info.cause === 'effect'; }
+  else if (kind === 'sourcesTrashed') { zone = 'sources'; ids = info.ids || []; effect = info.cause === 'effect'; }
+  else if (kind === 'securityDiscard' && info.cardId) { zone = 'security'; ids = [info.cardId]; effect = info.cause === 'effect'; }
+  else if (kind === 'deckDiscard') { zone = 'deck'; ids = info.ids || []; effect = info.cause === 'effect'; }
+  else if (kind === 'delete' && info.stack && card(info.stack.cardId).category === 'option') { zone = 'battle'; ids = [info.stack.cardId]; effect = info.cause === 'effect' || info.cause === 'ownEffect'; }
+  else return;
+  for (const id of ids) {
+    if (!id || card(id).category !== 'option') continue;
+    const text = card(id).effectKo || '';
+    if (!text.includes('파기되었을')) continue;
+    for (const m of text.matchAll(/(?:^|\n|\.\s)(이\s*카드가\s*[^.\n]*?파기되었을\s*때),\s*([^\n]*)/g)) {
+      const head = m[1];
+      const z = /덱에서/.test(head) ? 'deck' : /패에서/.test(head) ? 'hand' : /시큐리티에서/.test(head) ? 'security' : /진화원에서/.test(head) ? 'sources' : /배틀\s*에어리어에서/.test(head) ? 'battle' : null;
+      if (z !== zone) continue;
+      if (/효과로/.test(head) && !effect) continue;
+      if (/자신의\s*효과로/.test(head) && state._fxSrc?.player !== owner) continue;
+      const body = m[2].replace(/[^.]*이\s*카드는\s*색\s*조건을[^.]*\.?/g, '').trim();
+      if (!body) continue;
+      queuePending(state, { player: owner, cardId: id, stackUid: null, tags: ['__ownDiscard'], text: body, ownDiscard: zone });
     }
   }
 }

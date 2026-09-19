@@ -651,4 +651,13 @@ SCRIPTS['BT26-009::어택 시'] = [
   })]),
 ];
 
+// ================================================================== BT25 (options placed in the battle area)
+SCRIPTS['BT25-102::메인'] = [
+  T('자신의 시큐리티 아래에서부터 1장을 패에 추가하고, 이 카드를 앞면으로 시큐리티 아래에 놓는다.'),
+  { op: 's8_playOrUse', zones: ['hand'], kinds: ['digimon'], delta: -3, // 그 후, 패에서 블랙/레드인 특징 「TS」 디지몬 카드 1장을 등장 코스트 -3으로 등장시킬 수 있다
+    pred: (id) => trait(id, 'TS') && (C(id).colors || []).some(c => c === 'black' || c === 'red') },
+];
+// BT25-095 (서로의 턴): 레드/그린인 특징 「TS」 디지몬 전부 DP +2000 (the 《속공》 half is parsed by the static-grant reader)
+HOOKS['BT25-095'] = [{ tag: '서로의 턴', has: '레드/그린', dp: (state, hp, holder, target, tp) => (tp === hp && isDig(target.cardId) && trait(target.cardId, 'TS') && (C(target.cardId).colors || []).some(c => c === 'red' || c === 'green') ? 2000 : 0) }];
+
 // @@END@@

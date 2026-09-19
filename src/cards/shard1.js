@@ -226,8 +226,11 @@ async function revealPickEach(ctx, who, n, preds, prompt) {
   const rev = pl.deck.splice(0, n);
   S.log(state, `${who} 덱 위 ${rev.length}장 오픈: ${rev.map(id => C(id).nameKo).join(', ')}`);
   const taken = [];
-  for (const pred of preds) {
-    const elig = rev.map((id, i) => ({ id, i })).filter(x => !taken.includes(x.i) && pred(x.id));
+  const maxFill = (avail, ps) => { const owner = new Map(); const tryK = (k, seen) => { for (const ci of avail) { if (seen.has(ci) || !ps[k](rev[ci])) continue; seen.add(ci); if (!owner.has(ci) || tryK(owner.get(ci), seen)) { owner.set(ci, k); return true; } } return false; }; let c = 0; for (let k = 0; k < ps.length; k++) if (tryK(k, new Set())) c++; return c; };
+  for (let pi = 0; pi < preds.length; pi++) { // a card fitting both criteria must not be spent on the wrong one (verify-reveal-3)
+    const pred = preds[pi];
+    const av0 = rev.map((_, i) => i).filter(i => !taken.includes(i)), bestF = maxFill(av0, preds.slice(pi));
+    const elig = rev.map((id, i) => ({ id, i })).filter(x => !taken.includes(x.i) && pred(x.id) && 1 + maxFill(av0.filter(j => j !== x.i), preds.slice(pi + 1)) >= bestF);
     if (!elig.length) continue;
     const sel = await ctx.choose('pickFromRevealed', { player: who, revealed: rev, eligible: elig, min: 0, max: 1, prompt });
     const i = sel && sel[0];

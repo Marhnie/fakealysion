@@ -277,8 +277,13 @@ async function revealPick(ctx, n, groups, rest = 'bottom') {
   const { state, self } = ctx;
   const revealed = S.revealTop(state, self, n);
   const chosen = [];
-  for (const g of groups) {
-    const elig = revealed.map((id, i) => ({ id, i })).filter((x) => !chosen.includes(x.i) && g(x.id));
+  // a card fitting several criteria must not be spent on the wrong one: only offer cards that keep the remaining criteria as fillable as possible (verify-reveal-3)
+  const maxFill = (avail, preds) => { const owner = new Map(); const tryK = (k, seen) => { for (const ci of avail) { if (seen.has(ci) || !preds[k](revealed[ci])) continue; seen.add(ci); if (!owner.has(ci) || tryK(owner.get(ci), seen)) { owner.set(ci, k); return true; } } return false; }; let c = 0; for (let k = 0; k < preds.length; k++) if (tryK(k, new Set())) c++; return c; };
+  for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    const avail0 = revealed.map((_, i) => i).filter((i) => !chosen.includes(i));
+    const best = maxFill(avail0, groups.slice(gi));
+    const elig = revealed.map((id, i) => ({ id, i })).filter((x) => !chosen.includes(x.i) && g(x.id) && 1 + maxFill(avail0.filter((j) => j !== x.i), groups.slice(gi + 1)) >= best);
     if (!elig.length) continue;
     const r = await ctx.choose('pickFromRevealed', { player: self, revealed, eligible: elig, min: 0, max: 1, prompt: '공개된 카드 중 패에 추가할 카드 선택' });
     for (const i of r || []) if (!chosen.includes(i)) chosen.push(i);
