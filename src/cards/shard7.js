@@ -1409,6 +1409,31 @@ SCRIPTS['EX11-034::등장 시'] = [F(async (ctx) => {
 // play a card of the holder's sources (inherited 【서로의 턴 종료 시】)
 SCRIPTS['BT24-086::서로의 턴 종료 시'] = [F(async (ctx) => { await playFromOwnSources(ctx, holderOf(ctx), (id) => nameIs(id, '서월령')); })];
 SCRIPTS['EX11-070::서로의 턴 종료 시'] = [F(async (ctx) => { await playFromOwnSources(ctx, holderOf(ctx), (id) => nameIs(id, '언체인')); })];
+// EX11-051 【등장 시】【진화 시】【소멸 시】 destroy one lowest-Lv opp digimon ("1장"), then may play a 고스트형 Lv.4-or-lower digimon card from trash free
+SCRIPTS['EX11-051::등장 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const t = await pickStack(ctx, ctx.opp, LOWLV(state, ctx.opp), '소멸시킬 (Lv.이 가장 낮은) 상대 디지몬 선택', { kind: 'delete', mandatory: true });
+  if (t) destroyIt(ctx, ctx.opp, t);
+  const i = await pickIdx(ctx, self, 'trash', (id) => isDig(id) && hasType(id, '고스트형') && lv(id) <= 4, '코스트 없이 등장시킬 고스트형 카드 선택 (취소=안 함)');
+  if (i != null) S.playFreeFromZone(state, self, 'trash', i);
+})];
+// EX11-012 【진화 시】【어택 종료 시】 destroy an opp digimon with DP <= this digimon's; then return 1 card of opp's trash to its deck bottom -> opp gets a 「석화」 token
+TOKENS['S7-TOKEN-SEOKHWA'] = { nameKo: '석화', colors: ['white'], dp: 3000, level: null, cost: 0, effectKo: '【자신의 턴】 이 디지몬은 레스트할 수 없다.\n【소멸 시】 자신의 시큐리티를 위에서부터 1장 파기한다.' };
+SCRIPTS['EX11-012::진화 시'] = [F(async (ctx) => {
+  const { state, self } = ctx;
+  const h = holderOf(ctx);
+  if (h) {
+    const dp = S.effectiveDP(state, self, h);
+    const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp).filter((s) => S.effectiveDP(state, ctx.opp, s) <= dp), `DP ${dp} 이하의 소멸시킬 상대 디지몬 선택 (취소=안 함)`, { kind: 'delete' });
+    if (t) destroyIt(ctx, ctx.opp, t);
+  }
+  const opl = state.players[ctx.opp];
+  if (!opl.trash.length) return;
+  const k = await pickFromList(ctx, self, opl.trash.slice(), '덱 아래로 되돌릴 상대 트래시의 카드 선택 (취소=안 함 — 상대는 「석화」 토큰을 얻지 않음)');
+  if (k == null) return;
+  opl.deck.push(opl.trash.splice(k, 1)[0]);
+  spawnToken(ctx, ctx.opp, 'S7-TOKEN-SEOKHWA');
+})];
 // EX11-035 【서로의 턴】 / EX11-032 【진화 시】: play a green 조/새/병아리 digimon card from hand free; DP limit = base + per * (rested digimon on both sides)
 const restedDigimon = (state) => ['p1', 'p2'].reduce((n, p) => n + digimonsOf(state, p).filter((s) => s.suspended).length, 0);
 async function playGreenBird(ctx, base, per) {

@@ -2502,6 +2502,7 @@ function atIndex() {
   return AT_INDEX;
 }
 export function lookupCardSpecific(cardId, tags, text) {
+  if (typeof cardId === 'string' && cardId.includes('~')) cardId = cardId.split('~')[0]; // synthetic "<id>~<tag>" cards (effects gained from an evolution source, EX10-059) run the source card's own scripts
   const key = `${cardId}::${tags[0]}`;
   if (text != null && atIndex()[key]) { const hit = atIndex()[key].find(([needle]) => text.includes(needle)); if (hit) return hit[1]; }
   return CARD_SCRIPTS[key] || CARD_SPECIFIC[key] || (String(tags[0]).startsWith('__') ? CARD_SCRIPTS['*::' + tags[0]] || CARD_SPECIFIC['*::' + tags[0]] || null : null);

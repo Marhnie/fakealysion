@@ -567,6 +567,16 @@ const trashToHand = (spec, costDiscard) => RUN(async (ctx) => {
 });
 SC('BT22-068', '등장 시', '명칭에 「티라노몬」을 포함하거나 특징 「공룡형」을 가진 디지몬 카드 1장을 패로', trashToHand({ cat: 'digimon', or: [{ nameInc: ['티라노몬'] }, { trait: ['공룡형'] }] }));
 SC('BT23-017', '등장 시', '자신의 패 1장을 파기하는 것으로', trashToHand({ notCat: 'digitama', trait: ['CS'] }, true));
+SC('BT23-017', '어택 시', '이 효과로 등장한 디지몬은 진화할 수 없으며', RUN(async (ctx) => {
+  // 자신의 패에서 특징 「후디에」를 가진 등장 코스트 5 이하의 디지몬 카드 1장을 코스트 없이 등장. 이 효과로 등장한 디지몬은 진화할 수 없으며, 상대의 턴 종료 시 소멸한다.
+  const { state } = ctx, me = ctx.self;
+  const st = await playFreeChoose(ctx, { zones: ['hand'], card: { trait: ['후디에'], costMax: 5 }, prompt: '코스트를 지불하지 않고 등장시킬 「후디에」 디지몬 선택 (선택 안 함 가능)' });
+  if (!st) return;
+  const uid = st.uid;
+  st.cannotEvolveUntil = 999999;
+  const oppEnd = state.activePlayer === me ? state.turnNumber + 1 : state.turnNumber;
+  (state.endOfTurnEffects ||= []).push({ turnNumber: oppEnd, player: opp(me), label: `${C(st.cardId).nameKo}: 상대의 턴 종료 시 소멸`, fn: () => { if (findSt(state, me, uid)) S.deleteStack(state, me, uid, 'trash', 'ownEffect'); } });
+}));
 SC('EX10-027', '등장 시', '자신의 패 1장을 파기하는 것으로', trashToHand({ cat: 'digimon', or: [{ mention: ['나이트몬'] }, { trait: ['바그라군', '트와일라잇'] }] }, true));
 
 // #25 BT22-070
@@ -680,6 +690,14 @@ SC('EX10-066', '자신의 턴 종료 시', '벨페몬', RUN(async (ctx) => {
 
 // #95 BT23-036
 SC('BT23-036', '등장 시', '다른 자신의 디지몬 1마리를 패의 Lv.6 이하의', dpEvo({ subject: { other: true }, zones: ['hand'], card: { lvMax: 6, or: [{ nameInc: ['레오몬'] }, { trait: ['CS'] }] }, cost: { mode: 'free' } }));
+SC('BT23-036', '자신의 턴 종료 시', '《돌진》을 얻는다. 그 후, 그 디지몬으로 어택할 수 있다', RUN(async (ctx) => {
+  // 턴 종료까지, 자신의 디지몬 1마리는 《돌진》을 얻는다. 그 후, 그 디지몬으로 어택할 수 있다.
+  const { state } = ctx, me = ctx.self;
+  const st = await pickStackOf(ctx, me, digimonsOf(state, me), '《돌진》을 얻을 자신의 디지몬 선택 (선택 안 함 가능)');
+  if (!st) return;
+  S.grantKeyword(state, me, st.uid, '돌진', true, 'turn');
+  if (await optional(ctx, me, `${C(st.cardId).nameKo}(으)로 어택`)) ctx.startAttack(me, st.uid);
+}));
 
 // #110 BT23-040
 SC('BT23-040', '자신의 메인 페이즈 개시 시', '미시마 에리카', RUN(async (ctx) => {
@@ -815,6 +833,20 @@ SC('EX10-011', '메인', '이 카드를 지불하는 코스트 -11', RUN(async (
   if (k === -1) return;
   if (cost > 0) S.spendMemory(state, cost);
   S.playFreeFromZone(state, me, 'trash', k, {});
+}));
+
+// EX10-060 등장/진화: 트래시의 「루체몬: 라르바」 1장을 비어 있는 자신의 육성 에어리어에 코스트 없이 등장시키는 것으로, 가장 Lv.이 높은 상대의 디지몬 전부를 소멸
+SC('EX10-060', '등장 시', '비어 있는 자신의 육성 에어리어에', RUN(async (ctx, R) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me];
+  const idx = pl.trash.findIndex(id => C(id).nameKo === '루체몬: 라르바');
+  if (pl.raising || idx === -1 || !(await optional(ctx, me, '트래시의 「루체몬: 라르바」를 육성 에어리어에 등장시키고 가장 Lv.이 높은 상대의 디지몬 전부를 소멸'))) return;
+  const st = S.playFreeFromZone(state, me, 'trash', idx, { noTriggers: true });
+  if (!st) return;
+  pl.battle.splice(pl.battle.indexOf(st), 1); pl.raising = st;
+  S.log(state, `${me} ${C(st.cardId).nameKo} 육성 에어리어에 등장`);
+  S.queueTriggersForStack(state, me, st, 'play');
+  S.emitGameEvent(state, 'play', { owner: me, stack: st, cause: 'effect' });
+  await R.runScript(compileToScript('가장 Lv.이 높은 상대의 디지몬 전부를 소멸시킨다.'), ctx);
 }));
 
 // #46 EX10-012 등장/어택
@@ -1009,6 +1041,22 @@ SC('EX10-053', '자신의 턴 종료 시', '이 디지몬의 진화원이 5장 �
   if (!st || st.sources.length < 5) return;
   if (!(await optional(ctx, me, '이 디지몬으로 레스트시키지 않고 어택'))) return;
   ctx.startAttack(me, st.uid, undefined, { noRest: true, allowSuspended: true });
+}));
+
+// EX10-053 등장/진화: 트래시의 명칭이 서로 다른 「감마몬」 디지몬 5장까지를 이 디지몬의 진화원 아래에 놓을 수 있다. 그 후, 이 디지몬의 DP 이하의 상대의 디지몬 1마리를 소멸시킨다.
+SC('EX10-053', '등장 시', '명칭에 「감마몬」을 포함하고, 명칭이 서로 다른', RUN(async (ctx, R) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me], st = srcSt(ctx);
+  if (!st) return;
+  const cm = M({ cat: 'digimon', nameInc: ['감마몬'] });
+  const ids = [];
+  for (let i = 0; i < 5; i++) {
+    const names = new Set(ids.map(id => C(id).nameKo));
+    const idx = await pickZoneCard(ctx, me, 'trash', (id) => cm(id) && !names.has(C(id).nameKo), `진화원 아래에 놓을 「감마몬」 디지몬 (${i + 1}/5, 명칭 서로 다름, 선택 안 함 가능)`);
+    if (idx == null) break;
+    ids.push(takeFrom(state, me, 'trash', idx));
+  }
+  if (ids.length) placeSources(state, me, st, ids, 'bottom');
+  await R.runScript([{ op: 'destroy', target: 'opponent', mode: 'choose', filter: { dpMaxSelf: true } }], ctx);
 }));
 
 // #82 EX10-056
@@ -1425,6 +1473,26 @@ leaveHook('EX10-052', { tag: '서로의 턴', has: '이 디지몬이 배틀 에�
   S.log(state, `${hp} ${C(holder.cardId).nameKo}: 상대가 소멸시키지 않아 벗어나지 않음`);
   return true;
 } });
+
+// ---- EX10-056 【서로의 턴】[턴 1회] 상대의 디지몬/테이머가 진화했을 때 또는 상대의 디지몬/테이머 아래에 카드가 효과로 놓였을 때 ([턴 1회] = 한 카운터)
+{
+  const key = () => S.onceLimitKey('EX10-056', ['서로의 턴']);
+  const once = (state, hp, holder, info) => {
+    if (info.owner === hp || S.turnUsesRemaining(holder, key(), 1) <= 0) return false;
+    S.markTurnEffectUsed(holder, key());
+    return true;
+  };
+  const placedUnder = (state, hp, holder, info) => info.cause === 'effect' && once(state, hp, holder, info);
+  HK('EX10-056', { tag: '서로의 턴', has: '아래에 카드가 효과로 놓였을 때', events: { digivolve: once, underTamer: placedUnder, sourcesAdded: placedUnder } });
+  SC('EX10-056', '서로의 턴', '이 디지몬의 진화원을 선택하여 2장 파기하는 것으로', RUN(async (ctx) => {
+    const { state } = ctx, me = ctx.self, o = opp(me), st = srcSt(ctx);
+    if (!st || st.sources.length < 2 || !state.players[o].security.length || !(await optional(ctx, me, '이 디지몬의 진화원 2장을 파기하고 상대의 시큐리티 위에서 1장 파기'))) return;
+    const idxs = await pickFromIds(ctx, me, st.sources, () => true, '파기할 진화원 2장 선택', 2);
+    if (idxs.length < 2) return;
+    S.trashEvoSources(state, me, st.uid, 2, 'bottom', idxs);
+    S.trashTopSecurityByEffect(state, o);
+  }));
+}
 
 // ---- #87 EX10-059: gains the 【서로의 턴】 effects of its Lv.6 바그라군 sources
 HK('EX10-059', { tag: '서로의 턴', has: '진화원에 있는 특징 「바그라군」을 가진 Lv.6의 디지몬 카드 전부의 【서로의 턴】 효과 전부를 얻는다', gainTag: '서로의 턴', gainFrom: (id) => { const c = C(id); return c.category === 'digimon' && c.level === 6 && (c.types || []).includes('바그라군'); } });
