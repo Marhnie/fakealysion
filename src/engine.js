@@ -285,7 +285,7 @@ function parseEvoConditions(targetCardId) {
   const conditions = [];
   if (tgt.evoNormal) conditions.push({ ...tgt.evoNormal, raw: tgt.evoNormal.conditionText || '' });
   const text = tgt.effectKo || '';
-  for (const m of text.matchAll(/〔진화〕\s*([^:：\n]+?)\s*[:：]\s*코스트\s*(\d+)/g)) {
+  for (const m of text.matchAll(/〔진화〕\s*((?:「[^」\n]*」|[^:：\n「])+?)\s*[:：]\s*코스트\s*(\d+)/g)) { // 「벨페몬: 슬립 모드」 — a colon inside 「」 is part of the name
     const desc = m[1].trim();
     const cost = Number(m[2]);
     const cond = { cost, raw: desc };
@@ -347,13 +347,17 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
   const srcColors = [...(extraColors.replace || src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과(얻은 색은 그대로 추가)
-  const srcNames = [extraColors.nameReplace || src.nameKo, ...(extraColors.names || [])]; // .nameReplace: 원래 명칭 변경, .names: 「이 디지몬은 …의 명칭 전부를 얻는다」
+  // .names (from S.evoExtraArg -> S.effectiveInfo): every name the stack counts as (원래 명칭 변경 + 〈룰〉 「X」로도 취급 + 「명칭 전부를 얻는다」);
+  // .inclNames: 〈룰〉 「X」를 포함하는 것으로도 취급; .traits: printed 특징(속성/형태 포함) + hook-granted ones. Falls back to the printed card.
+  const srcNames = (extraColors.names && extraColors.names.length) ? extraColors.names : [extraColors.nameReplace || src.nameKo];
+  const srcInclNames = extraColors.inclNames || [];
+  const srcTraits = extraColors.traits || src.types || [];
   let best = null; // 8-1-2-1: several applicable conditions -> the cheapest one
   for (const cond of conditions) {
     if (typeof cond.level === 'number' && src.level !== cond.level) continue;
     if (cond.nameExact && !srcNames.includes(cond.nameExact)) continue;
-    if (cond.nameIncludes && !srcNames.some(n => n.includes(cond.nameIncludes))) continue;
-    if (cond.trait && !(src.types || []).some(t => t.includes(cond.trait))) continue;
+    if (cond.nameIncludes && !srcNames.some(n => n.includes(cond.nameIncludes)) && !srcInclNames.some(n => n.includes(cond.nameIncludes))) continue;
+    if (cond.trait && !srcTraits.some(t => t.includes(cond.trait))) continue;
     if (cond.colors && cond.colors.length) {
       const isAny = cond.colors.length >= 7;
       if (!isAny && !cond.colors.some(c => srcColors.includes(c))) continue;

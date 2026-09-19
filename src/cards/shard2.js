@@ -30,17 +30,7 @@ const untilOppTurnEnd = (state, self) => (state.activePlayer === self ? state.tu
 const causeFor = (ctx, targetP) => (targetP === ctx.self ? 'ownEffect' : 'effect');
 
 // 〈룰〉 명칭 aliases ("「X」로도 취급한다" / "「X」를 포함하는 것으로도 취급한다").
-function aliasInfo(c) {
-  if (c._s2alias) return c._s2alias;
-  const txt = c.effectKo || '';
-  const exact = [c.nameKo], incl = [];
-  for (const m of txt.matchAll(/〈룰〉\s*명칭:\s*([^\n]+)/g)) {
-    const names = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
-    if (/포함하는\s*것으로도/.test(m[1])) incl.push(...names); else exact.push(...names);
-  }
-  for (const m of txt.matchAll(/이\s*(?:카드\/디지몬|카드|디지몬)의\s*명칭은\s*「([^」]+)」(?:으로|로)도\s*취급/g)) exact.push(m[1]);
-  return (c._s2alias = { exact, incl });
-}
+function aliasInfo(c) { return S.cardNameInfo(c.id); } // central parser (state.js cardNameInfo)
 const nameIs = (c, n) => aliasInfo(c).exact.includes(n);
 const nameHas = (c, n) => { const a = aliasInfo(c); return (c.nameKo || '').includes(n) || a.exact.some(x => x.includes(n)) || a.incl.some(x => x.includes(n)); };
 
@@ -255,7 +245,7 @@ function evoInfo(ctx, stack, cardId, instr) {
   const who = instr.who || ctx.self;
   const restr = S.evolveTargetRestriction(state, who, stack);
   if (restr && restr.cannotEvolve) return null;
-  const chk = ctx.E.canEvolveAny(stack.cardId, cardId, stack.extraColors || [], restr);
+  const chk = ctx.E.canEvolveAny(stack.cardId, cardId, S.evoExtraArg(ctx.state, null, stack), restr);
   const printed = chk.ok ? chk.cost : (tgt.evoNormal?.cost ?? 0);
   if (!chk.ok) {
     if (/진화 제한/.test(chk.reason || '')) return null; // "…으로만 진화할 수 있다" still applies
@@ -739,7 +729,7 @@ OPS.s2_playFromSources = async (instr, ctx) => { // EX3-023: from a chosen own D
   const [id] = h.sources.splice(picked[0], 1);
   S.recomputeStackGrants(h);
   pl.trash.push(id);
-  const st = S.playFreeFromZone(state, who, 'trash', pl.trash.length - 1, {});
+  const st = S.playFreeFromZone(state, who, 'trash', pl.trash.length - 1, { fromSources: true });
   if (st) S.emitGameEvent(state, 'playFromSources', { owner: who, stack: st, cause: 'effect', level: C(st.cardId).level });
 };
 OPS.s2_tokens = async (instr, ctx) => {
@@ -1039,6 +1029,23 @@ SCRIPTS['EX3-013::등장 시'] = [{ op: 's2_placeUnder', zones: ['hand', 'trash'
   pred: (c) => hasTrait(c, '사이보그형') && c.level === 5 && ((c.colors || []).includes('red') || (c.colors || []).includes('black')) }, { op: 's2_retreatPlaced' }];
 SCRIPTS['EX3-023::진화 시'] = [{ op: 's2_playFromSources', holderPred: (s) => hasColor(s, 'blue'), pred: (c) => c.category === 'digimon' && ((hasTraitIncl(c, '수생') && (c.level || 0) <= 4) || ((c.colors || []).includes('blue') && c.level === 3)) },
   { op: 's2_placeUnder', zones: ['hand'], pred: (c) => c.category === 'digimon' && (c.colors || []).includes('blue'), prompt: '이 디지몬의 진화원 아래에 놓을 블루 디지몬 카드' }];
+// EX3-015 크랩몬: 블루 자신 디지몬 1마리 《재밍》(턴 종료까지); 진화원에서 등장했었다면 패의 블루 Lv.5 이하 디지몬을 '그 디지몬'(=재밍 받은 디지몬)의 진화원 맨 아래에.
+OPS.s2_crabmonPlay = async (instr, ctx) => {
+  const { state } = ctx; const who = ctx.self;
+  const cands = digimonStacks(state, who).filter(s => hasColor(s, 'blue'));
+  const me = thisStackOf(ctx);
+  const target = await pickStackOf(ctx, who, cands, '《재밍》을 얻을 블루 디지몬 선택');
+  if (!target) return;
+  S.grantKeyword(state, who, target.uid, '재밍', undefined, 'turn');
+  if (!(me && me.playedFromSources)) return;
+  const entries = await pickFromZones(ctx, who, ['hand'], (c) => c.category === 'digimon' && (c.colors || []).includes('blue') && (c.level || 0) <= 5, { max: 1, min: 0, prompt: '진화원 아래에 놓을 블루 Lv.5 이하 디지몬 카드 (선택 사항)' });
+  if (!entries.length) return;
+  const ids = takeEntries(state, who, entries);
+  target.sources.unshift(...ids);
+  S.recomputeStackGrants(target);
+  S.log(state, `${who} ${ids.map(id => C(id).nameKo).join(', ')}을(를) ${C(target.cardId).nameKo}의 진화원 아래에 놓음`);
+};
+SCRIPTS['EX3-015::등장 시'] = [{ op: 's2_crabmonPlay' }];
 SCRIPTS['EX3-024::상대의 메인 페이즈 개시 시'] = [{ op: 's2_costRest', pred: (c) => nameHas(c, '드라몬') || nameHas(c, '엑자몬'), then: [{ op: 's2_forceOppAttack' }] }];
 const trial = [{ op: 's2_placeTrial' }];
 for (const k of ['EX3-025::소멸 시', 'EX3-036::소멸 시', 'EX3-064::소멸 시', 'EX3-033::진화 시', 'EX3-034::진화 시']) SCRIPTS[k] = trial;
@@ -1129,10 +1136,12 @@ const xGuard = { preventLeave: (s, hp, h, t, tp, cause, mode) => {
 hki('BT11-062', '서로의 턴', '소멸하지 않고', xGuard);
 hki('BT11-064', '서로의 턴', '소멸하지 않고', xGuard);
 hk('RB1-016', '서로의 턴', '젤리몬', { preventLeave: (s, hp, h, t, tp, cause, mode, id) => {
-  if (mode !== 'delete' || !hasColor(t, 'blue') || C(t.cardId).category !== 'digimon' || !onceOk(h, id)) return false;
+  // shares the once-per-turn key with state.js's generic trySurviveByPrintedAbility (which already parses this same printed text) so the two can't stack
+  const k = S.onceLimitKey(id, ['서로의 턴']);
+  if (mode !== 'delete' || !hasColor(t, 'blue') || C(t.cardId).category !== 'digimon' || S.turnUsesRemaining(h, k, 1) <= 0) return false;
   if (s.players[tp].trash.filter(x => jelly(C(x))).length < 3) return false;
   if (!askUser(`${C(h.cardId).nameKo}: 트래시의 「젤리몬」 3장을 덱 아래로 되돌리고 ${C(t.cardId).nameKo}이(가) 소멸하지 않게 할까요?`)) return false;
-  onceMark(h, id); takeFromTrashToDeck(s, tp, jelly, 3); return true; } });
+  S.markTurnEffectUsed(h, k); takeFromTrashToDeck(s, tp, jelly, 3); return true; } });
 // "소멸할 때" side effect (BT12-072) / leaving the area (BT14-018): queue the segment's script
 hk('BT12-072', '서로의 턴', '소멸할 때', { onLeave: (s, hp, h) => onceOk(h, 'BT12-072') && (onceMark(h, 'BT12-072'), true) });
 hk('BT12-072', '서로의 턴', '진화원에 있는', {});

@@ -31,6 +31,17 @@ export async function loadData() {
   for (const c of Object.values(CARDS)) {
     if (c.category === 'digimon' && APPMON_ATTR.has(c.attribute) && !(c.types || []).includes('어플몬')) c.types = [...(c.types || []), '어플몬'];
   }
+  // 2-3-3: a Digimon's 특징 are its 유형 AND its 속성 (백신종/데이터종/바이러스종/프리/…) AND its 형태 (하이브리드체/아머체/…).
+  // The data keeps 속성/형태 in separate columns; fold them into `types` (the one trait list every trait check reads) so
+  // "특징에 「데이터종」/「하이브리드체」를 가진" style checks count them everywhere.
+  const FORM_KO = { IN_TRAINING: '유년기', ROOKIE: '성장기', CHAMPION: '성숙기', ULTIMATE: '완전체', MEGA: '궁극체', HYBRID: '하이브리드체', ARMOR: '아머체' };
+  for (const c of Object.values(CARDS)) {
+    if (c.category !== 'digimon') continue;
+    const add = [];
+    if (c.attribute && c.attribute !== 'NO DATA') add.push(c.attribute);
+    if (FORM_KO[c.form]) add.push(FORM_KO[c.form]);
+    for (const t of add) if (!(c.types || []).includes(t)) c.types = [...(c.types || []), t];
+  }
   // s6: "〈룰〉특징: 유형 「수생형」을 가진다." — a printed rule line that adds traits to the card itself.
   for (const c of Object.values(CARDS)) {
     const text = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
@@ -323,7 +334,7 @@ export function parseWatcherTrigger(body) {
       const desc = mm[1].replace(/다른\s*$/, (x) => { other = true; return ''; }).trim();
       if (desc) { const pr = evoTargetPredicate(desc); if (!pr) return null; subjPred = (c) => pr(c); }
     } else if ((mm = rest.match(/^(다른\s*)?자신의\s*「([^」]+)」$/))) {
-      who = 'own'; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => c.nameKo === nm;
+      who = 'own'; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => cardNameIs(c, nm);
     } else if ((mm = rest.match(/^(다른\s*)?「([^」]+)」$/))) {
       who = 'any'; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => c.nameKo.includes(nm);
     } else if (/^(다른\s*)?디지몬$/.test(rest)) {
@@ -588,12 +599,12 @@ function redirectCandidatePredicate(q) {
   if ((m = q.match(/특징(?:으로|에|은)?\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*(가진|가지고|포함하는)/))) {
     const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
     const incl = m[2] === '포함하는';
-    preds.push(st => (card(st.cardId).types || []).some(ty => list.some(x => incl ? ty.includes(x) : ty === x)));
+    preds.push((st, state) => list.some(x => effectiveInfo(state, st).hasTrait(x, incl)));
     q = q.replace(m[0], '');
   }
   if ((m = q.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) {
     const list = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
-    preds.push(st => list.some(x => card(st.cardId).nameKo.includes(x)));
+    preds.push((st, state) => { const ef = effectiveInfo(state, st); return list.some(x => ef.nameHas(x)); });
     q = q.replace(m[0], '');
   }
   if ((m = q.match(/((?:「[^」]+」\/?)+)\s*(?:이|가)\s*기술되어\s*있는/))) {
@@ -602,7 +613,7 @@ function redirectCandidatePredicate(q) {
     q = q.replace(m[0], '');
   }
   if (q.replace(/[\s,]/g, '') || !preds.length) return null; // leftover text = something we don't understand
-  return st => preds.every(f => f(st));
+  return (st, state) => preds.every(f => f(st, state));
 }
 
 // True when `body` is a defender-side attack-redirect reaction that
@@ -643,7 +654,7 @@ export function findRedirectOptions(state, p, attackerP, attackerUid) {
           const am = rest.match(/^상대(?:의)?\s*디지몬이\s*어택했을\s*때,?\s*어택\s*(?:의)?\s*대상을\s*(.*?)\s*자신(?:의)?\s*디지몬\s*\d+\s*마리로\s*변경(?:할\s*수\s*있다|한다)\.?$/);
           const pred = am ? redirectCandidatePredicate(am[1]) : null;
           if (!pred) continue;
-          targets = pl.battle.filter(s => card(s.cardId).category === 'digimon' && pred(s)).map(s => s.uid);
+          targets = pl.battle.filter(s => card(s.cardId).category === 'digimon' && pred(s, state)).map(s => s.uid);
           if (!targets.length) continue;
         }
         if (limit != null) {
@@ -1062,6 +1073,57 @@ export function stackColors(stack) {
 }
 export function stackBaseName(stack) { return (stack.extraColors && stack.extraColors.nameReplace) || card(stack.cardId).nameKo; }
 
+// ---- central "effective card info" (2-3-1 명칭, 2-3-2 색, 2-3-3 특징) ----
+// ONE place that answers "what name(s)/colors/traits/level/type does this card / stack currently count as?".
+// Card level: 〈룰〉 명칭 lines ("「X」로도 취급한다" = another exact name, "「X」를 포함하는 것으로도 취급한다" = counts as
+// containing X) parsed once per card. Data-level traits (`types`) already carry 속성/형태/〈룰〉특징 (see loadData).
+// Stack level: 원래 명칭/색 변경 (baseOv, later timestamp wins), gained colors, hook-granted names/traits
+// (BT17-102 명칭 전부, EX7-010 「3총사」 …), 디지몬으로도 취급 (BT12-092 / BT13-008).
+const _nameInfoCache = new Map();
+export function cardNameInfo(id) {
+  if (_nameInfoCache.has(id)) return _nameInfoCache.get(id);
+  const c = card(id);
+  const exact = [c.nameKo], incl = [];
+  const txt = c.effectKo || '';
+  for (const m of txt.matchAll(/〈룰〉\s*명칭\s*[:：]\s*([^\n]+)/g)) {
+    const names = [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]);
+    if (/포함하는\s*것으로도/.test(m[1])) incl.push(...names); else exact.push(...names);
+  }
+  for (const m of txt.matchAll(/이\s*(?:카드\/디지몬|카드|디지몬)의\s*명칭은\s*「([^」]+)」(?:으로|로)도\s*취급/g)) exact.push(m[1]);
+  const info = { exact: [...new Set(exact)], incl: [...new Set(incl)] };
+  if (CARDS[id]) _nameInfoCache.set(id, info);
+  return info;
+}
+// Every exact name a printed card counts as (own name + 〈룰〉 aliases).
+export function cardNames(id) { return cardNameInfo(id).exact; }
+// "명칭이 「n」" (exact) / "명칭에 「n」을 포함" (substring; also true through 〈룰〉 포함 aliases) for a printed card id or card object.
+export function cardNameIs(idOrCard, n) { return cardNameInfo(typeof idOrCard === 'string' ? idOrCard : idOrCard.id).exact.includes(n); }
+export function cardNameHas(idOrCard, n) { const i = cardNameInfo(typeof idOrCard === 'string' ? idOrCard : idOrCard.id); return i.exact.some(x => x.includes(n)) || i.incl.some(x => x.includes(n)); }
+export function ownerOfStack(state, stack) {
+  for (const p of ['p1', 'p2']) { const pl = state.players[p]; if (pl.raising === stack || pl.battle.includes(stack)) return p; }
+  return null;
+}
+export function effectiveInfo(state, stack, p = null) {
+  const c = card(stack.cardId);
+  p = p || ownerOfStack(state, stack);
+  const ex = stack.extraColors || [];
+  const base = cardNameInfo(stack.cardId);
+  const exact = [...new Set([ex.nameReplace || c.nameKo, ...base.exact.slice(1), ...(p ? hookStackNames(state, p, stack) : [])])];
+  const incl = base.incl.slice();
+  const traits = [...new Set([...(c.types || []), ...(p ? hookStackTypes(state, p, stack) : [])])];
+  const asDigimon = !!stack.s2AsDigimon;
+  const category = c.category;
+  const info = {
+    cardId: stack.cardId, category, categories: asDigimon && category !== 'digimon' ? [category, 'digimon'] : [category],
+    level: c.level ?? null, colors: stackColors(stack), names: exact, inclNames: incl, traits,
+    nameIs: (n) => exact.includes(n),
+    nameHas: (n) => exact.some(x => x.includes(n)) || incl.some(x => x.includes(n)),
+    hasTrait: (t, includes = false) => traits.some(x => includes ? x.includes(t) : x === t),
+    isCategory: (k) => info.categories.includes(k),
+  };
+  return info;
+}
+
 const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '진격', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계', '빙장', '충돌', '트레이닝', '볼텍스', '에그제큐트', '천승', '수호', '급습', '프로그레스'];
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
@@ -1459,15 +1521,21 @@ function parseLinkGrant(sourceCardId) {
 // link-granting evolution source it has accumulated so far.
 // 10-1-1/10-1-3-1: the Link condition + Link cost are printed on the card BEING LINKED (its own "링크: <조건>: 코스트 N"
 // line); the chosen Digimon must satisfy that condition. Returns { ok, cost, reason }.
-export function linkCheck(state, p, host, linkCardId) {
+export function linkCheck(state, p, host, linkCardId, opts = null) {
   const lc = card(linkCardId);
   if (!host || card(host.cardId).category !== 'digimon') return { ok: false, reason: '링크 대상은 디지몬이어야 함 (10-1-1)' };
-  if (lc.category !== 'digimon') return { ok: false, reason: '링크 능력이 없는 카드' };
+  if (lc.category !== 'digimon' && !(opts && opts.allowOption && lc.category === 'option')) return { ok: false, reason: '링크 능력이 없는 카드' }; // s8: 효과로 링크되는 링크 옵션(ST22/BT24/BT25 TS 옵션)
   const g = parseLinkGrant(linkCardId);
   if (!g) return { ok: false, reason: '링크 조건이 없는 카드' };
   const pr = evoTargetPredicate(g.conditionText);
   if (pr && !pr(card(host.cardId))) return { ok: false, reason: `링크 조건 불일치 (${g.conditionText})` };
   return { ok: true, cost: g.cost };
+}
+
+// 4-9-5: link cap = 1 + inherited ≪링크+N≫ + the top card's own printed ≪링크 +N≫ (s8: e.g. BT26-086 단테몬 《링크 +6》)
+function linkCapOf(stack) {
+  const own = (String(card(stack.cardId)?.effectKo || '').match(/[《≪]\s*링크\s*\+\s*(\d+)\s*[》≫]/g) || []).reduce((n, t) => n + Number(t.match(/(\d+)/)[1]), 0);
+  return 1 + (stack.inheritedKeywords?.['링크+'] || 0) + own;
 }
 
 export function availableLinkSlots(stack) {
@@ -1503,7 +1571,7 @@ export async function linkDiscardIdx(state, p, uid, choose) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack || !(stack.linkCards || []).length) return undefined;
-  const cap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
+  const cap = linkCapOf(stack);
   if (stack.linkCards.length < cap) return undefined;
   if (stack.linkCards.length === 1 || typeof choose !== 'function') return 0;
   const i = await choose('pickLinkCard', { player: p, ids: stack.linkCards.map(l => l.cardId), prompt: `링크 상한 초과 — 파기할 기존 링크 카드를 선택하세요 (룰 4-9-5)` });
@@ -1519,7 +1587,7 @@ export function linkCardTo(state, p, uid, linkCardId, grantedBySourceId, cost, s
   // ≪링크+N≫), not one per granting source. Exceeding it discards existing
   // link card(s) to make room — the rulebook has the player choose which;
   // there's no picker UI yet, so this discards oldest-attached first.
-  const cap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
+  const cap = linkCapOf(stack);
   while (stack.linkCards.length >= cap && stack.linkCards.length > 0) {
     const [old] = stack.linkCards.splice(Number.isInteger(discardIdx) && discardIdx >= 0 && discardIdx < stack.linkCards.length ? discardIdx : 0, 1);
     discardIdx = undefined;
@@ -1650,14 +1718,14 @@ function ruleCheckDP(state, p, stack) {
   const pl = state.players[p];
   if (!pl.battle.includes(stack)) return; // rule applies to the battle area only, not the raising area
   // 17-1-3-2-5: Link Cards beyond the Link cap (e.g. the ≪링크+N≫ source is gone) are discarded (no deletion).
-  const linkCap = 1 + (stack.inheritedKeywords?.['링크+'] || 0);
+  const linkCap = linkCapOf(stack);
   while ((stack.linkCards || []).length > linkCap) { const ex = stack.linkCards.pop(); pl.trash.push(ex.cardId); log(state, `${p} ${card(ex.cardId).nameKo} 링크 상한 초과로 파기 (17-1-3-2-5)`); }
   // 17-1-3-2-6 / 17-1-3-2-7: Link Cards whose printed Link condition the host no longer meets, or whose category
   // isn't the linkable one (Digimon), are discarded. Conservative: only when the condition parses to a predicate.
   if ((stack.linkCards || []).length && card(stack.cardId).category === 'digimon') {
     for (const l of [...stack.linkCards]) {
-      let bad = card(l.cardId).category !== 'digimon';
-      if (!bad) { const g = parseLinkGrant(l.cardId); const pr = g && evoTargetPredicate(g.conditionText); bad = !!pr && !pr(card(stack.cardId)); }
+      let bad = card(l.cardId).category !== 'digimon' && !(card(l.cardId).category === 'option' && parseLinkGrant(l.cardId)); // ST22/BT24 링크 옵션 (효과로 링크됨) 은 파기하지 않음
+      if (!bad && !l.ignoreCond) { const g = parseLinkGrant(l.cardId); const pr = g && evoTargetPredicate(g.conditionText); bad = !!pr && !pr(card(stack.cardId)); }
       if (!bad) continue;
       stack.linkCards.splice(stack.linkCards.indexOf(l), 1);
       if (!CARDS[l.cardId]?.isToken) pl.trash.push(l.cardId);
@@ -1879,7 +1947,7 @@ function evoTargetPredicate(desc) {
     }
     if ((m = c.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함/))) {
       const list = quoted(m[1]);
-      cons.push(t => list.some(x => t.nameKo.includes(x)));
+      cons.push(t => list.some(x => cardNameHas(t, x)));
     }
     if ((m = c.match(/((?:「[^」]+」\/?)+)\s*(?:이|가)\s*기술되어/))) {
       const list = quoted(m[1]);
@@ -1890,11 +1958,11 @@ function evoTargetPredicate(desc) {
       const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]);
       cons.push(t => (t.colors || []).some(x => cols.includes(x)));
     }
-    if ((m = stripped.match(/Lv\.(\d+)/))) { const lv = Number(m[1]); cons.push(t => t.level === lv); }
+    if ((m = stripped.match(/Lv\.\s*(\d+)\s*(이상|이하)?/))) { const lv = Number(m[1]); cons.push(m[2] === '이상' ? (t => (t.level || 0) >= lv) : m[2] === '이하' ? (t => t.level != null && t.level <= lv) : (t => t.level === lv)); }
     if (/다색|2색/.test(stripped)) cons.push(t => (t.colors || []).length >= 2);
     if (!cons.length && (m = c.match(/^((?:「[^」]+」\/?)+)$/))) {
       const list = quoted(m[1]);
-      cons.push(t => list.includes(t.nameKo));
+      cons.push(t => list.some(x => cardNameIs(t, x)));
     }
     if (!cons.length) return null;
     preds.push(t => cons.every(f => f(t)));
@@ -2260,11 +2328,11 @@ function parseAssemblyItem(txt, inheritCore) {
   const NL = String.raw`((?:「[^」]+」\/?\s*)+)`;
   let rest = t;
   const take = (re, fn) => { const mm = rest.match(re); if (mm) { atoms.push(fn(names(mm[1]))); rest = rest.replace(mm[0], ' '); } };
-  take(new RegExp(String.raw`명칭에\s*${NL}(?:을|를)?\s*포함`), (l) => (c) => l.some(x => c.nameKo.includes(x)));
+  take(new RegExp(String.raw`명칭에\s*${NL}(?:을|를)?\s*포함`), (l) => (c) => l.some(x => cardNameHas(c, x)));
   take(new RegExp(String.raw`특징에\s*${NL}(?:을|를)?\s*포함`), (l) => (c) => (c.types || []).some(ty => l.some(x => ty.includes(x))));
   take(new RegExp(String.raw`특징(?:으로)?\s*${NL}(?:을|를)?\s*가(?:진|지고)`), (l) => (c) => (c.types || []).some(ty => l.includes(ty)));
   take(new RegExp(String.raw`${NL}(?:의\s*기술이\s*있는|(?:이|가)\s*기술되어\s*있)`), (l) => (c) => l.some(x => c.nameKo.includes(x)));
-  if (!atoms.length && /「/.test(rest)) { const l = names(rest); if (l.length) atoms.push((c) => l.includes(c.nameKo)); }
+  if (!atoms.length && /「/.test(rest)) { const l = names(rest); if (l.length) atoms.push((c) => l.some(x => cardNameIs(c, x))); }
   let lvTest = null;
   if ((m = t.match(/Lv\.\s*(\d+)\s*(이하|이상)?/))) { const n = Number(m[1]); lvTest = m[2] === '이하' ? (c) => c.level != null && c.level <= n : m[2] === '이상' ? (c) => c.level != null && c.level >= n : (c) => c.level === n; }
   let colTest = null;
@@ -2369,7 +2437,7 @@ export function planDigiXros(state, p, handIndex, ask = null, cardIdOverride = n
   const usedHand = new Set(handIndex != null && zone === 'hand' ? [handIndex] : []), usedStacks = new Set(), materials = [];
   const extras = [];
   for (const { hp, holder, d } of activeHooks(state)) if (hp === p && d.xrosExtra && !holder.suspended) { const e = d.xrosExtra(state, hp, holder, cardId); if (e) extras.push({ holder, underLeft: e.under ?? 0, trashLeft: e.trash ?? 0 }); }
-  const matches =(req, c) => req.name ? (c.nameKo === req.name && (!req.color || (c.colors || []).includes(req.color)))
+  const matches =(req, c) => req.name ? (cardNameIs(c, req.name) && (!req.color || (c.colors || []).includes(req.color)))
     : req.keyword ? (c.category === 'digimon' && `${c.effectKo || ''}
 ${c.inheritedKo || ''}`.includes(`《${req.keyword}`))
     : (c.category === 'digimon' && (c.types || []).some(t => req.traits.some(x => req.includes ? t.includes(x) : t === x)));
@@ -2498,6 +2566,7 @@ export function playFreeFromZone(state, p, zone, index, opts = {}) {
   if (opts.rested) stack.suspended = true;
   if (opts.viaKw) stack.playedByKw = opts.viaKw; // 《디코드》/《파티션》: "…로 등장했었다면" (EX11-058)
   stack.playedByEffect = true; // "이 디지몬이 효과로 등장하고 있었다면" (BT15-022)
+  if (opts.fromSources) stack.playedFromSources = true; // "진화원에서 등장하고 있었다면" (EX3-015)
   if ((opts.materials || []).length) { // 7-2-2-13: an effect-driven play may DigiXros too (materials chosen by the caller via planDigiXros)
     stack.xrosCount = placeXrosMaterials(state, p, stack, [...opts.materials].reverse());
     for (const tu of opts.restTamers || []) restStack(state, p, tu);
@@ -2541,6 +2610,7 @@ export function optionColorOk(state, p, cardId) {
   if (!cond) return true;
   if (/앞면(?:인|의)?\s*시큐리티가\s*없는/.test(cond)) return true; // face-up security isn't modelled: none exist
   const dm = cond.match(/^(.*?)\s*자신의\s*(?:디지몬|테이머)(?:이|가)\s*있는$/);
+  if (dm && !dm[1].trim()) { const cat = /테이머/.test(cond) ? 'tamer' : 'digimon'; return stacks.some(st => st !== pl.raising && card(st.cardId).category === cat); } // bare "자신의 테이머/디지몬이 있는 동안"
   if (dm) { const pr = evoTargetPredicate((dm[1].trim() + ' 가진').replace(/\s*(?:를|을)\s*가진$/, ' 가진')); return !pr || stacks.some(st => st !== pl.raising && pr(card(st.cardId))); } // 3-4-7-8: an effect that doesn't name the breeding area can't see its card
   return true;
 }
@@ -2774,11 +2844,11 @@ function parseJogressSide(desc) {
   const cons = [];
   let m, rest = desc;
   const quoted = (str) => [...str.matchAll(/「([^」]+)」/g)].map(x => x[1]);
-  if ((m = rest.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
+  if ((m = rest.match(/명칭에\s*((?:「[^」]+」\/?)+)\s*(?:을|를)?\s*포함하는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => cardNameHas(c, x))); rest = rest.replace(m[0], ''); }
   if ((m = rest.match(/((?:「[^」]+」\/?|\+)+)\s*(?:이|가)\s*기술되어\s*있는/))) { const l = quoted(m[1]); cons.push(c => l.some(x => c.nameKo.includes(x))); rest = rest.replace(m[0], ''); }
   if ((m = rest.match(new RegExp(String.raw`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의)?`)))) { const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]); cons.push(c => (c.colors || []).some(x => cols.includes(x))); rest = rest.replace(m[0], ''); }
   if ((m = rest.match(/Lv\.\s*(\d+)/))) { const lv = Number(m[1]); cons.push(c => c.level === lv); rest = rest.replace(m[0], ''); }
-  if (!cons.length && (m = rest.match(/^「([^」]+)」$/))) { const nm = m[1]; cons.push(c => c.nameKo === nm); rest = ''; }
+  if (!cons.length && (m = rest.match(/^「([^」]+)」$/))) { const nm = m[1]; cons.push(c => cardNameIs(c, nm)); rest = ''; }
   if (!cons.length) return null;
   return c => cons.every(f => f(c));
 }
@@ -2867,8 +2937,8 @@ export function burstCheck(state, p, stack, cardId) {
   if (card(cardId).category !== 'digimon' || card(stack.cardId).category !== 'digimon') return { ok: false, reason: '버스트 진화는 디지몬끼리만 가능' };
   const r = evolveTargetRestriction(state, p, stack);
   if (r && r.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
-  if (card(stack.cardId).nameKo !== b.targetName) return { ok: false, reason: `버스트 진화 대상은 「${b.targetName}」` };
-  const tamers = state.players[p].battle.filter(s => card(s.cardId).category === 'tamer' && card(s.cardId).nameKo === b.tamerName);
+  if (!effectiveInfo(state, stack, p).nameIs(b.targetName)) return { ok: false, reason: `버스트 진화 대상은 「${b.targetName}」` };
+  const tamers = state.players[p].battle.filter(s => card(s.cardId).category === 'tamer' && effectiveInfo(state, s, p).nameIs(b.tamerName));
   if (!tamers.length) return { ok: false, reason: `배틀 에어리어에 「${b.tamerName}」가 없음` };
   return { ok: true, cost: b.cost, tamerUids: tamers.map(t => t.uid) };
 }
@@ -3035,7 +3105,7 @@ function leaveCardPred(desc, anyCategory = false) {
   const rest = desc.replace(traitRe, ' ');
   if (tm) { const l = [...tm[1].matchAll(/「([^」]+)」/g)].map(x => x[1]); cons.push(c => (c.types || []).some(t => l.some(x => t.includes(x)))); }
   const names = [...rest.matchAll(/「([^」]+)」/g)].map(x => x[1]);
-  if (names.length) cons.push(c => names.some(n => c.nameKo.includes(n)));
+  if (names.length) cons.push(c => names.some(n => cardNameHas(c, n)));
   const nameM = !names.length && desc.match(/명칭에\s*「([^」]+)」/);
   const lm = rest.match(/Lv\.\s*(\d+)(\s*이하)?/);
   if (lm) { const lv = Number(lm[1]); cons.push(lm[2] ? (c => c.level != null && c.level <= lv) : (c => c.level === lv)); }
@@ -3094,7 +3164,7 @@ export function playExtractedSources(state, p, plays) {
   for (const { id, kw } of plays || []) {
     const pl = state.players[p];
     pl.trash.push(id); // (it was just taken out of the leaving stack; playFreeFromZone works on a zone)
-    const st = playFreeFromZone(state, p, 'trash', pl.trash.length - 1, { viaKw: kw });
+    const st = playFreeFromZone(state, p, 'trash', pl.trash.length - 1, { viaKw: kw, fromSources: true });
     if (st) log(state, `${p} 《${kw}》 — ${card(id).nameKo}을(를) 진화원에서 코스트 없이 등장`);
   }
 }
@@ -3109,7 +3179,7 @@ function materialSaveOptions(state, p, stack) {
   const xr = parseDigiXros(stack.cardId);
   const tamers = state.players[p].battle.filter(s => card(s.cardId).category === 'tamer');
   if (!xr || !tamers.length) return [];
-  const matches = (req, cd) => req.name ? (cd.nameKo === req.name && (!req.color || (cd.colors || []).includes(req.color)))
+  const matches = (req, cd) => req.name ? (cardNameIs(cd, req.name) && (!req.color || (cd.colors || []).includes(req.color)))
     : req.keyword ? (cd.category === 'digimon' && `${cd.effectKo || ''}\n${cd.inheritedKo || ''}`.includes(`《${req.keyword}`))
     : (cd.category === 'digimon' && (cd.types || []).some(t => req.traits.some(x => req.includes ? t.includes(x) : t === x)));
   const eligible = [];
@@ -3256,7 +3326,7 @@ function surviveCost(text) {
     let mm;
     if (/^Lv\.이\s*같은\s*카드$/.test(desc)) match = (id, h) => card(id).level === card(h.cardId).level;
     else if ((mm = desc.match(/^Lv\.(\d+)(?:인|의)?\s*(디지몬|옵션)?\s*카드$/))) match = (id) => card(id).level === Number(mm[1]) && (!mm[2] || card(id).category === (mm[2] === '옵션' ? 'option' : 'digimon'));
-    else if ((mm = desc.match(/^「([^」]+)」$/))) match = (id) => card(id).nameKo === mm[1];
+    else if ((mm = desc.match(/^「([^」]+)」$/))) match = (id) => cardNameIs(id, mm[1]);
     else if ((mm = desc.match(/^특징(?:으로)?\s*((?:「[^」]+」\/?)+)\s*를\s*가진\s*카드$/))) { const l = [...mm[1].matchAll(/「([^」]+)」/g)].map(x => x[1]); match = (id) => (card(id).types || []).some(t => l.includes(t)); }
     else if (desc === '옵션 카드') match = (id) => card(id).category === 'option';
     else if (desc === '디지몬 카드') match = (id) => card(id).category === 'digimon';
@@ -3368,9 +3438,9 @@ export function parseSurviveAbility(body) {
     costText = cc[2];
     let c;
     if ((c = cc[1].match(/^자신의\s*시큐리티가\s*(\d+)\s*장\s*(이상|이하)이?라면$/))) { const n = Number(c[1]), ge = c[2] === '이상'; cond = (st, p) => ge ? st.players[p].security.length >= n : st.players[p].security.length <= n; }
-    else if ((c = cc[1].match(/^이\s*디지몬이\s*「([^」]+)」(?:이)?라면$/))) cond = (st, p, h) => card(h.cardId).nameKo === c[1];
-    else if ((c = cc[1].match(/^이\s*디지몬의\s*진화원에\s*((?:「[^」]+」\/?)+)(?:이|가)\s*있다면$/))) { const l = [...c[1].matchAll(/「([^」]+)」/g)].map(x => x[1]); cond = (st, p, h) => h.sources.some(id => l.some(n => card(id).nameKo.includes(n) || (card(id).types || []).includes(n))); }
-    else if ((c = cc[1].match(/^이\s*디지몬의\s*진화원에\s*명칭에\s*「([^」]+)」을?\s*포함하는\s*카드가\s*있다면$/))) cond = (st, p, h) => h.sources.some(id => card(id).nameKo.includes(c[1]));
+    else if ((c = cc[1].match(/^이\s*디지몬이\s*「([^」]+)」(?:이)?라면$/))) cond = (st, p, h) => effectiveInfo(st, h, p).nameIs(c[1]);
+    else if ((c = cc[1].match(/^이\s*디지몬의\s*진화원에\s*((?:「[^」]+」\/?)+)(?:이|가)\s*있다면$/))) { const l = [...c[1].matchAll(/「([^」]+)」/g)].map(x => x[1]); cond = (st, p, h) => h.sources.some(id => l.some(n => cardNameHas(id, n) || (card(id).types || []).includes(n))); }
+    else if ((c = cc[1].match(/^이\s*디지몬의\s*진화원에\s*명칭에\s*「([^」]+)」을?\s*포함하는\s*카드가\s*있다면$/))) cond = (st, p, h) => h.sources.some(id => cardNameHas(id, c[1]));
     else return null;
   }
   const cost = surviveCost(costText);
@@ -3401,7 +3471,7 @@ function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
         if (ab.mode === 'self') { if (holder !== protectedStack || !ab.pred(holder)) continue; }
         else {
           if (ab.other && holder === protectedStack) continue;
-          if (ab.nameEq && card(protectedStack.cardId).nameKo !== ab.nameEq) continue;
+          if (ab.nameEq && !effectiveInfo(state, protectedStack, p).nameIs(ab.nameEq)) continue;
           if (!ab.nameEq && !ab.pred(protectedStack)) continue;
         }
         if (!ab.cond(state, p, holder, protectedStack)) continue;
@@ -3569,7 +3639,7 @@ function deleteStackCore(state, p, uid, toZone, cause) {
   const peek = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (peek && (cause === 'effect' || cause === 'ownEffect') && effectBlocked(state, p, peek, 'delete', cause)) { log(state, `${p} ${card(peek.cardId).nameKo}는 상대의 효과로 소멸하지 않음`); return null; }
   if (peek && cause === 'battle' && s1BattleDeleteBlocked(state)) { log(state, `${p} ${card(peek.cardId).nameKo}는 이 턴 배틀로 소멸하지 않음`); return null; } // shard1
-  if (peek && s1Flag(state, peek, 'noEffectDelete') && cause === 'effect') { log(state, `${p} ${card(peek.cardId).nameKo}는 효과로 소멸하지 않음`); return null; } // shard1
+  if (peek && s1Flag(state, peek, 'noEffectDelete') && (cause === 'effect' || cause === 'ownEffect')) { log(state, `${p} ${card(peek.cardId).nameKo}는 효과로 소멸하지 않음`); return null; } // shard1
   // 18-2 replacement attempts, in priority order; each candidate (every decoy holder, every sacrifice, every keyword, every printed ability,
   // every hook) is its own numbered attempt so the player can choose among them (see the REPL block above).
   if (peek) {
@@ -4116,8 +4186,8 @@ export function evoExtraArg(state, p, stack) {
   const a = [...(stack.extraColors || [])];
   if (stack.extraColors && stack.extraColors.replace) a.replace = stack.extraColors.replace;
   if (stack.extraColors && stack.extraColors.nameReplace) a.nameReplace = stack.extraColors.nameReplace;
-  const n = hookStackNames(state, p, stack);
-  if (n.length) a.names = n;
+  const info = effectiveInfo(state, stack, p); // central accessor: 〈룰〉 aliases + hook-granted names/traits + 원래 명칭 변경
+  a.names = info.names; a.inclNames = info.inclNames; a.traits = info.traits;
   return a;
 }
 export function hookUseOnce(holder, id, d, limit = 1) {

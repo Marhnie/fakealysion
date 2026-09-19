@@ -35,7 +35,7 @@ function ruleOf(id) {
     for (const m of line.matchAll(/명칭\s*[:：]\s*「([^」]+)」/g)) names.push(m[1]);
     for (const m of line.matchAll(/(?:유형|특징)\s*[:：]?\s*「([^」]+)」/g)) types.push(m[1]);
   }
-  return (_rule[id] = { names, types });
+  return (_rule[id] = { names: S.cardNames(id).slice(1), types }); // names: central parser (state.js cardNameInfo)
 }
 const typesOf = (id) => [...(C(id).types || []), ...ruleOf(id).types];
 const namesOf = (id) => [C(id).nameKo, ...ruleOf(id).names];
@@ -176,7 +176,7 @@ function evoCheck(ctx, st, cardId, o = {}) {
     const rc = E.evoRestrictionCheck(cardId, S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
     return rc.ok ? { ok: true, cost: (C(cardId).evoNormal && C(cardId).evoNormal.cost) || 0 } : rc;
   }
-  const r = E.canEvolveAny(st.cardId, cardId, st.extraColors || [], S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
+  const r = E.canEvolveAny(st.cardId, cardId, S.evoExtraArg(ctx.state, null, st), S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
   if (r.ok || !o.ignoreLevel) return r;
   // ignore the Lv. requirement: accept when the colour of the normal condition matches
   const tgt = C(cardId);
@@ -445,8 +445,7 @@ SCRIPTS['BT24-029::등장 시'] = [F(async (ctx) => {
 SCRIPTS['BT24-031::어택 시'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const pl = state.players[self];
-  if (!pl.security.length || !(await confirm(ctx, '시큐리티 위 1장을 패에 추가할까요?'))) return;
-  secToHand(state, self, 0);
+  if (pl.security.length && (await confirm(ctx, '시큐리티 위 1장을 패에 추가할까요?'))) secToHand(state, self, 0);
   if (pl.security.length === 0) S.recoverTopOfDeckToSecurity(state, self);
 })];
 SCRIPTS['BT24-038::등장 시'] = [F(async (ctx) => {
@@ -1366,7 +1365,6 @@ SCRIPTS['AD1-011::진화 시'] = [F(async (ctx) => {
 H('AD1-012', { tag: '상대의 턴', has: '조그레스', limit: 1, events: { attack: (state, hp, holder, info) => info.owner !== hp } });
 SCRIPTS['AD1-012::상대의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
-  if (!(await confirm(ctx, '자신의 디지몬 2마리로 「오메가몬 Alter-S」로 조그레스 진화할까요?'))) return;
   const f = await jogressFromHand(ctx, self, (id) => nameIs(id, '오메가몬 Alter-S'));
   const pa = ctx.attack && ctx.attack();
   if (!pa || !pa.targetKind) return;

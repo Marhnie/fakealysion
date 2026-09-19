@@ -116,7 +116,7 @@ function evoCands(ctx, o) {
     }
   }
   return raw.filter(c => C(c.id).category === 'digimon' && (!o.pred || o.pred(C(c.id), c.id))
-    && (o.ignoreCond ? E.evoRestrictionCheck(c.id, restr).ok : E.canEvolveAny(st.cardId, c.id, st.extraColors || [], restr).ok));
+    && (o.ignoreCond ? E.evoRestrictionCheck(c.id, restr).ok : E.canEvolveAny(st.cardId, c.id, S.evoExtraArg(state, null, st), restr).ok));
 }
 async function evolveInto(ctx, o) {
   const { state, E } = ctx;
@@ -144,7 +144,7 @@ async function evolveInto(ctx, o) {
   }
   if (!pick) return null;
   const restr = S.evolveTargetRestriction(state, who, st);
-  const chk = E.canEvolveAny(st.cardId, pick.id, st.extraColors || [], restr);
+  const chk = E.canEvolveAny(st.cardId, pick.id, S.evoExtraArg(state, null, st), restr);
   const printed = chk.ok ? chk.cost : (C(pick.id).evoNormal?.cost ?? 0);
   const m = o.cost || { mode: 'printed' };
   let cost = m.mode === 'free' ? 0 : m.mode === 'fixed' ? m.n : m.mode === 'discount' ? Math.max(0, printed - m.n) : printed;
@@ -175,10 +175,12 @@ async function playDiscounted(ctx, pred, discount, prompt) {
   return S.playDigimonFresh(state, who, idx);
 }
 
+// a card can only be jogress-evolved into when it actually has a 〔조그레스〕 line (S.canJogress is permissive for cards without one)
+const hasJogLine = (id) => /〔조그레스〕/.test(C(id).effectKo || '');
 // jogress: A fixed (optional) + partner, with a hand card
 async function jogress(ctx, o) {
   const { state } = ctx, who = ctx.self, pl = state.players[who];
-  const okCards = (a, b) => pl.hand.map((id, i) => i).filter(i => C(pl.hand[i]).category === 'digimon' && o.cardPred(C(pl.hand[i])) && S.canJogress(a, b, pl.hand[i]).ok);
+  const okCards = (a, b) => pl.hand.map((id, i) => i).filter(i => C(pl.hand[i]).category === 'digimon' && hasJogLine(pl.hand[i]) && o.cardPred(C(pl.hand[i])) && S.canJogress(a, b, pl.hand[i]).ok);
   const pool = digs(state, who);
   const pairs = [];
   for (const a of (o.a ? [o.a] : pool)) for (const b of pool) if (a !== b && (o.a || pool.indexOf(a) < pool.indexOf(b)) && okCards(a, b).length) pairs.push([a, b]);
@@ -201,7 +203,7 @@ async function jogress(ctx, o) {
 // replacement-timing jogress (sync): `target` is about to leave and is used as one material
 function interruptJogress(state, hp, target, cardPred, label) {
   const pl = state.players[hp];
-  const cardIdx = (b) => pl.hand.findIndex(id => C(id).category === 'digimon' && cardPred(C(id)) && S.canJogress(target, b, id).ok);
+  const cardIdx = (b) => pl.hand.findIndex(id => C(id).category === 'digimon' && hasJogLine(id) && cardPred(C(id)) && S.canJogress(target, b, id).ok);
   const partner = digs(state, hp).find(b => b !== target && cardIdx(b) >= 0);
   if (!partner) return false;
   if (!syncAsk(state, `${label}: ${C(target.cardId).nameKo}이(가) 벗어나려 합니다. 조그레스 진화할까요?`)) return false;
@@ -333,7 +335,7 @@ sc('BT19-078::등장 시', async (ctx) => {
 });
 sc('BT19-078::메인', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st) return;
-  const targets = digs(state, ctx.self).filter(s => s !== st && C(s.cardId).nameKo === '마더 디·리퍼' && !s.sources.some(id => C(id).nameKo === 'ADR-01=쥬리'));
+  const targets = state.players[ctx.self].battle.filter(s => s !== st && C(s.cardId).nameKo === '마더 디·리퍼' && !s.sources.some(id => C(id).nameKo === 'ADR-01=쥬리'));
   const t = await pickStack(ctx, ctx.self, targets, '진화원 아래에 놓을 「마더 디·리퍼」 선택');
   if (!t) return;
   putStackUnder(state, ctx.self, st, t);
@@ -726,7 +728,7 @@ sc('BT20-090::자신의 턴 종료 시', async (ctx) => {
 hk('BT20-093', { tag: '서로의 턴', preventLeave: (state, hp, h, target, tp, cause) => {
   if (cause === 'battle' || !delayReady(state, h) || !(mention(C(target.cardId), '드라코몬') || mention(C(target.cardId), '엑자몬'))) return false;
   const pl = state.players[hp];
-  const has = digs(state, hp).some(b => b !== target && pl.hand.some(id => C(id).nameKo === '엑자몬' && S.canJogress(target, b, id).ok));
+  const has = digs(state, hp).some(b => b !== target && pl.hand.some(id => C(id).nameKo === '엑자몬' && hasJogLine(id) && S.canJogress(target, b, id).ok));
   if (!has) return false;
   const hid = h.uid;
   if (!syncAsk(state, '딜레이: 이 카드를 파기하고 「엑자몬」으로 조그레스 진화할까요?')) return false;
@@ -740,7 +742,7 @@ hk('BT20-100', { tag: '서로의 턴', preventLeave: (state, hp, h, target) => {
 } });
 sc('BT20-099::메인', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
-  await playDiscounted(ctx, c => hasType(c, '액셀'), 4, '등장시킬 「액셀」 디지몬 선택');
+  await playDiscounted(ctx, c => hasType(c, '엑셀', '액셀'), 4, '등장시킬 「액셀」 디지몬 선택');
   const t = await pickStack(ctx, ctx.self, digs(state, ctx.self), '이 카드를 진화원 아래에 놓을 디지몬 선택');
   if (!t || !removeFrom(pl.trash, ctx.sourceCardId)) return;
   putSourceBottom(state, t, ctx.sourceCardId, false);
@@ -775,7 +777,7 @@ sc('BT20-099::메인', async (ctx) => {
     if (idx != null) { const [id] = pl.trash.splice(idx, 1); putSourceBottom(state, st, id, false); }
   });
 }
-hk('BT21-006', { tag: '서로의 턴', src: 'inheritedKo', dp: (state, hp, h, target) => (target === h && h.sources.slice(S.fdCount(h)).filter(id => C(id).nameKo.includes('벰몬')).length >= 4 ? 3000 : 0) });
+hk('BT21-006', { tag: '서로의 턴', src: 'inheritedKo', dp: (state, hp, h, target) => (target === h && h.sources.slice(S.fdCount(h)).filter(id => C(id).nameKo === '벰몬').length >= 4 ? 3000 : 0) });
 hk('P-182', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h ? 1000 * distinctColors([...digs(state, hp), ...tams(state, hp)]).size : 0) });
 hk('P-185', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h ? 1000 * new Set(h.sources.slice(S.fdCount(h)).flatMap(id => C(id).colors || [])).size : 0) });
 hk('P-183', { tag: '서로의 턴', limit: 1, events: { redirect: () => true } });

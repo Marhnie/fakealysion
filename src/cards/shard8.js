@@ -89,7 +89,7 @@ const NEEDS_RECOMPUTE = (st) => S.recomputeStackGrants(st);
 
 // ---------------------------------------------------------------- Tamer "아래의 카드" (= tamer.sources)
 const ownTamers = (state, p) => state.players[p].battle.filter(s => catOf(s.cardId) === 'tamer');
-const tamersWithUnder = (state, p, n) => ownTamers(state, p).filter(t => t.sources.length >= n);
+const tamersWithUnder = (state, p, n) => ownTamers(state, p).filter(t => S.fdCount(t) >= n); // 「뒷면 카드」: the face-down block sources[0..fd-1]
 // non-interactive payment (used by hook cost-discounts / survive replacements); prefers `hint`
 function payTamerUnderAuto(state, p, n, hint) {
   const list = tamersWithUnder(state, p, n);
@@ -216,7 +216,7 @@ OPS.s8_dp = async (i, ctx) => {
     const st = findStack(state, t.player, t.uid);
     if (!st) continue;
     const a = typeof i.amount === 'function' ? i.amount(ctx, st) : i.amount;
-    if (!a) continue;
+    if (!a) { S8(ctx).dpTargets.push(t); continue; } // +0 (e.g. opp memory 0): the picked Digimon is still "그 디지몬" for the follow-up attack
     S.modifyDP(state, t.player, t.uid, a, 'turn');
     const st2 = findStack(state, t.player, t.uid);
     if (st2) {
@@ -394,7 +394,7 @@ OPS.s8_evolve = async (i, ctx) => {
   const { state } = ctx;
   const pl = state.players[ctx.self];
   const zones = i.zones || ['hand'];
-  const evoOk = (st, id) => (i.ignoreCond ? ctx.E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, id, st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok);
+  const evoOk = (st, id) => (i.ignoreCond ? ctx.E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(state, null, st), S.evolveTargetRestriction(state, ctx.self, st)).ok);
   const cardsFor = (st, z) => pl[z].map((id, k) => k).filter(k => isDigi(pl[z][k]) && (!i.card || i.card(pl[z][k], ctx, st)) && evoOk(st, pl[z][k]));
   let stacks;
   if (i.subject === 'this') stacks = [stackOf(ctx)].filter(Boolean);
@@ -410,7 +410,7 @@ OPS.s8_evolve = async (i, ctx) => {
     const k = await pickZone(ctx, z, elig, `${z === 'trash' ? '트래시' : '패'}에서 진화할 카드 선택`);
     if (k == null) continue;
     const id = pl[z][k];
-    const chk = ctx.E.canEvolveAny(st.cardId, id, st.extraColors || [], null);
+    const chk = ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(ctx.state, null, st), null);
     const printed = chk.ok ? chk.cost : (C(id).evoNormal?.cost ?? 0);
     const cost = i.free ? 0 : Math.max(0, printed + (i.delta || 0));
     if (z !== 'hand') pl[z].splice(k, 1);
@@ -475,19 +475,20 @@ OPS.s8_link = async (i, ctx) => {
     for (const z of (i.from || ['hand'])) {
       if (z === 'sources') {
         const holders = i.sourcesOf === 'any' ? pl.battle.filter(s => isDigi(s.cardId)) : [me].filter(Boolean);
-        for (const h of holders) h.sources.forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && S.linkCheck(state, ctx.self, host, id).ok) opts.push({ z, k, id, from: h }); });
-      } else pl[z].forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && S.linkCheck(state, ctx.self, host, id).ok) opts.push({ z, k, id }); }); // 10-1-1 link condition
+        for (const h of holders) h.sources.forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && (i.ignoreLinkCond || S.linkCheck(state, ctx.self, host, id, i).ok)) opts.push({ z, k, id, from: h }); });
+      } else pl[z].forEach((id, k) => { if ((!i.pred || i.pred(id)) && !(i.distinct && names.includes(C(id).nameKo)) && (i.ignoreLinkCond || S.linkCheck(state, ctx.self, host, id, i).ok)) opts.push({ z, k, id }); }); // 10-1-1 link condition
     }
     if (!opts.length) break;
     const ids = opts.map(o => o.id);
     const r = await ctx.choose('pickFromRevealed', { player: ctx.self, revealed: ids, eligible: ids.map((id, x) => ({ id, i: x })), min: 0, max: 1, prompt: `링크할 카드 선택${i.max > 1 ? ` (${n + 1}/${i.max})` : ''}` });
     if (!r || !r.length) break;
     const o = opts[r[0]];
-    const lkc = S.linkCheck(state, ctx.self, host, o.id);
-    const base = lkc.ok ? lkc.cost : 0;
+    const lkc = S.linkCheck(state, ctx.self, host, o.id, i);
+    const base = lkc.ok ? lkc.cost : 0; // (ignoreLinkCond: BT26-086 단테몬 is not an 「어플몬」 itself — its printed effect links them regardless)
     const cost = i.free ? 0 : Math.max(0, base + (i.costDelta || 0));
     if (o.z === 'sources') { o.from.sources.splice(o.k, 1); S.recomputeStackGrants(o.from); } else pl[o.z].splice(o.k, 1);
     S.linkCardTo(state, ctx.self, host.uid, o.id, o.id, cost, 'x', await S.linkDiscardIdx(state, ctx.self, host.uid, ctx.choose));
+    if (i.ignoreLinkCond) { const lk = host.linkCards[host.linkCards.length - 1]; if (lk) lk.ignoreCond = true; } // exempt from the 17-1-3-2-6 rule-check
     names.push(C(o.id).nameKo);
   }
 };
@@ -533,7 +534,7 @@ SCRIPTS['BT25-059::등장 시'] = [
   { op: 's8_shield', target: 'ownAllMatching', pred: (ctx, s) => s.suspended && trait(s.cardId, '식물형', 'TS'), fromCategory: 'digimon' },
 ];
 SCRIPTS['BT25-061::링크 시'] = [{ op: 's8_lock', kinds: ['digimon'], n: 1 }];
-SCRIPTS['BT25-069::등장 시'] = [{ op: 's8_link', from: ['trash'], pred: (id) => trait(id, 'TS'), target: 'pickOwn', free: true }];
+SCRIPTS['BT25-069::등장 시'] = [{ op: 's8_link', from: ['trash'], pred: (id) => trait(id, 'TS'), target: 'pickOwn', free: true, allowOption: true }];
 SCRIPTS['BT25-070::메인'] = [{ op: 's8_link', from: ['trash', 'sources'], pred: (id) => isDigi(id) && trait(id, '소셜', '툴', '게임'), target: 'this', costDelta: -1 }];
 SCRIPTS['BT25-070::자신의 턴'] = [{ op: 's8_destroyPick', who: 'opponent', kinds: ['digimon'], pred: (id) => (C(id).cost || 0) <= 4 }];
 SCRIPTS['BT25-070::링크 시'] = [{ op: 's8_lock', kinds: kindsDT, n: 1 }];
@@ -949,7 +950,7 @@ SCRIPTS['BT26-098::메인'] = [{ op: 's8_placeThenEvolve', host: (ctx, s) => C(s
 SCRIPTS['BT26-102::메인'] = [{ op: 's8_placeThenEvolve', host: (ctx, s) => trait(s.cardId, '세븐 코드'),
   reqs: [{ n: 6, from: ['trash', 'link', 'battle'], pred: (id) => isDigi(id) && trait(id, '세븐 코드') }], to: { zones: ['hand'], pred: (id) => C(id).nameKo === '단테몬' } }];
 SCRIPTS['BT26-086::등장 시'] = [
-  { op: 's8_link', from: ['sources'], sourcesOf: 'this', pred: (id) => trait(id, '어플몬'), target: 'this', free: true, max: 7, distinct: true },
+  { op: 's8_link', from: ['sources'], sourcesOf: 'this', pred: (id) => trait(id, '어플몬'), target: 'this', free: true, max: 7, distinct: true, ignoreLinkCond: true },
   { op: 's8_attackNow', noRest: true },
 ];
 SCRIPTS['BT26-007::어택 시'] = [{ op: 's8_link', from: ['hand', 'sources'], sourcesOf: 'this', pred: (id) => isDigi(id) && trait(id, '세븐 코드'), target: 'this', costDelta: -2 }];
@@ -1109,7 +1110,6 @@ SCRIPTS['EX12-076::어택 시'] = [
   { op: 's8_stackToSecTop', mode: 'pick' },
   { op: 's8_if', test: (ctx) => { const s = stackOf(ctx); return !!s && srcColors(s).size >= 4; }, then: [{ op: 'removeSecurity', who: 'opponent', position: 'top' }, { op: 'recoverTop' }] },
 ];
-SCRIPTS['EX12-072::서로의 턴'] = [{ op: 's8_kwAll', pred: (ctx, s) => trait(s.cardId, 'ME'), keywords: [['수호', true]], until: 'thisTurn' }];
 SCRIPTS['EX12-057::등장 시'] = [{ op: 's8_token', id: 'TOKEN-파이슈', nameKo: '파이슈', colors: ['yellow'], dp: 6000, kw: '《블로커》《수호》' }];
 SCRIPTS['EX12-034::등장 시'] = [{ op: 's8_token', id: 'TOKEN-코텐켄', nameKo: '코텐켄', colors: ['black'], dp: 9000, kw: '《블로커》' }];
 SCRIPTS['EX12-052::진화 시'] = [{ op: 's8_shield', target: 'pickOwn', fromCategory: 'digimon', prompt: '상대의 디지몬의 효과를 받지 않게 할 디지몬 선택' }];
@@ -1125,7 +1125,8 @@ SCRIPTS['EX12-045::등장 시'] = [
   { op: 's8_if', test: (ctx) => ctx.state.players[ctx.self].security.length <= 2, then: [{ op: 'recoverTop' }] },
 ];
 SCRIPTS['EX12-045::자신의 턴'] = [{ op: 's8_playOrUse', zones: ['hand'], kinds: ['digimon', 'tamer'], pred: (id) => mentions(id, '손오공몬') || trait(id, 'SW'), delta: -2 }];
-const sameLvStacked = (ctx) => { const s = stackOf(ctx); if (!s) return false; const lv = lvOf(s.cardId); return s.sources.filter(id => lvOf(id) === lv).length >= 2; };
+// "Lv.이 같은 카드가 2장 이상 겹쳐져 있다면": some Lv. value shared by 2+ of the overlaid (source) cards (no reference level is printed)
+const sameLvStacked = (ctx) => { const s = stackOf(ctx); if (!s) return false; const cnt = {}; for (const id of s.sources) { const lv = lvOf(id); if (!lv) continue; cnt[lv] = (cnt[lv] || 0) + 1; } return Object.values(cnt).some(n => n >= 2); };
 SCRIPTS['EX12-044::어택 시'] = [{ op: 's8_if', test: sameLvStacked, then: [{ op: 's8_evolve', subject: 'this', zones: ['hand'], card: (id) => trait(id, '천사형', '성룡형', '삼대천사', 'NSp', 'VB'), delta: -2 }] }];
 SCRIPTS['EX12-032::어택 시'] = [{ op: 's8_if', test: sameLvStacked, then: [{ op: 's8_evolve', subject: 'this', zones: ['trash'], card: (id) => nameHas(id, '가루몬') || trait(id, 'NSo', 'VB'), delta: -2 }] }];
 SCRIPTS['EX12-036::서로의 턴'] = [{ op: 's8_noEvoTrigNoRest' }];
@@ -1244,7 +1245,7 @@ const playOptionFd = (id, pred, delta, opts = {}) => { const d = H(id, { tag: '�
   if (turnUsesLeft(h, id, d) <= 0 && opts.limit) return null;
   return { label: `${C(h.cardId).nameKo}: 테이머 아래의 뒷면 카드 1장을 파기하고 ${C(cardId).nameKo}의 코스트 ${delta}?`, apply: () => { if (opts.limit) hookUseOnce(h, id, d, 1); return payTamerUnderAuto(state, hp, 1, null) ? delta : 0; } };
 }; return d; };
-playOptionFd('BT25-088', (cid) => glow(cid), -1, { has: '등장할 때', limit: 1 });
+playOptionFd('BT25-088', (cid) => glow(cid) && catOf(cid) !== 'option', -1, { has: '등장할 때', limit: 1 });
 playOptionFd('BT25-090', (cid) => catOf(cid) === 'option' && glow(cid), -1, { has: '사용할 때', limit: 1 });
 // BT26-088 (Tamer): 특징 「반쵸」/「TS」 카드 등장 시 이 테이머를 레스트 → 코스트 -1 (자신의 디지몬이 없다면 -2)
 H('BT26-088', { tag: '자신의 턴', has: '레스트시키는 것으로', playDiscount: (state, hp, h, cardId) => {
@@ -1307,6 +1308,8 @@ H('BT26-092', { tag: '상대의 턴', has: '어택의 대상을', redirectOption
     },
   }));
 } });
+// ---- EX12-072: 특징 「ME」를 가진 자신의 디지몬 전부는 《수호》를 얻는다 (continuous, 서로의 턴)
+H('EX12-072', { tag: '서로의 턴', has: '《수호》를 얻는다', grantKw: (state, hp, h, target) => (!!target && isDigi(target.cardId) && trait(target.cardId, 'ME') && ownerOf(state, target) === hp) ? ['수호'] : [] });
 // ---- EX12-004: 특징 「TB」를 가진 이 디지몬은 《에그제큐트》를 얻는다
 H('EX12-004', { tag: '자신의 턴', src: 'inheritedKo', has: '에그제큐트', grantKw: (state, hp, h, target) => (target === h && trait(h.cardId, 'TB')) ? ['에그제큐트'] : [] });
 // ---- EX12-003: ME digimon leaving (not by own effect) → optional jogress instead; declining lets it leave (deferred via a pending effect)

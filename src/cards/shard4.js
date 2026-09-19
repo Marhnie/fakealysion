@@ -24,10 +24,7 @@ const hasTrait = (cid, t) => typesOf(cid).some(x => x.toLowerCase() === String(t
 const hasTraitAny = (cid, ts) => ts.some(t => hasTrait(cid, t));
 const hasTraitLike = (cid, t) => typesOf(cid).some(x => x.includes(t));
 // Names a card counts as: its own plus 〈룰〉명칭: 「A」/「B」로도 취급한다.
-const treatedAs = (cid) => {
-  const m = (C(cid).effectKo || '').match(/〈룰〉\s*명칭\s*[:：]\s*((?:「[^」]+」\s*\/?\s*)+)\s*로도\s*취급/);
-  return m ? [...m[1].matchAll(/「([^」]+)」/g)].map(x => x[1]) : [];
-};
+const treatedAs = (cid) => S.cardNames(cid).slice(1); // central parser (state.js cardNameInfo)
 const namesOfCard = (cid) => [C(cid).nameKo, ...treatedAs(cid)];
 const isNamed = (cid, n) => namesOfCard(cid).includes(n);
 const isNamedAny = (cid, ns) => ns.some(n => isNamed(cid, n));
@@ -36,9 +33,9 @@ const hasColor = (cid, cols) => (C(cid).colors || []).some(c => cols.includes(c)
 const lvOf = (cid) => C(cid).level ?? 0;
 const stackColors = (s) => S.stackColors(s);
 const stackHasColor = (s, cols) => stackColors(s).some(c => cols.includes(c));
-const stackTraits = (st, s) => [...typesOf(s.cardId), ...(S.hookStackTypes(st, ownerOf(st, s), s) || [])];
+const stackTraits = (st, s) => S.effectiveInfo(st, s, ownerOf(st, s)).traits; // central accessor
 const stackHasTrait = (st, s, t) => stackTraits(st, s).some(x => x.toLowerCase() === String(t).toLowerCase());
-const stackNames = (st, s) => [...namesOfCard(s.cardId), ...(S.hookStackNames(st, ownerOf(st, s), s) || [])];
+const stackNames = (st, s) => S.effectiveInfo(st, s, ownerOf(st, s)).names; // central accessor (원래 명칭 변경 + 〈룰〉 + hooks)
 const stackIsNamed = (st, s, n) => stackNames(st, s).includes(n);
 const stackNameHas = (st, s, n) => stackNames(st, s).some(x => x.includes(n));
 const srcHasName = (s, n) => s.sources.some(id => isNamed(id, n));
@@ -886,15 +883,23 @@ const d39 = { tag: '서로의 턴', has: '옐로인 자신의 테이머 1명을 
   return true;
 } };
 H('BT17-039', d39);
-const d61 = { tag: '서로의 턴', has: '리리스몬」/「X항체」가 있다면', preventLeave: (st, hp, h, target, tp, cause, mode) => {
-  if (target !== h || cause === 'battle' || !leaveMode(mode)) return false;
-  if (!h.sources.some(id => isNamedAny(id, ['리리스몬', 'X항체']))) return false;
-  const cands = st.players[oppOf(hp)].battle.filter(s => C(s.cardId).category === 'digimon' && !S.effectBlocked(st, oppOf(hp), s, 'delete'));
-  if (!cands.length || !S.hookUseOnce(h, 'EX7-061', d61)) return false;
-  cands.sort((a, b) => S.effectiveDP(st, oppOf(hp), a) - S.effectiveDP(st, oppOf(hp), b));
-  S.log(st, `${hp} ${C(h.cardId).nameKo}: ${C(cands[0].cardId).nameKo}을(를) 소멸시켜 벗어나지 않음`);
-  S.deleteStack(st, oppOf(hp), cands[0].uid, 'trash', 'effect');
-  return true;
+const d61 = { tag: '서로의 턴', has: '리리스몬」/「X항체」가 있다면', preventLeaveOptions: (st, hp, h, target, tp, cause, mode) => {
+  // "다른 디지몬 1마리를 소멸시키는 것으로" — ANY other digimon (either side); each candidate is its own option for the player.
+  if (target !== h || cause === 'battle' || !leaveMode(mode)) return [];
+  if (!h.sources.some(id => isNamedAny(id, ['리리스몬', 'X항체']))) return [];
+  if (S.turnUsesRemaining(h, S.onceLimitKey('EX7-061', [d61.tag, d61.has || '']), 1) <= 0) return [];
+  const out = [];
+  for (const pp of [oppOf(hp), hp]) for (const s of st.players[pp].battle) {
+    if (s === h || C(s.cardId).category !== 'digimon') continue;
+    if (pp !== hp && S.effectBlocked(st, pp, s, 'delete')) continue;
+    out.push({ apply: () => {
+      if (!S.hookUseOnce(h, 'EX7-061', d61)) return false;
+      S.log(st, `${hp} ${C(h.cardId).nameKo}: ${C(s.cardId).nameKo}을(를) 소멸시켜 벗어나지 않음`);
+      S.deleteStack(st, pp, s.uid, 'trash', pp === hp ? 'ownEffect' : 'effect');
+      return true;
+    } });
+  }
+  return out;
 } };
 H('EX7-061', d61);
 // Delay-option replacements (option stack placed in the battle area)
@@ -1088,6 +1093,7 @@ OPS.s4_placeSourceInBattle = async (instr, ctx) => {
   const [id] = me.sources.splice(i, 1);
   S.recomputeStackGrants(me);
   const stack = S._s4.makeStack(id, st.turnNumber);
+  stack.playedFromSources = true;
   S.recomputeStackGrants(stack);
   st.players[p].battle.push(stack);
   log(ctx, `${p} ${C(id).nameKo}을(를) 진화원에서 배틀 에어리어에 놓음`);

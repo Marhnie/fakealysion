@@ -108,7 +108,7 @@ async function evolveGeneric(ctx, o) {
   const zone = o.zone || 'hand';
   const cands = o.subject === 'this' ? [me(ctx)].filter(Boolean) : pl.battle.filter(s => isDig(s) && (!o.subject || o.subject(s)));
   const okCards = (st) => pl[zone].map((id, i) => i).filter(i => C(pl[zone][i]).category === 'digimon' && (!o.cardPred || o.cardPred(pl[zone][i])) &&
-    (o.ignoreCond ? ctx.E.evoRestrictionCheck(pl[zone][i], S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, pl[zone][i], st.extraColors || [], S.evolveTargetRestriction(state, ctx.self, st)).ok));
+    (o.ignoreCond ? ctx.E.evoRestrictionCheck(pl[zone][i], S.evolveTargetRestriction(state, ctx.self, st)).ok : ctx.E.canEvolveAny(st.cardId, pl[zone][i], S.evoExtraArg(state, null, st), S.evolveTargetRestriction(state, ctx.self, st)).ok));
   const stacks = cands.filter(s => okCards(s).length);
   if (!stacks.length) { S.log(state, `${ctx.self} 진화시킬 수 있는 조합이 없음`); return null; }
   const st = stacks.length === 1 ? stacks[0] : await pickStack(ctx, ctx.self, stacks, o.prompt || '진화시킬 디지몬 선택');
@@ -116,7 +116,7 @@ async function evolveGeneric(ctx, o) {
   const idx = await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone, eligibleIdxs: okCards(st), prompt: o.cardPrompt || '진화할 카드 선택' });
   if (idx == null) return null;
   const cardId = pl[zone][idx];
-  const chk = ctx.E.canEvolveAny(st.cardId, cardId, st.extraColors || [], null);
+  const chk = ctx.E.canEvolveAny(st.cardId, cardId, S.evoExtraArg(ctx.state, null, st), null);
   const printed = chk.ok ? chk.cost : (C(cardId).evoNormal?.cost ?? 0);
   const c = o.cost || { mode: 'normal' };
   const cost = c.mode === 'free' ? 0 : c.mode === 'fixed' ? c.n : c.mode === 'discount' ? Math.max(0, printed - c.n) : printed;
@@ -280,7 +280,7 @@ sc('BT14-092::메인', [fn(async (ctx) => {
 })]);
 // BT14-097 스카의 저주
 sc('BT14-097::메인', [fn(async (ctx) => {
-  await evolveGeneric(ctx, { subject: (s) => !stackHasColor(s, 'white') || (C(s.cardId).colors || []).some(c => c !== 'white'), cardPred: (id) => C(id).nameKo.includes('스카몬'), ignoreCond: true, cost: { mode: 'free' }, prompt: '화이트 이외의 진화시킬 디지몬 선택' });
+  await evolveGeneric(ctx, { subject: (s) => !stackHasColor(s, 'white'), cardPred: (id) => C(id).nameKo.includes('스카몬'), ignoreCond: true, cost: { mode: 'free' }, prompt: '화이트 이외의 진화시킬 디지몬 선택' });
 })]);
 sc('BT14-097::시큐리티', [fn(async (ctx) => {
   const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(isDig), '원래 명칭 「스카몬」·화이트·DP 3000으로 바꿀 디지몬 선택');
@@ -759,7 +759,7 @@ hk('BT16-015', { tag: '자신의 턴', has: '어택 종료 시', selfContained: 
 // BT16-031 등장 시/진화 시
 sc('BT16-031::등장 시', [fn(async (ctx) => {
   const pl = PL(ctx, ctx.self);
-  const ok = (id) => C(id).category === 'digimon' && lvl(id) <= 6 && (C(id).colors || []).length === 2 && colorHas(id, 'purple') && colorHas(id, 'red');
+  const ok = (id) => C(id).category === 'digimon' && lvl(id) <= 6 && (C(id).colors || []).length === 2 && (colorHas(id, 'purple') || colorHas(id, 'red'));
   if (!pl.hand.length || !pl.trash.some(ok)) return;
   const h = await pickIdx(ctx, ctx.self, () => true, '파기할 패 1장 선택 (안 해도 됨)');
   if (h < 0) return;

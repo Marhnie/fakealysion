@@ -1775,6 +1775,12 @@ function renderPendingAttack() {
       rows.push(h('button', { onClick: () => { endAttack(); render(); } }, '닫기'));
     }
   } else if (pa.stage === 'blockCheck' && !pa.paused) {
+    {
+      const tgtStack = pa.targetKind === 'digimon' ? state.players[pa.opp].battle.find(s => s.uid === pa.targetUid) : null;
+      const tgtName = pa.targetKind === 'digimon' ? (tgtStack ? S.card(tgtStack.cardId).nameKo : '(디지몬)') : `${pa.opp} 플레이어 (시큐리티)`;
+      const atkName = attackerStackNow ? S.card(attackerStackNow.cardId).nameKo : '(소멸됨)';
+      rows.push(h('div', { className: 'effect-box step-info' }, `블록 타이밍 — 블록하는 쪽: ${pa.opp} / 공격: ${pa.attacker}의 ${atkName} (DP ${pa.dp}) → 대상: ${tgtName}`));
+    }
     rows.push(h('div', { className: 'zone-label' },
       pa.mandatoryBlock ? '≪충돌≫ — 상대는 반드시 블록해야 함, 막을 디지몬 선택:' : '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {

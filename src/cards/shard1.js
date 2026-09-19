@@ -259,7 +259,7 @@ async function evolveInteractive(ctx, o) {
   const { state, E } = ctx; const who = o.who || ctx.self; const pl = state.players[who];
   const arr = o.from === 'trash' ? pl.trash : pl.hand;
   const ignore = o.ignoreCond && !S.s1HookAny(state, 's1evoIgnoreLocked', {});
-  const chk = (stack, id) => E.canEvolveAny(stack.cardId, id, stack.extraColors || [], S.evolveTargetRestriction(state, who, stack));
+  const chk = (stack, id) => E.canEvolveAny(stack.cardId, id, S.evoExtraArg(state, null, stack), S.evolveTargetRestriction(state, who, stack));
   const okCard = (stack, id) => C(id).category === 'digimon' && (!o.cardPred || o.cardPred(id)) && (ignore ? E.evoRestrictionCheck(id, S.evolveTargetRestriction(state, who, stack)).ok : chk(stack, id).ok);
   let stacks = o.subject ? [o.subject] : pl.battle.filter(s => isDigimon(s) && (!o.stackPred || o.stackPred(s)));
   stacks = stacks.filter(s => s && arr.some(id => okCard(s, id)));
@@ -679,7 +679,7 @@ SCRIPTS['BT7-055::상대의 턴'] = [fn(async (ctx) => {
 // ---- BT7-058 (어택 시): 「데들리액스몬」 1마리의 진화원을 모두 파기하고 이 디지몬의 진화원 아래에 놓는 것으로 「다크나이트몬」으로 무료 진화
 SCRIPTS['BT7-058::어택 시'] = [fn(async (ctx) => {
   const me = ctx.self, st = srcStack(ctx), pl = plOf(ctx, me);
-  if (!st || !pl.hand.some(id => C(id).nameKo === '다크나이트몬' && ctx.E.canEvolveAny(st.cardId, id, st.extraColors || [], S.evolveTargetRestriction(ctx.state, me, st)).ok)) return;
+  if (!st || !pl.hand.some(id => C(id).nameKo === '다크나이트몬' && ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(ctx.state, null, st), S.evolveTargetRestriction(ctx.state, me, st)).ok)) return;
   const ax = await pickWhere(ctx, me, s => isDigimon(s) && s !== st && C(s.cardId).nameKo === '데들리액스몬', '진화원으로 놓을 「데들리액스몬」 선택 (취소 = 사용 안 함)');
   if (!ax) return;
   const id = detachStack(ctx.state, me, ax);
@@ -849,7 +849,7 @@ SCRIPTS['BT8-084::진화 시'] = [fn(async (ctx) => {
     const id = await takeFrom(ctx, me, ['trash'], c => C(c).category === 'digimon' && lvOf(c) <= 5, '진화원 가장 아래에 놓을 Lv.5 이하 디지몬 카드 선택 (취소 = 놓지 않음)');
     if (id) placeUnderBottom(ctx, me, st, id);
   }
-  const colors = new Set([...stackColors(st), ...st.sources.flatMap(id => C(id).colors || [])]);
+  const colors = new Set(stackColors(st)); // "이 디지몬의 색" = the digimon's own colors (not its sources')
   const amount = -1000 * colors.size;
   if (!amount) return;
   const chosen = [];
@@ -988,7 +988,7 @@ async function searcherUnder(ctx, mother, mandatory) {
   if (id) placeUnderBottom(ctx, me, mother, id);
 }
 const searcherToMother = [fn(async (ctx) => {
-  const mother = await pickWhere(ctx, ctx.self, s => isDigimon(s) && C(s.cardId).nameKo === '마더 디·리퍼', '진화원 아래에 놓을 「마더 디·리퍼」 선택');
+  const mother = await pickWhere(ctx, ctx.self, s => C(s.cardId).nameKo === '마더 디·리퍼', '진화원 아래에 놓을 「마더 디·리퍼」 선택');
   if (mother) await searcherUnder(ctx, mother, false);
 })];
 SCRIPTS['EX2-048::시큐리티'] = searcherToMother;
@@ -1002,7 +1002,7 @@ SCRIPTS['EX2-007::메인'] = [fn(async (ctx) => {
 // ---- EX2-060 (자신의 턴): 이 테이머를 레스트시키는 것으로 패의 「플러그인」 옵션 카드 1장을 코스트 없이 사용
 SCRIPTS['EX2-060::자신의 턴'] = [fn(async (ctx) => {
   const me = ctx.self;
-  if (!plOf(ctx, me).hand.some(id => C(id).category === 'option' && nameHas(id, '플러그인'))) return;
+  if (!plOf(ctx, me).hand.some(id => C(id).category === 'option' && nameHas(id, '플러그인') && S.optionColorOk(ctx.state, me, id))) return;
   if (!(await payRestThis(ctx, '이 테이머를 레스트시켜 패의 「플러그인」 옵션 카드를 코스트 없이 사용하시겠습니까?'))) return;
   await useOptionFree(ctx, me, id => nameHas(id, '플러그인'), '코스트 없이 사용할 「플러그인」 옵션 카드 선택');
 })];

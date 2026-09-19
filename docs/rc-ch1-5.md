@@ -40,6 +40,8 @@
 | 3-4-7-3 | 육성 에어리어 카드는 육성 에어리어를 지정하지 않는 효과를 받지 않는다 | 이번에 손본 선택 대상 4곳 외에 shard 카드별 스크립트·전역 DP 부여 훅이 `[raising, ...battle]`을 전체 대상으로 취급하는 곳이 남아 있을 수 있음(카드별 감사 필요) | 수정됨 — 감사 결과: 카드별 「자신의 「X」」 선택 2곳(BT19-078, BT22-095)이 육성 에어리어를 포함하던 것을 배틀 에어리어 한정으로 수정, 나머지는 uid 조회용 헬퍼이거나 육성 에어리어를 명시한 카드. |
 | 1-3-11-3/4, 8-x | 대체 코스트(진화 코스트 증감 효과 선택 등) 소비 후 지불 불가 시 효과가 소모됨 | main.js 진화 드롭: consumeEvoCostMod/확인창이 지불 검사보다 먼저 실행 → 지불 불가로 거부되어도 1회성 코스트 감소 효과가 소모될 수 있음 | 수정됨 — 진화 드롭이 1회성 코스트 증감 소비 전에 스냅샷을 잡고(`snapshotEvoCostMods`) 거부·실패 시 복원(`restoreEvoCostMods`); 조그레스/버스트/앱합체/효과 경로 동일. |
 
+| 2-3-1~3 / 15-8-2 | 명칭·색·특징·레벨·종류는 원래 값 변경/〈룰〉 취급/효과로 얻은 값을 모두 반영해 판정 | 원래 명칭/색 변경·「명칭 전부를 얻는다」·〈룰〉 「X」로도 취급이 진화 조건 판정에만 일부 반영, 필터·타깃 술어·덱 명칭 비교는 인쇄 명칭만 사용. 특징 검사가 속성(백신종/데이터종…)·형태(하이브리드체/아머체…)를 무시 | 수정됨 — state.js 중앙 접근자 `cardNameInfo/cardNames/cardNameIs/cardNameHas`(카드 단위) + `effectiveInfo(state, stack)`(스택 단위: names/inclNames/traits/colors/level/categories, baseOv·hook·s2AsDigimon 반영). 경유처: effects.matchesFilter(스택이면 effectiveInfo), 진화 조건(engine.canEvolveAny ← S.evoExtraArg, 모든 shard 호출부 통일), 어택 대상 변경/쿠스트/어셈블리/디코드류 술어, 버스트·생존 능력의 명칭 비교, shard2/4/7의 〈룰〉 별칭 파서. loadData가 속성·형태(성장기 등)를 `types`에 합류시켜 모든 특징 검사에 반영. 잔여: shard 내부의 카드 단위 `C(id).types/nameKo` 직접 비교 다수는 인쇄값 기준(스택 효과 변경 미반영) |
+
 ## C. 검증 완료 (모순 없음)
 
 | 룰 번호 | 확인 내용 | 상태 |

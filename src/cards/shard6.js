@@ -139,7 +139,7 @@ function printedEvoCost(ctx, src, tgtId) {
     }
     return null;
   }
-  const chk = ctx.E.canEvolveAny(src.cardId, tgtId, src.extraColors || [], S.evolveTargetRestriction(ctx.state, ctx.self, src));
+  const chk = ctx.E.canEvolveAny(src.cardId, tgtId, S.evoExtraArg(ctx.state, null, src), S.evolveTargetRestriction(ctx.state, ctx.self, src));
   return chk.ok ? chk.cost : null;
 }
 const costFrom = (printed, mode) => {
@@ -641,7 +641,7 @@ SC('BT22-090', '자신의 턴 종료 시', '로드나이트몬', RUN(async (ctx)
 SC('EX10-013', '자신의 턴 종료 시', '루체몬: 폴다운 모드', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me];
   const cm = M({ mention: ['루체몬'] });
-  const o = { subject: 'this', zones: ['trash'], card: { nameEq: ['루체몬: 폴다운 모드'] }, cost: { mode: 'free' }, ignoreCond: false };
+  const o = { subject: 'this', zones: ['trash'], card: { nameEq: ['루체몬: 폴다운 모드'] }, cost: { mode: 'free' }, ignoreCond: true }; // fall-down mode's own evolution condition is a hand-only text ("자신의 「루체몬」은 …패의 이 카드로 진화할 수 있다"), not a printed 〔진화〕 line
   if (cnt(pl.trash, cm) < 5 || !(await evolveEffect(ctx, { ...o, dry: true }))) return;
   if (!(await optional(ctx, me, '트래시의 「루체몬」 카드 5장을 덱 아래로 되돌리고 진화'))) return;
   const ids = [];
@@ -655,12 +655,13 @@ SC('EX10-013', '자신의 턴 종료 시', '루체몬: 폴다운 모드', RUN(as
 SC('EX10-066', '자신의 턴 종료 시', '벨페몬', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me], self = srcSt(ctx);
   if (!self || pl.hand.length > 6) return;
-  const cands = digimonsOf(state, me).filter(s => C(s.cardId).nameKo.includes('벨페몬') && pl.trash.some(id => isDigimon(id) && C(id).nameKo.includes('벨페몬')));
+  const belOk = (s, id) => isDigimon(id) && C(id).nameKo.includes('벨페몬') && printedEvoCost(ctx, s, id) != null; // normal evolution condition still applies (only the cost is waived)
+  const cands = digimonsOf(state, me).filter(s => C(s.cardId).nameKo.includes('벨페몬') && pl.trash.some(id => belOk(s, id)));
   if (!cands.length || !(await optional(ctx, me, '이 테이머를 벨페몬 디지몬의 진화원 아래에 놓고 트래시의 벨페몬으로 진화'))) return;
   const st = await pickStackOf(ctx, me, cands, '진화시킬 「벨페몬」 디지몬 선택');
   if (!st) return;
   moveStackUnder(state, me, self, st);
-  const idx = await pickZoneCard(ctx, me, 'trash', (id) => isDigimon(id) && C(id).nameKo.includes('벨페몬'), '진화할 트래시의 「벨페몬」 카드 선택');
+  const idx = await pickZoneCard(ctx, me, 'trash', (id) => belOk(st, id), '진화할 트래시의 「벨페몬」 카드 선택');
   if (idx == null) return;
   const id = takeFrom(state, me, 'trash', idx);
   S.digivolve(state, me, st.uid, id, 0, 'trash');
@@ -803,9 +804,10 @@ SC('EX10-016', '어택 시', '링크 카드 1장을 파기하는 것으로, 상�
 // #53 EX10-019 (link -> rest opp digimon/tamer)
 SC('EX10-019', '서로의 턴', '이 디지몬이 링크했을 때, 상대의 디지몬/테이머 1마리(명)를 레스트', RUN(async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
-  const t = await pickStackOf(ctx, o, [...digimonsOf(state, o), ...tamersOf(state, o)].filter(s => !s.suspended), '레스트시킬 상대 디지몬/테이머 선택 (선택 안 함 가능)', 'rest');
+  // an already-rested target may be chosen too: the 2nd sentence (stays rested through the next active phase) still applies
+  const t = await pickStackOf(ctx, o, [...digimonsOf(state, o), ...tamersOf(state, o)], '레스트시킬 상대 디지몬/테이머 선택 (선택 안 함 가능)', 'rest');
   if (!t) return;
-  S.restStack(state, o, t.uid);
+  if (!t.suspended) S.restStack(state, o, t.uid);
   if (t.suspended) S.setSkipNextUnsuspend(state, o, t.uid);
 }));
 // #54 EX10-019 inh (opp digimon rested -> link card cost -> trash opp security top)
