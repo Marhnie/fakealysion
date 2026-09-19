@@ -573,7 +573,7 @@ sc('BT20-033::등장 시', async (ctx) => {
 SCRIPTS['BT20-033::진화 시'] = SCRIPTS['BT20-033::등장 시'];
 const tamerAdded = (info) => (info.added || []).some(id => C(id).category === 'tamer');
 hk('BT20-034', { tag: '서로의 턴', events: { sourcesAdded: (state, hp, h, info) => info.stack === h && tamerAdded(info) } });
-sc('BT20-034::서로의 턴', async (ctx) => {
+sc('BT20-034::서로의 턴@발휘하지 않는다', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
   const t = await pickStack(ctx, o, digs(state, o), '【진화 시】 효과를 봉인할 상대 디지몬 선택');
   if (t) t.noEvoTrigUntil = oppTurnEnd(state, ctx.self);
@@ -654,7 +654,7 @@ sc('BT20-078::소멸 시', async (ctx) => {
   if (t) del(state, o, t, ctx.self);
 });
 hk('BT20-080', { tag: '서로의 턴', events: { sourcesAdded: (state, hp, h, info) => info.stack === h && tamerAdded(info) } });
-sc('BT20-080::서로의 턴', async (ctx, R) => {
+sc('BT20-080::서로의 턴@효과 1개를 발휘', async (ctx, R) => {
   const { state } = ctx, st = me(ctx); if (!st) return;
   await borrowEvoEffect(ctx, R, st.cardId);
   const ready = digs(state, ctx.self).filter(s => !s.suspended);
@@ -782,10 +782,18 @@ hk('P-182', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h 
 hk('P-185', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h ? 1000 * new Set(h.sources.slice(S.fdCount(h)).flatMap(id => C(id).colors || [])).size : 0) });
 hk('P-183', { tag: '서로의 턴', limit: 1, events: { redirect: () => true } });
 sc('P-183::서로의 턴', async (ctx) => { S.trashTopSecurityByEffect(ctx.state, opp(ctx.self)); });
+// 【진화 시】 상대의 턴 종료까지 상대의 디지몬 1마리에게 「【자신의 메인 페이즈 개시 시】 이 디지몬으로 어택한다.」를 준다. 그 후 이 디지몬으로 어택할 수 있다.
+// (the generic grant only queues a manual reminder for the forced-attack text, so use the s3.forceAtkMain mechanism)
+sc('P-183::진화 시', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self), st = me(ctx);
+  const t = await pickStack(ctx, o, digs(state, o), '효과를 줄 상대 디지몬 선택');
+  if (t) giveForcedAttack(state, t, ctx.sourceCardId, oppTurnEnd(state, ctx.self));
+  if (st && !st.suspended && await ask(ctx, '이 디지몬으로 어택할까요?')) ctx.startAttack(ctx.self, st.uid);
+});
 sc('P-184::진화 시', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st) return;
   S.modifyDP(state, ctx.self, st.uid, 3000, 'opponentTurn');
-  if (st.sources.some(id => C(id).nameKo === '키사카타 코스케')) for (const s of digs(state, ctx.self)) if (hasType(C(s.cardId), 'SoC')) S.unsuspendStack(state, ctx.self, s.uid);
+  if (st.sources.some(id => /^키사카타 코(우)?스케$/.test(C(id).nameKo))) for (const s of digs(state, ctx.self)) if (hasType(C(s.cardId), 'SoC')) S.unsuspendStack(state, ctx.self, s.uid);
 });
 sc('P-186::등장 시', async (ctx) => {
   const { state } = ctx;
@@ -799,12 +807,30 @@ sc('P-186::등장 시', async (ctx) => {
   if (!done) S.recoverTopOfDeckToSecurity(state, ctx.self);
 });
 SCRIPTS['P-186::진화 시'] = SCRIPTS['P-186::등장 시'];
+// 이 디지몬이 등장할 때, DP 13000 이상의 디지몬이 있다면, 서로의 트래시 합계 5장마다 지불하는 코스트 -2 (hand play only, like the other selfPlayDiscount cards)
+hk('P-186', { tag: '__handPlay', selfPlayDiscount: (state) => {
+  if (!['p1', 'p2'].some(q => digs(state, q).some(s => S.effectiveDP(state, q, s) >= 13000))) return 0;
+  return -2 * Math.floor((state.players.p1.trash.length + state.players.p2.trash.length) / 5);
+} });
 sc('LM-040::어택 시', async (ctx) => {
   const { state } = ctx, st = me(ctx), o = opp(ctx.self); if (!st) return;
   if (digs(state, o).some(s => s.sources.length >= st.sources.length)) return;
   S.unsuspendStack(state, ctx.self, st.uid);
   S.addSecurityDPMod(state, o, -6000, state.turnNumber);
 });
+// 【등장 시】【진화 시】 상대의 디지몬/테이머 1마리(명)를 레스트시킨다. 그 후, 상대의 턴 종료까지 상대의 디지몬/테이머 1마리(명)의 【진화 시】 효과는 발휘하지 않고, 액티브가 되지 않는다.
+sc('LM-042::등장 시', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self);
+  const pool = () => [...digs(state, o), ...tams(state, o)];
+  const r = await pickStack(ctx, o, pool().filter(s => !s.suspended), '레스트시킬 상대의 디지몬/테이머 선택');
+  if (r) S.restStack(state, o, r.uid);
+  const t = await pickStack(ctx, o, pool(), '【진화 시】 효과를 봉인하고 액티브가 되지 않게 할 상대의 디지몬/테이머 선택');
+  if (!t) return;
+  const until = oppTurnEnd(state, ctx.self);
+  t.noEvoTrigUntil = until; t.s2NoActiveUntil = until;
+  S.log(state, `${o} ${C(t.cardId).nameKo}: 상대의 턴 종료까지 【진화 시】 효과 발휘 불가, 액티브가 되지 않음`);
+});
+SCRIPTS['LM-042::진화 시'] = SCRIPTS['LM-042::등장 시'];
 sc('LM-042::소멸 시', async (ctx) => { S.placeThisAtSecurityBottom(ctx.state, ctx.self, ctx.sourceCardId); });
 async function adventureEvolve(ctx) {
   const st = me(ctx); if (!st) return;
@@ -834,6 +860,14 @@ sc('ST20-11::등장 시', async (ctx) => {
   }
 });
 SCRIPTS['ST20-11::진화 시'] = SCRIPTS['ST20-11::등장 시'];
+// 【진화 시】【어택 시】 가장 DP가 낮은 상대의 디지몬 1마리를 소멸시킨다 (first tag 진화 시 is shared with the 등장 시/진화 시 segment -> @needle key)
+sc('ST20-11::진화 시@가장 DP가 낮은', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self), ds = digs(state, o);
+  if (!ds.length) return;
+  const min = Math.min(...ds.map(s => S.effectiveDP(state, o, s)));
+  const t = await pickStack(ctx, o, ds.filter(s => S.effectiveDP(state, o, s) === min), '소멸시킬 가장 DP가 낮은 상대 디지몬 선택');
+  if (t) del(state, o, t, ctx.self);
+});
 sc('ST21-06::등장 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
   const cap = 6000 + 2000 * Math.floor(tamerColors(state, ctx.self) / 2);
@@ -891,6 +925,8 @@ sc('BT21-023::등장 시', async (ctx) => {
   await linkFree(ctx, { stack: st, zones: ['hand', 'sources'], pred: c => (c.level || 0) <= 4 });
 });
 SCRIPTS['BT21-023::진화 시'] = SCRIPTS['BT21-023::등장 시'];
+// 【자신의 턴】[턴 1회] 이 디지몬이 링크했을 때, 이 디지몬의 DP 이하의 상대 디지몬 1마리를 소멸 (the generic tag scan never matched: the trigger word is in the body, not a tag)
+hk('BT21-023', { tag: '자신의 턴', limit: 1, events: { linked: (state, hp, h, info) => info.owner === hp && info.stack === h } });
 sc('BT21-073::등장 시', async (ctx) => {
   const st = me(ctx); if (!st) return;
   if (!(await ask(ctx, 'Lv.4 이하의 디지몬 카드를 링크할까요?'))) return;
@@ -947,6 +983,11 @@ sc('BT21-056::등장 시', async (ctx) => {
   const ti = await pickZone(ctx, ctx.self, 'trash', (c) => m(c) && c.category !== 'digitama', '패로 되돌릴 카드 선택');
   if (ti != null) { const [id] = pl.trash.splice(ti, 1); pl.hand.push(id); }
 });
+// [상속] 【자신의 턴】[턴에 1회] 이 디지몬이 「벰몬」이 기술되어 있는 디지몬 카드로 진화할 때, 지불하는 진화 코스트 -1
+{ const d = { tag: '자신의 턴', src: 'inheritedKo', evoDiscount: (state, hp, h, stack, targetId) => {
+  if (stack !== h || C(targetId).category !== 'digimon' || !mention(C(targetId), '벰몬')) return 0;
+  return S.hookUseOnce(h, 'BT21-056', d) ? -1 : 0;
+} }; hk('BT21-056', d); }
 sc('BT21-057::등장 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
   if (!tams(state, ctx.self).some(t => C(t.cardId).nameKo === '신태일' || hasType(C(t.cardId), '어드벤처'))) return;
@@ -970,6 +1011,16 @@ sc('BT21-060::상대의 턴', async (ctx) => {
   for (let i = st.sources.length - 1; i >= S.fdCount(st) && n < 2; i--) if (C(st.sources[i]).nameKo === '벰몬') { state.players[ctx.self].deck.push(...st.sources.splice(i, 1)); n++; }
   S.recomputeStackGrants(st);
   if (state.attackCtx && state.attackCtx.terminate) state.attackCtx.terminate();
+});
+// 【서로의 턴】 이 디지몬이 배틀 에어리어를 벗어날 때, 진화원에서 「벰몬」 1장을 코스트 없이 등장 (the sources are already in the trash when this resolves)
+hk('BT21-060', { tag: '서로의 턴', has: '벗어날 때', onLeave: () => true });
+sc('BT21-060::서로의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self], evt = ctx.trigger && ctx.trigger.evt;
+  if (!evt || !evt.sources) return;
+  const idxs = pl.trash.map((id, i) => i).filter(i => C(pl.trash[i]).nameKo === '벰몬' && C(pl.trash[i]).category === 'digimon' && evt.sources.includes(pl.trash[i]));
+  if (!idxs.length || !(await ask(ctx, '진화원의 「벰몬」 1장을 코스트를 지불하지 않고 등장시킬까요?'))) return;
+  const idx = await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: idxs, prompt: '등장시킬 「벰몬」 선택' });
+  if (idx != null) S.playFreeFromZone(state, ctx.self, 'trash', idx, {});
 });
 sc('BT21-061::등장 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
@@ -1000,6 +1051,8 @@ sc('BT21-062::진화 시', async (ctx) => {
     if (i >= 0) { const k = await pickZone(ctx, ctx.self, z, c => c.nameKo === '라그나로크 캐논', '사용할 「라그나로크 캐논」 선택'); if (k != null) { await useOptionFree(ctx, z, k); return; } }
   }
 });
+// 【서로의 턴】 이 디지몬의 진화원 1장마다 이 디지몬을 DP +1000 (no generic parse for this phrasing)
+hk('BT21-072', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h ? 1000 * h.sources.length : 0) });
 sc('BT21-072::진화 시', async (ctx) => {
   const st = me(ctx); if (!st || st.suspended) return;
   if (await ask(ctx, '이 디지몬으로 레스트시키지 않고 어택할까요?')) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
@@ -1021,6 +1074,27 @@ sc('BT21-074::등장 시', async (ctx) => {
   S.grantShield(state, ctx.self, t.uid, { until: oppTurnEnd(state, ctx.self), kinds: ['bounce', 'retreat'] });
 });
 SCRIPTS['BT21-074::진화 시'] = SCRIPTS['BT21-074::등장 시'];
+// 【진화 시】【어택 시】[턴 1회] 자신의 디지몬의 진화원에서 특징 「어플몬」/「3총사」를 가진 카드 1장을 파기하는 것으로, 상대의 디지몬 1마리를 《퇴화 1》
+// (the segment shares first tag 진화 시 with the 등장 시/진화 시 one, so it needs its own @needle key)
+sc('BT21-074::진화 시@진화원에서 특징', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self);
+  const pred = (id) => hasType(C(id), '어플몬', '3총사');
+  const hosts = digs(state, ctx.self).filter(s => s.sources.slice(S.fdCount(s)).some(pred));
+  if (!hosts.length || !digs(state, o).length) return;
+  if (!(await ask(ctx, '자신의 디지몬의 진화원의 「어플몬」/「3총사」 카드 1장을 파기하고 상대 디지몬 1마리를 퇴화시킬까요?'))) return;
+  const h = await pickStack(ctx, ctx.self, hosts, '진화원 카드를 파기할 디지몬 선택');
+  if (!h) return;
+  const fd = S.fdCount(h);
+  const idxs = []; h.sources.forEach((id, i) => { if (i >= fd && pred(id)) idxs.push(i); });
+  let at = idxs[idxs.length - 1];
+  if (idxs.length > 1) { const k = await pickFromList(ctx, ctx.self, h.sources.slice(), idxs, '파기할 진화원 카드 선택'); if (k == null) return; at = k; }
+  const [id] = h.sources.splice(at, 1);
+  state.players[ctx.self].trash.push(id);
+  S.recomputeStackGrants(h);
+  S.log(state, `${ctx.self} ${C(h.cardId).nameKo}의 진화원 ${C(id).nameKo} 파기`);
+  const t = await pickStack(ctx, o, digs(state, o), '퇴화시킬 상대 디지몬 선택');
+  if (t) S.retreat(state, o, t.uid, 1);
+});
 sc('BT21-077::등장 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self], o = opp(ctx.self);
   if (!pl.hand.some(id => mention(C(id), '감마몬')) || !digs(state, o).length) return;
@@ -1034,9 +1108,21 @@ sc('BT21-077::등장 시', async (ctx) => {
   giveForcedAttack(state, t, ctx.sourceCardId, oppTurnEnd(state, ctx.self));
 });
 SCRIPTS['BT21-077::진화 시'] = SCRIPTS['BT21-077::등장 시'];
+// 【소멸 시】 「카노바이스몬」 1장 또는 「감마몬」이 기술되어 있는 Lv.4 이하의 디지몬 카드 1장 (the Lv.4 cap applies only to the 감마몬 branch; the inherited version has no 카노바이스몬 branch and stays generic)
+sc('BT21-077::소멸 시@카노바이스몬', async (ctx) => {
+  const idx = await pickZone(ctx, ctx.self, 'trash', c => c.category === 'digimon' && (c.nameKo === '카노바이스몬' || (mention(c, '감마몬') && (c.level || 0) <= 4)), '코스트를 지불하지 않고 등장시킬 카드 선택 (취소=안 함)');
+  if (idx != null) S.playFreeFromZone(ctx.state, ctx.self, 'trash', idx, {});
+});
 sc('BT21-079::어택 종료 시', async (ctx) => {
   const { state } = ctx;
   for (const p of ['p1', 'p2']) for (const s of [...digs(state, p)]) del(state, p, s, ctx.self);
+});
+// [상속] 【자신의 턴】[턴에 1회] 상대의 시큐리티가 줄어들었을 때, 자신의 패에서 레드인 테이머 카드 1장을 코스트를 지불하지 않고 등장시킨다
+hk('BT21-082', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { securityDecrease: (state, hp, h, info) => info.owner === opp(hp) } });
+sc('BT21-082::자신의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  const idx = await pickZone(ctx, ctx.self, 'hand', c => c.category === 'tamer' && (c.colors || []).includes('red'), '코스트를 지불하지 않고 등장시킬 레드 테이머 선택');
+  if (idx != null) S.playFreeFromZone(state, ctx.self, 'hand', idx, {});
 });
 sc('BT21-082::자신의 메인 페이즈 개시 시', async (ctx) => {
   const { state } = ctx;
@@ -1045,6 +1131,18 @@ sc('BT21-082::자신의 메인 페이즈 개시 시', async (ctx) => {
   if (!o.stacks.some(s => evoCands(ctx, { ...o, stack: s }).length) || !(await ask(ctx, '디지몬/테이머를 진화시킬까요?'))) return;
   await evolveAny(ctx, o);
 });
+// 【자신의 메인 페이즈 개시 시】 패의 디지몬 카드 1장을 이 테이머 아래에 놓는 것으로, 《1 드로우》, 메모리 +1 (the generic compile skipped the "place under" cost)
+async function tamerUnderDraw(ctx, pred, prompt) {
+  const { state } = ctx, t = me(ctx); if (!t) return;
+  const idx = await pickZone(ctx, ctx.self, 'hand', c => c.category === 'digimon' && pred(c), prompt);
+  if (idx == null) return;
+  const [id] = state.players[ctx.self].hand.splice(idx, 1);
+  putSourceBottom(state, t, id, false);
+  S.drawCards(state, ctx.self, 1);
+  S.grantMemory(state, ctx.self, 1, ctx.sourceCardId);
+}
+sc('BT21-083::자신의 메인 페이즈 개시 시', (ctx) => tamerUnderDraw(ctx, c => hasType(c, '크로스 하트', '블루 플레어', '히어로'), '이 테이머 아래에 놓을 디지몬 카드 선택 (취소=안 함)'));
+sc('BT21-088::자신의 메인 페이즈 개시 시', (ctx) => tamerUnderDraw(ctx, c => `${c.effectKo || ''}\n${c.inheritedKo || ''}`.includes('《세이브') || hasType(c, '히어로'), '이 테이머 아래에 놓을 디지몬 카드 선택 (취소=안 함)'));
 {
   const ev = (state, hp, h, info) => info.owner === hp && isDig(info.stack) && hasType(C(info.stack.cardId), '크로스 하트', '히어로') && isTam(h) && !h.suspended;
   hk('BT21-083', { tag: '자신의 턴', events: { play: ev, digivolve: ev } });
@@ -1057,6 +1155,15 @@ sc('BT21-082::자신의 메인 페이즈 개시 시', async (ctx) => {
     if (t.suspended) ctx.startAttack(ctx.self, st.uid);
   });
 }
+// 【서로의 턴】[턴 1회] 이 테이머가 레스트했을 때, 턴 종료까지 자신의 디지몬 1마리는 《관통》을 얻고 DP +3000. 그 후, 턴 종료까지 상대의 디지몬 1마리를 DP -3000
+hk('BT21-086', { tag: '서로의 턴', limit: 1, events: { rest: (state, hp, h, info) => info.owner === hp && info.stack === h } });
+sc('BT21-086::서로의 턴', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self);
+  const mine = await pickStack(ctx, ctx.self, digs(state, ctx.self), '《관통》과 DP +3000을 받을 자신의 디지몬 선택');
+  if (mine) { S.grantKeyword(state, ctx.self, mine.uid, '관통', true, 'turn'); S.modifyDP(state, ctx.self, mine.uid, 3000, 'turn'); }
+  const t = await pickStack(ctx, o, digs(state, o), 'DP -3000을 받을 상대 디지몬 선택');
+  if (t) S.modifyDP(state, o, t.uid, -3000, 'turn');
+});
 sc('BT21-086::등장 시', async (ctx) => {
   const { state } = ctx;
   const ts = tams(state, ctx.self).filter(t => C(t.cardId).nameKo === '최건우' && !t.suspended);
@@ -1064,13 +1171,18 @@ sc('BT21-086::등장 시', async (ctx) => {
   if (t) S.restStack(state, ctx.self, t.uid);
 });
 hk('BT21-088', { tag: '자신의 턴', evoOption: (state, hp, h, stack, targetId) => {
-  if (!isTam(h) || h.suspended || !h.sources.length || !isDig(stack)) return null;
+  if (!isTam(h) || h.suspended || !isDig(stack) || !tams(state, hp).some(t => t.sources.length)) return null; // "자신의 테이머 아래의 카드 1장" = any own tamer's under-card
   const c = C(targetId);
   if (!(`${c.effectKo || ''}\n${c.inheritedKo || ''}`.includes('《세이브') || hasType(c, '히어로'))) return null;
-  return { label: '이 테이머를 레스트시키고 테이머 아래의 카드 1장을 그 디지몬의 진화원 아래에 놓아 진화 코스트 -1?', apply() {
+  return { label: '이 테이머를 레스트시키고 테이머 아래의 카드 1장을 그 디지몬의 진화원 아래에 놓아 진화 코스트 -1?', async apply(choose) {
     S.restStack(state, hp, h.uid);
     if (!h.suspended) return 0;
-    const id = h.sources.pop();
+    const pool = tams(state, hp).filter(t => t.sources.length);
+    let from = pool[0];
+    if (pool.length > 1 && typeof choose === 'function') { const u = await choose('pickStack', { player: hp, uids: pool.map(t => t.uid), prompt: '진화원 아래에 놓을 카드가 있는 테이머 선택' }); from = pool.find(t => t.uid === u) || pool.find(t => t === h) || pool[0]; }
+    if (!from) return 0;
+    const id = from.sources.pop();
+    S.recomputeStackGrants(from);
     putSourceBottom(state, stack, id, false);
     return -1;
   } };
@@ -1109,6 +1221,15 @@ sc('BT21-101::진화 시', async (ctx) => {
   await linkFree(ctx, { zones: ['hand', 'sources'], pred: c => hasType(c, '어플몬'), ownSourcesOf: st });
 });
 SCRIPTS['BT21-101::어택 시'] = SCRIPTS['BT21-101::진화 시'];
+// 【자신의 턴】[턴 1회] 자신의 디지몬이 링크했을 때, 이 디지몬을 액티브로 하는 것으로, 상대의 시큐리티를 위에서부터 1장 파기
+hk('BT21-101', { tag: '자신의 턴', limit: 1, events: { linked: (state, hp, h, info) => info.owner === hp && isDig(info.stack) && isDig(h) } });
+sc('BT21-101::자신의 턴', async (ctx) => {
+  const { state } = ctx, st = me(ctx); if (!st || !st.suspended) return;
+  if (!(await ask(ctx, '이 디지몬을 액티브로 하여 상대의 시큐리티를 위에서부터 1장 파기할까요?'))) return;
+  S.unsuspendStack(state, ctx.self, st.uid);
+  if (st.suspended) return;
+  S.trashTopSecurityByEffect(state, opp(ctx.self));
+});
 
 // ================================================================== EX9 (face-down sources)
 const fdN = (st) => S.fdCount(st);
@@ -1137,6 +1258,11 @@ sc('EX9-005::메인', async (ctx) => {
   if (played && findStack(state, ctx.self, st.uid)) putStackUnder(state, ctx.self, st, played);
 });
 hk('EX9-005', { tag: '서로의 턴', has: '진화할 수 없으며', noEvolve: () => true, preventLeave: (state, hp, h, target, tp, cause, mode) => target === h && mode === 'delete' && (cause === 'effect' || cause === 'ownEffect') });
+// [상속] 【상대의 턴】[턴 1회] 상대의 디지몬이 어택했을 때, 어택의 대상을 「네가몬」이 기술되어 있는 자신의 디지몬 1마리로 변경할 수 있다 (generic redirect parser doesn't read the 「이름」이 기술되어 있는 condition)
+hk('EX9-005', { tag: '상대의 턴', src: 'inheritedKo', redirectOptions: (state, hp, h, ap, aStack) => {
+  if (S.turnUsesRemaining(h, S.onceLimitKey('EX9-005', ['어택대상변경']), 1) <= 0) return [];
+  return digs(state, hp).filter(s => mention(C(s.cardId), '네가몬')).map(s => ({ targetUid: s.uid, limit: 1 }));
+} });
 sc('EX9-006::어택 시', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st || !fdN(st)) return;
   const o = { stack: st, zones: ['trash'], pred: c => hasType(c, 'Ver.5'), cost: { mode: 'discount', n: 1 } };
@@ -1179,6 +1305,15 @@ sc('EX9-031::진화 시', async (ctx) => {
   S.recoverTopOfDeckToSecurity(state, ctx.self);
 });
 SCRIPTS['EX9-031::어택 시'] = SCRIPTS['EX9-031::진화 시'];
+// 특징 「Ver.3」를 가진 자신의 디지몬이 이 카드로 진화할 때, 그 디지몬의 뒷면의 진화원 1장마다 지불하는 코스트 -1
+hk('EX9-031', { tag: '__handEvo', selfEvoDiscount: (state, p, stack) => (stack && isDig(stack) && hasType(C(stack.cardId), 'Ver.3') ? -S.fdCount(stack) : 0) });
+// [상속] 【서로의 턴】[턴에 1회] 자신의 시큐리티가 줄어들었을 때, 턴 종료까지 상대의 디지몬 1마리를 DP -4000
+hk('EX9-031', { tag: '서로의 턴', src: 'inheritedKo', limit: 1, events: { securityDecrease: (state, hp, h, info) => info.owner === hp } });
+sc('EX9-031::서로의 턴', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self);
+  const t = await pickStack(ctx, o, digs(state, o), 'DP -4000을 받을 상대 디지몬 선택');
+  if (t) S.modifyDP(state, o, t.uid, -4000, 'turn');
+});
 sc('EX9-055::등장 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
   const n = pl.trash.filter(id => C(id).nameKo.includes('네가몬')).length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter(id => C(id).nameKo.includes('네가몬')).length, 0);
@@ -1191,6 +1326,18 @@ sc('EX9-055::등장 시', async (ctx) => {
   if (st) { pl.battle.splice(pl.battle.indexOf(st), 1); pl.raising = st; }
 });
 SCRIPTS['EX9-055::진화 시'] = SCRIPTS['EX9-055::등장 시'];
+// 【서로의 턴 종료 시】[턴에 1회] 트래시의 「네가몬」이 기술되어 있는 Lv.6 이하 디지몬 카드 1장을 이 디지몬의 진화원 위에 놓는 것으로, 그 카드와 같은 Lv.의 상대 디지몬 1마리를 소멸시킨다
+sc('EX9-055::서로의 턴 종료 시', async (ctx) => {
+  const { state } = ctx, st = me(ctx), pl = state.players[ctx.self], o = opp(ctx.self); if (!st) return;
+  const idx = await pickZone(ctx, ctx.self, 'trash', c => c.category === 'digimon' && mention(c, '네가몬') && (c.level || 0) <= 6, '진화원 위에 놓을 「네가몬」 디지몬 카드 선택 (취소=안 함)');
+  if (idx == null) return;
+  const [id] = pl.trash.splice(idx, 1);
+  st.sources.push(id);
+  S.recomputeStackGrants(st);
+  S.log(state, `${ctx.self} ${C(id).nameKo}을(를) ${C(st.cardId).nameKo}의 진화원 위에 놓음`);
+  const t = await pickStack(ctx, o, digs(state, o).filter(s => C(s.cardId).level === C(id).level), `소멸시킬 Lv.${C(id).level}의 상대 디지몬 선택`);
+  if (t) del(state, o, t, ctx.self);
+});
 sc('EX9-069::자신의 메인 페이즈 개시 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
   const ts = digs(state, ctx.self).filter(s => hasType(C(s.cardId), 'DM'));
@@ -1228,7 +1375,7 @@ SCRIPTS['EX9-071::메인@딜레이'] = [fn(async (ctx) => {
   S.trashEvoSources(state, ctx.self, t.uid, 2, 'bottom');
   S.unsuspendStack(state, ctx.self, t.uid);
 })];
-hk('EX9-072', { tag: '서로의 턴', dp: (state, hp, h, target, tp) => (tp === hp && isDig(target) && hasType(C(target.cardId), 'DM') ? 1000 * fdN(target) : 0) });
+hk('EX9-072', { tag: '서로의 턴', zone: 'security', dp: (state, hp, h, target, tp) => (tp === hp && isDig(target) && hasType(C(target.cardId), 'DM') ? 1000 * fdN(target) : 0) });
 
 // ================================================================== 디지크로스 with tamer-under / trash materials
 const xrosExtra = (traits, under, trash) => ({ tag: '서로의 턴', xrosExtra: (state, hp, h, cardId) => (isTam(h) && hasType(C(cardId), ...traits) ? { under, trash } : null) });

@@ -283,3 +283,134 @@ input[type=number] { width: 48px; background: var(--card); color: var(--text); b
 .main-btns { position:absolute; top:-8px; left:50%; transform:translateX(-50%); display:flex; gap:3px; z-index:2; }
 .main-btn { position: static !important; transform:none !important; border-color: var(--holo-accent); background: rgba(6,20,30,0.92); color:#bfe6ff; }
 .main-btn:hover { background: var(--holo-accent); color:#001018; }
+
+/* ---------- tap-to-act (touch) ---------- */
+button, .card-chip, .pile-chip, .link-badge { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+@keyframes tapTargetPulse { 0%, 100% { box-shadow: 0 0 0 2px var(--ok) inset, 0 0 6px 1px var(--ok); } 50% { box-shadow: 0 0 0 2px var(--ok) inset, 0 0 14px 3px var(--ok); } }
+.card-chip.tap-target, .link-badge.tap-target { border-color: var(--ok); animation: tapTargetPulse 1.2s ease-in-out infinite; }
+.link-badge.tap-target { background: var(--ok); color: #04140a; }
+.zone.tap-target { border-color: var(--ok); background: rgba(87,176,106,0.10); animation: tapTargetPulse 1.4s ease-in-out infinite; }
+.info-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.topbar-info { align-items: flex-start; }
+.lbl-long { }
+
+/* ---------- phone / small screens (portrait + landscape) ---------- */
+@media (max-width: 900px), (pointer: coarse) {
+  html, body { overflow-x: hidden; -webkit-text-size-adjust: 100%; }
+  body { font-size: 13px; }
+  #app { height: 100vh; height: 100dvh; width: 100%; max-width: 100vw; overflow: hidden; }
+  button { min-height: 40px; padding: 6px 12px; font-size: 13px; }
+  input, select { min-height: 40px; font-size: 16px; max-width: 100%; }
+  input[type=number] { width: 60px; }
+  .topbar-row { flex-wrap: wrap; gap: 6px 10px; padding: 4px 8px; font-size: 12px; }
+  .topbar-row .gauge-track { display: none; }
+  .topbar-row button { min-height: 40px; padding: 4px 10px; font-size: 12px; }
+  .lbl-long { display: none; }
+
+  .board { padding: 4px 6px 10px; margin-right: 0 !important; -webkit-overflow-scrolling: touch; }
+  .table-surface .player-panel:first-child { transform: none; filter: none; }
+  .player-panel { padding: 4px 6px; }
+  .player-header { gap: 8px; font-size: 12px; min-height: 28px; }
+  .player-header span:nth-child(2) { max-width: 40vw; }
+  .field-row { flex-direction: column; gap: 4px; }
+  .pile-rail { flex-wrap: wrap; gap: 6px; }
+  .pile-chip { min-width: 52px; min-height: 36px; padding: 2px 6px; }
+  .pile-label { font-size: 9px; }
+  .zone-row { flex-direction: column; gap: 4px; }
+  .zone { min-width: 0; }
+  .zone-pill { font-size: 10px; white-space: normal; border-radius: 10px; }
+  .hand-zone { flex: none !important; }
+
+  /* cards: smaller, no hover lift / tilt (hover sticks after a tap) */
+  .card-chip { width: 64px; padding: 2px; }
+  .card-chip:hover, .card-chip.suspended:hover, .hand-list .card-chip:hover { transform: none !important; }
+  .hand-list .card-chip:nth-child(n) { transform: none; }
+  .card-chip.suspended, .card-chip.suspended:hover { transform: rotate(-4deg) !important; }
+  .card-chip .nm { font-size: 10px; word-break: keep-all; overflow-wrap: anywhere; }
+  .card-chip .meta { font-size: 9px; }
+  .empty-slot { width: 64px; height: 44px; font-size: 10px; }
+  .stack-wrap { width: 64px; }
+  .stack-list, .hand-list { gap: 4px; }
+  .hand-list { max-height: none; }
+  .link-badge { width: 30px; height: 30px; top: -8px; right: -8px; font-size: 13px; }
+  /* overlay buttons on a card are too small to tap — the selection bar carries these actions on touch */
+  .stack-wrap > .delay-btn, .stack-wrap > .main-btns { display: none; }
+
+  /* selected-card info: bottom sheet, actions on top, text collapsed until tapped */
+  .topbar-info {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; margin: 0;
+    flex-direction: column-reverse; gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    max-height: 46vh; background: rgba(18,20,24,0.97); border-top: 2px solid var(--holo-accent);
+    box-shadow: 0 -8px 20px rgba(0,0,0,0.5); overflow-y: auto;
+  }
+  .topbar-info-text { flex: none; width: 100%; max-height: 3.3em; overflow: hidden; position: relative; font-size: 12px; }
+  .topbar-info-text::after { content: '▾ 탭하여 펼치기'; position: absolute; right: 0; bottom: 0; background: rgba(18,20,24,0.97); padding-left: 6px; color: var(--holo-accent); font-size: 11px; }
+  .topbar-info-text.open { max-height: none; }
+  .topbar-info-text.open::after { content: none; }
+  .info-actions { width: 100%; }
+  .info-actions button { flex: 1 1 auto; }
+  .info-actions .info-close { flex: 0 0 48px; }
+  #app.sheet-open .board { padding-bottom: 120px; }
+
+  .actions { padding: 6px 8px; margin-right: 0 !important; max-height: 38vh; }
+  .actions-row { gap: 6px; }
+  .panel-tab { padding: 10px 12px; font-size: 12px; }
+  .section-title { min-height: 24px; }
+  .effect-box { max-width: 100%; }
+
+  /* modals: fit the screen, big tap targets */
+  .modal-backdrop { align-items: flex-end; }
+  .modal-panel { max-width: 100vw; width: 100vw; max-height: 92vh; max-height: 92dvh; border-radius: 12px 12px 0 0; }
+  .modal-panel .player-panel { border-radius: 12px 12px 0 0; padding: 8px; }
+  .modal-panel button { min-height: 44px; }
+  .modal-panel .actions-row:has(> button) { flex-direction: column; align-items: stretch; }
+  .modal-panel .actions-row > span { flex: none; }
+  .vs-battle { gap: 6px; padding: 6px 0; }
+  .vs-mid { min-width: 44px; }
+
+  /* log becomes a full-screen overlay when open, a thin strip when closed */
+  .log-panel { z-index: 65; }
+  .log-panel:not(.log-collapsed) { width: 100vw; top: 0; }
+  .log-collapsed { width: 24px; top: 40vh; bottom: auto; height: 84px; border-radius: 6px 0 0 6px; padding-top: 6px; z-index: 40; }
+  #app.log-open .board, #app.log-open .actions { margin-right: 0 !important; }
+  .board, .actions { margin-right: 0 !important; }
+  .vanish-toast { font-size: 14px; padding: 10px 14px; }
+}
+/* landscape phone: very little height — tighten */
+@media (max-height: 500px) and (max-width: 950px) {
+  .card-chip { width: 54px; }
+  .stack-wrap { width: 54px; }
+  .empty-slot { width: 54px; height: 36px; }
+  .card-chip .nm { font-size: 9px; }
+  .card-chip .meta { font-size: 8px; }
+  .topbar-row { padding: 2px 8px; }
+  .topbar-row button { min-height: 36px; }
+  .topbar-info { max-height: 60vh; flex-direction: row-reverse; align-items: center; }
+  .topbar-info-text { flex: 1; width: auto; }
+  .info-actions { width: auto; flex: 0 0 auto; }
+  .modal-backdrop { align-items: center; }
+  .modal-panel { max-height: 96vh; width: min(96vw, 720px); border-radius: 12px; }
+  .modal-panel .player-panel { border-radius: 12px; }
+  .modal-panel .actions-row:has(> button) { flex-direction: row; flex-wrap: wrap; }
+  #app.sheet-open .board { padding-bottom: 70px; }
+}
+.touch-only { display: none; }
+@media (max-width: 900px), (pointer: coarse) {
+  .desk { display: none; }
+  .touch-only { display: inline; }
+  .topbar > b, .topbar > .topbar-row:only-child { padding: 6px 10px; }
+  .hand-zone .hand-list { flex-wrap: nowrap; overflow-x: auto; padding: 8px 2px 6px; scrollbar-width: thin; }
+  .hand-zone .hand-list .card-chip { flex: 0 0 auto; }
+  .hand-zone .hand-list.trash-list { flex-wrap: wrap; }
+  .hex-slot-row .empty-slot ~ .empty-slot ~ .empty-slot { display: none; }
+  .log-collapsed { top: auto; bottom: 44px; right: 0; width: auto; height: auto; writing-mode: horizontal-tb; padding: 8px 10px; background: rgba(15,16,19,0.92); border: 1px solid var(--border); font-size: 12px; }
+}
+@media (max-width: 900px), (pointer: coarse) { .modal-panel { animation: none; } }
+@media (max-height: 500px) and (max-width: 950px) {
+  .zone-row { flex-direction: row; flex-wrap: nowrap; align-items: flex-start; }
+  .zone-row > .zone:last-child { flex: 1; min-width: 0; }
+  .field-row { flex-direction: row; }
+  .panel-tab { padding: 4px 12px; }
+  .actions-collapsed { min-height: 0; }
+  .player-header { min-height: 24px; }
+}

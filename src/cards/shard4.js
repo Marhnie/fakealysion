@@ -849,7 +849,7 @@ H('P-137', { tag: '자신의 턴', has: '어택의 대상이 변경되었을 때
 SCRIPTS['P-137::자신의 턴'] = [{ op: 'securityTopToHand', who: 'opponent', n: 1 }];
 H('BT17-036', { tag: '서로의 턴', has: '시큐리티가 효과로 파기되었을 때', limit: 1, events: { securityDiscard: (st, hp, h, info) => info.owner === hp && h.sources.some(id => isNamed(id, '레온 알렉산더')) } });
 SCRIPTS['BT17-036::서로의 턴@시큐리티가 효과로 파기되었을 때'] = [{ op: 's4_evolve', subject: { this: true }, zone: 'hand', pred: (id) => nameHas(id, '펄스몬'), cost: { mode: 'free' }, optional: true }];
-const optUsed2 = { tag: '자신의 턴', has: '옵션 카드를 사용했을 때', limit: 1, events: { optionUsed: (st, hp, h, info) => info.owner === hp && info.useCost >= 2 } };
+const optUsed2 = { tag: '자신의 턴', has: '옵션 카드를 사용했을 때', limit: 1, events: { optionUsed: (st, hp, h, info) => info.owner === hp && ((info.cardId && C(info.cardId) ? (C(info.cardId).cost || 0) : info.useCost) >= 2) } }; // 「사용 코스트」 = the printed use cost (not the reduced/paid amount; effect-driven uses may not carry useCost)
 H('BT17-038', { ...optUsed2 });
 H('BT19-040', { ...optUsed2 });
 H('BT17-006', { tag: '자신의 턴', src: 'inheritedKo', has: '테이머 카드가 놓였을 때', limit: 1, events: { sourcesAdded: (st, hp, h, info) => info.stack === h && info.added.some(isTamerCard) } });
@@ -963,7 +963,7 @@ H('BT19-048', { tag: '서로의 턴', has: '시큐리티 아래에 앞면으로 
   return true;
 } });
 H('BT19-053', { tag: '서로의 턴', has: '시큐리티 아래에 앞면으로 놓을 수 있다', preventLeave: (st, hp, h, target, tp, cause, mode) => {
-  if (cause === 'battle' || mode !== 'delete' || C(target.cardId).category !== 'digimon' || !stackHasTrait(st, target, '로얄 베이스')) return false;
+  if (cause === 'battle' || !leaveMode(mode) || C(target.cardId).category !== 'digimon' || !stackHasTrait(st, target, '로얄 베이스')) return false; // 「배틀 이외로 벗어날 때」 = delete AND bounce
   if (!st.players[hp].battle.includes(target)) return false;
   detachStack(st, hp, target);
   st.players[hp].trash.push(...target.sources);
@@ -1204,3 +1204,140 @@ OPS.s4_bt22_093 = async (instr, ctx) => {
   S.restStack(st, p, me.uid);
   await OPS.s4_evolve({ subject: { pred: (s) => s.uid === uid }, zone: 'hand', pred: (id) => ok(id), cost: { mode: 'free' } }, ctx);
 };
+
+// ───────── event watchers that had NO implementation (found by the deep verification pass): continuous-tagged "~했을 때" abilities the generic
+// watcher parser rejects ("등장/진화했을 때", "어택의 대상이 변경되었을 때", "벗어날 때" triggers …) were only "covered" as if they were ordinary triggers ─────────
+OPS.s4_fn = async (instr, ctx) => { await instr.fn(ctx); };
+const fnOp = (f) => ({ op: 's4_fn', fn: f });
+const wasDeleted = (st, stack) => !!(st.deletedInfo || {})[stack.uid];
+const evtOf = (ctx) => ctx.trigger?.evt || null;
+const activeTamer = (h) => C(h.cardId).category === 'tamer' && !h.suspended;
+const unsuspendThis = fnOp(async (ctx) => { const h = thisStack(ctx); if (h && h.suspended && await confirm(ctx, ctx.self, `${C(h.cardId).nameKo}을(를) 액티브로 할까요?`)) S.unsuspendStack(ctx.state, ctx.self, h.uid); });
+// play a card from the leaving stack's evolution cards (already in the trash) — pred over card id
+const playFromLeftSources = (pred, prompt) => fnOp(async (ctx) => {
+  const evt = evtOf(ctx); if (!evt) return;
+  const pl = ctx.state.players[ctx.self];
+  const cand = evt.sources.filter(id => pl.trash.includes(id) && pred(id));
+  if (!cand.length) return;
+  const id = cand[cand.length - 1];
+  if (!(await confirm(ctx, ctx.self, prompt || `${C(id).nameKo}을(를) 코스트 없이 등장시킬까요?`))) return;
+  const i = pl.trash.lastIndexOf(id);
+  if (i >= 0) S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, { fromSources: true });
+});
+// P-144 울퉁몬 X항체 (상대의 턴) [턴에 1회]: 어택의 대상이 변경되었을 때, 《블로커》를 가진 자신의 디지몬 1마리를 액티브로 할 수 있다
+H('P-144', { tag: '상대의 턴', has: '어택의 대상이 변경되었을 때', limit: 1, events: { redirect: (st, hp, h, info) => info.owner !== hp } });
+SCRIPTS['P-144::상대의 턴@어택의 대상이 변경되었을 때'] = [fnOp(async (ctx) => {
+  const c = digimonOf(ctx.state, ctx.self).filter(s => s.suspended && S.hasKeyword(s, '블로커'));
+  const t = await pickStackOf(ctx, ctx.self, c, '액티브로 할 《블로커》 디지몬 선택 (안 해도 됨)');
+  if (t) S.unsuspendStack(ctx.state, ctx.self, t.uid);
+})];
+// BT17-050 패러사이몬 (진화원, 서로의 턴): 이 디지몬이 상대의 효과로 소멸할 때, 진화원의 「패러사이몬」 1장을 코스트 없이 등장
+H('BT17-050', { tag: '서로의 턴', src: 'inheritedKo', has: '상대의 효과로 소멸할 때', onLeave: (st, hp, stack, cause) => cause === 'effect' && wasDeleted(st, stack) });
+SCRIPTS['BT17-050::서로의 턴@소멸할 때'] = [playFromLeftSources((id) => isNamed(id, '패러사이몬'), '진화원의 「패러사이몬」을 코스트 없이 등장시킬까요?')];
+// BT17-053 케라몬 (상대의 턴): 상대의 디지몬이 등장/진화했을 때, 그 디지몬이 Lv.5 이상이라면 이 디지몬을 패의 「인펠몬」으로 (진화 조건 무시, 코스트 없이) 진화
+const oppLv5 = (st, hp, h, info) => info.owner !== hp && !!info.stack && isDigimonCard(info.stack.cardId) && lvOf(info.stack.cardId) >= 5 && C(h.cardId).category === 'digimon';
+H('BT17-053', { tag: '상대의 턴', has: '등장/진화했을 때', events: { play: oppLv5, digivolve: oppLv5 } });
+SCRIPTS['BT17-053::상대의 턴@등장/진화했을 때'] = [{ op: 's4_evolve', subject: { this: true }, zone: 'hand', pred: (id) => isNamed(id, '인펠몬'), ignoreCond: true, cost: { mode: 'free' }, optional: true }];
+// BT17-081 신태일&매튜 (서로의 턴): 자신의 디지몬이 등장/진화했을 때, 이 테이머를 레스트시키는 것으로, 「그레이몬」 포함 디지몬이 있다면 메모리 +1, 「가루몬」 포함 디지몬이 있다면 메모리 +1
+const ownDigiEvt = (st, hp, h, info) => info.owner === hp && !!info.stack && isDigimonCard(info.stack.cardId) && activeTamer(h);
+H('BT17-081', { tag: '서로의 턴', has: '등장/진화했을 때', events: { play: ownDigiEvt, digivolve: ownDigiEvt } });
+SCRIPTS['BT17-081::서로의 턴@등장/진화했을 때'] = [fnOp(async (ctx) => {
+  const t = thisStack(ctx); if (!t || !activeTamer(t)) return;
+  S.restStack(ctx.state, ctx.self, t.uid);
+  if (!t.suspended) return;
+  if (digimonOf(ctx.state, ctx.self).some(s => stackNameHas(ctx.state, s, '그레이몬'))) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+  if (digimonOf(ctx.state, ctx.self).some(s => stackNameHas(ctx.state, s, '가루몬'))) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+})];
+// BT17-090 류센지 토모노리 (자신의 턴): 자신의 디지몬의 진화원에 테이머 카드가 효과로 놓였을 때, 이 테이머를 레스트시키는 것으로, 메모리 +1
+H('BT17-090', { tag: '자신의 턴', has: '테이머 카드가 효과로 놓였을 때', events: { sourcesAdded: (st, hp, h, info) => info.owner === hp && info.cause === 'effect' && info.added.some(isTamerCard) && activeTamer(h) } });
+SCRIPTS['BT17-090::자신의 턴@테이머 카드가 효과로 놓였을 때'] = [fnOp(async (ctx) => {
+  const t = thisStack(ctx); if (!t || !activeTamer(t)) return;
+  S.restStack(ctx.state, ctx.self, t.uid);
+  if (t.suspended) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+})];
+// BT17-056 로코몬 (서로의 턴) [턴에 1회]: 어택의 대상이 변경되었을 때, 덱 위 3장 오픈 → 「패러사이몬」 또는 블랙 Lv.5 이하 디지몬 카드 1장을 이 디지몬의 진화원 아래에, 나머지는 파기
+H('BT17-056', { tag: '서로의 턴', has: '어택의 대상이 변경되었을 때', limit: 1, events: { redirect: () => true } });
+SCRIPTS['BT17-056::서로의 턴@어택의 대상이 변경되었을 때'] = [fnOp(async (ctx) => {
+  const st = ctx.state, p = ctx.self, pl = st.players[p], h = thisStack(ctx);
+  const revealed = pl.deck.splice(0, 3);
+  if (!revealed.length) return;
+  log(ctx, `${p} 덱 위 ${revealed.length}장 오픈: ${revealed.map(id => C(id).nameKo).join(', ')}`);
+  const ok = (id) => isDigimonCard(id) && (isNamed(id, '패러사이몬') || (hasColor(id, ['black']) && lvOf(id) <= 5));
+  const eligible = revealed.map((id, i) => ({ id, i })).filter(x => ok(x.id));
+  let pick = null;
+  if (h && eligible.length) { const r = await ctx.choose('pickFromRevealed', { player: p, revealed, eligible, min: 0, max: 1, prompt: '진화원 아래에 놓을 카드 선택' }); pick = (r && r.length) ? r[0] : null; }
+  revealed.forEach((id, i) => { if (i === pick) h.sources.unshift(id); else pl.trash.push(id); });
+  if (h) S.recomputeStackGrants(h);
+})];
+// EX7-014 볼케닉드라몬 / EX7-049 메탈릭드라몬 (서로의 턴) [턴에 1회]: 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 패(EX7-014)/트래시(EX7-049)에서 특징 카드 1장을 코스트 없이 등장
+H('EX7-014', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
+SCRIPTS['EX7-014::서로의 턴@배틀 에어리어를 벗어날 때'] = [{ op: 's4_play', zone: 'hand', pred: (id) => isDigimonCard(id) && hasTraitAny(id, ['기룡형', '천룡형']) }];
+H('EX7-049', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
+SCRIPTS['EX7-049::서로의 턴@배틀 에어리어를 벗어날 때'] = [{ op: 's4_play', zone: 'trash', pred: (id) => isDigimonCard(id) && hasTraitAny(id, ['암룡형', '지룡형']) }];
+// BT18-022/048/063/076 (진화원, 서로의 턴): 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 진화원의 「진화원 효과를 가진 테이머 카드」 1장을 코스트 없이 등장
+for (const id of ['BT18-022', 'BT18-048', 'BT18-063', 'BT18-076']) {
+  H(id, { tag: '서로의 턴', src: 'inheritedKo', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
+  SCRIPTS[`${id}::서로의 턴@배틀 에어리어를 벗어날 때`] = [playFromLeftSources((cid) => isTamerCard(cid) && hasSourceEffect(cid), '진화원의 진화원 효과를 가진 테이머 카드를 코스트 없이 등장시킬까요?')];
+}
+// ST18-10 그랑게일몬 (진화원, 자신의 턴) [턴에 1회]: 이 디지몬이 상대의 디지몬에게 어택했을 때, 이 디지몬을 액티브로 할 수 있다
+H('ST18-10', { tag: '자신의 턴', src: 'inheritedKo', has: '상대의 디지몬에게 어택했을 때', limit: 1, events: { attackOnDigimon: (st, hp, h, info) => info.owner === hp && info.stack === h } });
+SCRIPTS['ST18-10::자신의 턴@상대의 디지몬에게 어택했을 때'] = [unsuspendThis];
+// BT18-039 미스티몬 (진화원, 서로의 턴) [턴에 1회]: 자신의 시큐리티가 줄어들었을 때, 이 디지몬을 액티브로 할 수 있다
+H('BT18-039', { tag: '서로의 턴', src: 'inheritedKo', has: '시큐리티가 줄어들었을 때', limit: 1, events: { securityDecrease: (st, hp, h, info) => info.owner === hp } });
+SCRIPTS['BT18-039::서로의 턴@시큐리티가 줄어들었을 때'] = [unsuspendThis];
+// BT18-070 라이노캅테리몬 (서로의 턴) [턴에 1회]: 어택의 대상이 변경되었을 때, 이 디지몬을 액티브로 할 수 있다
+H('BT18-070', { tag: '서로의 턴', has: '어택의 대상이 변경되었을 때', limit: 1, events: { redirect: () => true } });
+SCRIPTS['BT18-070::서로의 턴@어택의 대상이 변경되었을 때'] = [unsuspendThis];
+// LM-023 샤크라몬: 무녀 모드 (서로의 턴) [턴에 1회]: 옵션 카드를 사용했을 때 또는 시큐리티가 늘어났을 때, 턴 종료까지 상대의 디지몬 1마리를 DP -6000
+H('LM-023', { tag: '서로의 턴', has: '옵션 카드를 사용했을 때 또는 시큐리티가 늘어났을 때', limit: 1, events: { optionUsed: (st, hp, h, info) => info.owner === hp, securityIncrease: (st, hp, h, info) => info.owner === hp } });
+SCRIPTS['LM-023::서로의 턴@옵션 카드를 사용했을 때'] = [{ op: 's4_modifyDPOpp', amount: -6000 }];
+// LM-026 메기드라몬 (서로의 턴): 이 디지몬이 배틀 에어리어를 벗어날 때, 진화원 또는 트래시의 「길몬」 1장을 코스트 없이 등장. 등장했다면 이 디지몬을 등장한 디지몬의 진화원 아래에 놓는다
+H('LM-026', { tag: '서로의 턴', has: '「길몬」 1장을 코스트를 지불하지 않고 등장시킨다', onLeave: () => true });
+SCRIPTS['LM-026::서로의 턴@「길몬」'] = [fnOp(async (ctx) => {
+  const evt = evtOf(ctx); if (!evt) return;
+  const st = ctx.state, p = ctx.self, pl = st.players[p];
+  const i = pl.trash.map((id, k) => k).filter(k => isDigimonCard(pl.trash[k]) && isNamed(pl.trash[k], '길몬')).pop();
+  if (i == null) return;
+  const stack = S.playFreeFromZone(st, p, 'trash', i, {});
+  if (!stack) return;
+  const j = pl.trash.lastIndexOf(evt.cardId);
+  if (j >= 0) { pl.trash.splice(j, 1); stack.sources.unshift(evt.cardId); S.recomputeStackGrants(stack); log(ctx, `${p} ${C(evt.cardId).nameKo}을(를) ${C(stack.cardId).nameKo}의 진화원 아래에 놓음`); }
+})];
+
+// BT18-100 【메인】 육성 에어리어의 자신의 디지몬을 트래시의 「루체몬」으로 코스트 없이 진화시킬 수 있다. 그 후, 이 카드를 배틀 에어리어에 놓는다.
+// (the generic evolveEffect only looks at battle-area stacks, so the raising-area subject found nothing and the evolution never happened)
+SCRIPTS['BT18-100::메인@육성 에어리어의 자신의 디지몬을'] = [
+  fnOp(async (ctx) => {
+    const st = ctx.state, p = ctx.self, pl = st.players[p], r = pl.raising;
+    if (!r || C(r.cardId).category !== 'digimon' && C(r.cardId).category !== 'digitama') return;
+    const idxs = pl.trash.map((id, i) => i).filter(i => isDigimonCard(pl.trash[i]) && isNamed(pl.trash[i], '루체몬') && canEvolveInto(st, p, r, pl.trash[i], false).ok);
+    if (!idxs.length || !(await confirm(ctx, p, `육성 에어리어의 ${C(r.cardId).nameKo}을(를) 트래시의 「루체몬」으로 진화시킬까요?`))) return;
+    const i = idxs.length === 1 ? idxs[0] : await ctx.choose('pickFromZoneIndex', { player: p, zone: 'trash', eligibleIdxs: idxs, prompt: '트래시에서 진화할 「루체몬」 선택' });
+    if (i == null) return;
+    const [id] = pl.trash.splice(i, 1);
+    doDigivolve(ctx, p, r, id, 0, 'trash');
+  }),
+  { op: 'placeThisInBattle' },
+];
+
+// BT19-024 (진화원) 【어택 종료 시】[턴에 1회] 이 디지몬의 진화원에서 특징으로 「수생」을 포함하는 Lv.4 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
+// (the compiler only printed a "수동으로 처리하세요" note for play-from-evolution-cards effects)
+SCRIPTS['BT19-024::어택 종료 시'] = [fnOp(async (ctx) => {
+  const st = ctx.state, p = ctx.self, pl = st.players[p], h = thisStack(ctx);
+  if (!h) return;
+  const idxs = h.sources.map((id, i) => i).filter(i => isDigimonCard(h.sources[i]) && lvOf(h.sources[i]) <= 4 && hasTraitLike(h.sources[i], '수생'));
+  if (!idxs.length) return;
+  const i = idxs.length === 1 ? idxs[0] : idxs[(await ctx.choose('multipleChoice', { prompt: '등장시킬 「수생」 디지몬 카드 선택', options: idxs.map(k => C(h.sources[k]).nameKo) })) || 0];
+  if (!(await confirm(ctx, p, `진화원의 ${C(h.sources[i]).nameKo}을(를) 코스트 없이 등장시킬까요?`))) return;
+  const [id] = h.sources.splice(i, 1);
+  S.recomputeStackGrants(h);
+  pl.trash.push(id);
+  S.playFreeFromZone(st, p, 'trash', pl.trash.length - 1, { fromSources: true });
+})];
+
+// BT17-100 종말의 시계 【메인】: 「디아블로몬」 토큰 1마리를 코스트 없이 등장시킨다. 그 후, 이 카드를 진화원에 「종말의 시계」가 없는 명칭에 「디아블로몬」을 포함하는 자신의 디지몬의 진화원 아래에 놓는다.
+// (the generic compiler kept only the token and dropped the "place this card under" half, so the 4-clock win could never be assembled)
+SCRIPTS['BT17-100::메인'] = [
+  { op: 'spawnToken', who: 'self', def: { name: '디아블로몬', cost: 14, level: 6, dp: 3000, colors: ['white'], types: ['불명', '종족불명'], form: '궁극체', attribute: null, effectKo: '' }, n: 1, rested: false, optional: false },
+  { op: 's4_placeThisUnder', pred: (s, ctx) => stackNameHas(ctx.state, s, '디아블로몬') && !s.sources.some(id => isNamed(id, '종말의 시계')), prompt: '「종말의 시계」를 진화원 아래에 놓을 「디아블로몬」 선택' },
+];

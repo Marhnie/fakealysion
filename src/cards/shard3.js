@@ -428,7 +428,7 @@ sc('EX5-070::서로의 턴', [fn(async (ctx) => {
     const pick = cand.length === 1 ? cand[0] : cand[await ctx.choose('multipleChoice', { prompt: '패로 되돌릴 디지몬 카드', options: cand.map(id => C(id).nameKo) }) || 0];
     pl.trash.splice(pl.trash.lastIndexOf(pick), 1); pl.hand.push(pick);
   }
-  const x = evt.sources.find(id => C(id).nameKo === 'X항체' && pl.trash.includes(id));
+  const x = evt.sources.find(id => (C(id).nameKo === 'X항체' || S.cardNames(id).includes('X항체')) && pl.trash.includes(id)); // 〈룰〉명칭: 「X항체」로도 취급 (X항체PF 등)
   if (x) { pl.trash.splice(pl.trash.lastIndexOf(x), 1); S.addToSecurity(ctx.state, ctx.self, x, 'top'); }
 })]);
 // EX5-074 (서로의 턴): 상대의 디지몬의 효과를 받지 않는다
@@ -938,7 +938,7 @@ const s3BattleEnd = (state, kind) => {
 sc('ST17-13::시큐리티', [fn(async (ctx) => {
   const pk = await pickAnyDigimon(ctx, anyDigimon(ctx), '《퇴화 1》할 디지몬 선택', { fxKind: 'retreat' });
   if (pk) S.retreat(ctx.state, pk.p, pk.s.uid, 1);
-  if (!S.EVENT_HOOKS.includes(s3BattleEnd)) S.EVENT_HOOKS.push((state, kind) => s3BattleEnd(state, kind));
+  if (!S.EVENT_HOOKS.includes(s3BattleEnd)) S.EVENT_HOOKS.push(s3BattleEnd); // (the wrapper lambda used before defeated the includes() guard and leaked one hook per trigger)
   (ctx.state.s3AfterBattle ||= []).push({ p: ctx.self, cardId: ctx.sourceCardId });
 })]);
 sc('ST17-13::s3AfterBattle', [fn((ctx) => evolveGeneric(ctx, { subject: null, zone: 'trash', cardPred: (id) => id === ctx.sourceCardId, cost: { mode: 'free' }, cardPrompt: '진화할 카드(이 카드) 선택' }))]);
@@ -1014,6 +1014,26 @@ function blastJogress(names) {
 }
 sc('EX6-011::카운터', blastJogress(['듀란다몬', '브리웨루드라몬']));
 sc('EX6-029::카운터', blastJogress(['엔젤우몬', '레이디데블몬']));
+// EX6-011 등장 시/진화 시 (the generic compiler dropped the leading security/immunity clauses): 상대 시큐리티 위에서 1장 파기 + 상대의 턴 종료까지 상대의 효과를 받지 않는다. 그 후 조그레스 진화하고 있었다면 상대 디지몬 전부 《퇴화 1》 + 상대 디지몬 1마리 소멸
+sc('EX6-011::등장 시', [fn(async (ctx) => {
+  const st = me(ctx);
+  S.trashTopSecurityByEffect(ctx.state, ctx.opp);
+  if (st) S.grantShield(ctx.state, ctx.self, st.uid, { kinds: ['all'], until: untilOppTurnEnd(ctx) });
+  if (!st || !st.viaFusion) return;
+  for (const s of [...PL(ctx, ctx.opp).battle].filter(isDig)) S.retreat(ctx.state, ctx.opp, s.uid, 1);
+  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(isDig), '소멸시킬 상대의 디지몬 선택', { fxKind: 'delete' });
+  if (t) destroy(ctx, ctx.opp, t);
+})]);
+// EX6-029 등장 시/진화 시 (the compiler dropped the 조그레스 clause): 패/트래시의 천사형 Lv.5 이하 등장 → 조그레스 진화하고 있었다면 다른 디지몬 1마리를 시큐리티 아래에, 상대 시큐리티가 4장이 되도록 위에서부터 파기
+sc('EX6-029::등장 시', [
+  { op: 'playFree', who: 'self', zone: 'any', filter: { category: 'digimon', traitAny: ['천사형', '대천사형', '타천사형'], levelMax: 5 }, rested: false, noTriggers: false, optional: true },
+  fn(async (ctx) => {
+    const st = me(ctx);
+    if (!st || !st.viaFusion) return;
+    const t = await pickStack(ctx, ctx.self, PL(ctx, ctx.self).battle.filter(s => s !== st && isDig(s)), '시큐리티 아래에 놓을 다른 자신의 디지몬 선택');
+    if (t) bounceStack(ctx, ctx.self, t, 'securityBottom');
+    while (PL(ctx, ctx.opp).security.length > 4) { if (!S.trashTopSecurityByEffect(ctx.state, ctx.opp)) break; }
+  })]);
 // EX6-015 등장 시/진화 시
 sc('EX6-015::등장 시', [fn(async (ctx) => {
   const me0 = me(ctx); if (!me0) return;
@@ -1056,6 +1076,23 @@ for (const id of ['EX6-023', 'EX6-024', 'EX6-025', 'EX6-026']) {
 }
 // EX6-031 샤카몬
 hk('EX6-031', { tag: '자신의 턴', has: '《S 어택 -》', sAttackFlip: true });
+// EX6-031 (서로의 턴): 소멸할 때 또는 패/덱으로 되돌아갈 때 → 진화원의 「삼장몬」 1장 + 「손오공몬」/「사고몬」/「초핫카이몬」 1장을 코스트 없이 등장 (leaving stack's sources are in the trash by then)
+hk('EX6-031', { tag: '서로의 턴', has: '소멸할 때 또는 패/덱으로', onLeave: () => true });
+sc('EX6-031::서로의 턴', [fn(async (ctx) => {
+  const evt = ctx.trigger?.evt; if (!evt) return;
+  const pl = PL(ctx, ctx.self);
+  const inTrash = (id) => pl.trash.includes(id);
+  const a = evt.sources.find(id => inTrash(id) && C(id).category === 'digimon' && C(id).nameKo === '삼장몬');
+  const b = evt.sources.find(id => inTrash(id) && C(id).category === 'digimon' && ['손오공몬', '사고몬', '초핫카이몬'].includes(C(id).nameKo));
+  if ((!a && !b) || !(await confirm(ctx, '진화원의 「삼장몬」/「손오공몬」/「사고몬」/「초핫카이몬」을 코스트 없이 등장시킬까요?'))) return;
+  for (const id of [a, b]) { if (!id) continue; const i = pl.trash.lastIndexOf(id); if (i >= 0) S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, {}); }
+})]);
+// EX6-059 (서로의 턴) [턴에 1회]: 상대의 패가 파기되었을 때 → 트래시의 퍼플 카드(등장 코스트 10 - 상대 패 수 이하)를 코스트 없이 등장
+hk('EX6-059', { tag: '서로의 턴', has: '상대의 패가 파기되었을 때', limit: 1, events: { discard: (state, hp, holder, info) => info.owner !== hp } });
+sc('EX6-059::서로의 턴', [fn(async (ctx) => {
+  const lim = 10 - PL(ctx, ctx.opp).hand.length;
+  await playFreeWhere(ctx, ctx.self, 'trash', (id) => ['digimon', 'tamer'].includes(C(id).category) && colorHas(id, 'purple') && (C(id).cost || 0) <= lim, `트래시에서 등장시킬 퍼플 카드 선택 (등장 코스트 ${lim} 이하)`);
+})]);
 sc('EX6-031::상대의 턴 종료 시', [fn(async (ctx) => {
   const hasSA = (s) => /《(?:S|시큐리티)\s*어택/.test(`${C(s.cardId).effectKo || ''}\n${C(s.cardId).inheritedKo || ''}`) || S.hasKeyword(s, '시큐리티어택');
   const t = await pickStack(ctx, ctx.self, PL(ctx, ctx.self).battle.filter(s => isDig(s) && hasSA(s)), '시큐리티 위에 놓을 《S 어택》 디지몬 선택 (안 해도 됨)');
@@ -1088,15 +1125,21 @@ const sinGate = [fn(async (ctx) => {
 })];
 for (const id of ['EX6-056', 'EX6-058', 'EX6-060']) { hk(id, { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause !== 'battle' }); sc(`${id}::서로의 턴`, sinGate); }
 // EX6-057 서로의 턴 [턴에 1회]: 배틀 이외로 벗어날 때 Lv.5 이하 디지몬 1마리를 소멸시키는 것으로 벗어나지 않는다
-{ const d = { tag: '서로의 턴', has: '벗어나지', preventLeave: (state, hp, holder, target, tp, cause) => {
-  if (target !== holder || cause === 'battle' || cause == null) return false;
-  const opl = state.players[opp(hp)], mpl = state.players[hp];
-  const oppC = opl.battle.filter(s => isDig(s) && lvl(s.cardId) <= 5).sort((a, b) => S.effectiveDP(state, opp(hp), b) - S.effectiveDP(state, opp(hp), a));
-  const ownC = mpl.battle.filter(s => s !== holder && isDig(s) && lvl(s.cardId) <= 5).sort((a, b) => S.effectiveDP(state, hp, a) - S.effectiveDP(state, hp, b));
-  const victim = oppC[0] || ownC[0]; const vp = oppC[0] ? opp(hp) : hp;
-  if (!victim || !S.hookUseOnce(holder, 'EX6-057', d)) return false;
-  S.deleteStack(state, vp, victim.uid, 'trash', vp === hp ? 'ownEffect' : 'effect');
-  return true;
+{ const d = { tag: '서로의 턴', has: '벗어나지', preventLeaveOptions: (state, hp, holder, target, tp, cause) => {
+  // "Lv.5 이하의 디지몬 1마리를 소멸시키는 것으로" — ANY Lv.5 or lower digimon (either side); each candidate is its own option for the player.
+  if (target !== holder || cause === 'battle' || cause == null) return [];
+  if (S.turnUsesRemaining(holder, S.onceLimitKey('EX6-057', [d.tag, d.has || '']), 1) <= 0) return [];
+  const out = [];
+  for (const vp of [opp(hp), hp]) for (const victim of state.players[vp].battle) {
+    if (victim === holder || !isDig(victim) || lvl(victim.cardId) > 5) continue;
+    if (vp !== hp && S.effectBlocked(state, vp, victim, 'delete')) continue;
+    out.push({ apply: () => {
+      if (!S.hookUseOnce(holder, 'EX6-057', d)) return false;
+      S.deleteStack(state, vp, victim.uid, 'trash', vp === hp ? 'ownEffect' : 'effect');
+      return true;
+    } });
+  }
+  return out;
 } }; hk('EX6-057', d); }
 // EX6-061 리바이어몬
 hk('EX6-061', { tag: '서로의 턴', has: '등장했을 때', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack) && (info.owner !== hp || traitAny(info.stack.cardId, ['7대마왕'])) } });
@@ -1132,3 +1175,50 @@ hk('BT14-048', { tag: '어택 시', has: '진화 코스트 6', skipTrigger: true
 sc('BT14-048::어택 시', [fn((ctx) => evolveGeneric(ctx, { subject: 'this', ignoreCond: true, cost: { mode: 'fixed', n: 6 }, cardPred: (id) => C(id).nameKo.includes('레오몬') && lvl(id) === 6, cardPrompt: '진화할 「레오몬」 Lv.6 카드 선택' }))]);
 
 // @@END
+
+// ------------------------------------------------------------------ event watchers that had NO implementation (found by the deep verification pass:
+// continuous-tagged "~했을 때" abilities that the generic watcher parser rejects and that were only "covered" as if they were plain triggers)
+// BT14-084 리키 (자신의 턴): 자신의 시큐리티가 늘어났을 때, 이 테이머를 레스트시키는 것으로, 메모리 +1
+hk('BT14-084', { tag: '자신의 턴', has: '시큐리티가 늘어났을 때', events: { securityIncrease: (state, hp, holder, info) => info.owner === hp && isTam(holder) && !holder.suspended } });
+sc('BT14-084::자신의 턴@시큐리티가 늘어났을 때', [fn(async (ctx) => {
+  const t = me(ctx); if (!t || !isTam(t) || t.suspended) return;
+  S.restStack(ctx.state, ctx.self, t.uid);
+  if (t.suspended) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+})]);
+// P-130 루이 (자신의 턴): 자신의 디지몬이 육성 에어리어에서 배틀 에어리어로 이동했을 때, 이 테이머를 레스트시키는 것으로, 메모리 +1
+hk('P-130', { tag: '자신의 턴', has: '육성 에어리어에서 배틀 에어리어로', events: { move: (state, hp, holder, info) => info.owner === hp && isDig(info.stack) && isTam(holder) && !holder.suspended } });
+sc('P-130::자신의 턴@육성 에어리어에서 배틀 에어리어로', [fn(async (ctx) => {
+  const t = me(ctx); if (!t || !isTam(t) || t.suspended) return;
+  S.restStack(ctx.state, ctx.self, t.uid);
+  if (t.suspended) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+})]);
+// BT15-034 플롯트몬 (진화원, 서로의 턴) [턴에 1회]: 자신의 시큐리티가 줄어들었을 때, 턴 종료까지 상대의 디지몬 1마리를 DP -2000
+hk('BT15-034', { tag: '서로의 턴', src: 'inheritedKo', has: '시큐리티가 줄어들었을 때', limit: 1, events: { securityDecrease: (state, hp, holder, info) => info.owner === hp } });
+sc('BT15-034::서로의 턴@시큐리티가 줄어들었을 때', [fn(async (ctx) => {
+  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(isDig), 'DP -2000 받을 상대 디지몬 선택');
+  if (t) dpTemp(ctx, ctx.opp, t, -2000, ctx.state.turnNumber);
+})]);
+// BT15-054 로제몬 X항체 (상대의 턴) [턴에 1회]: 상대의 디지몬이 육성 에어리어에서 배틀 에어리어로 이동했을 때, 진화원에 「로제몬」/「X항체」가 있다면 상대의 디지몬 1마리를 레스트시킬 수 있다
+hk('BT15-054', { tag: '상대의 턴', has: '육성 에어리어에서 배틀 에어리어로', limit: 1, events: { move: (state, hp, holder, info) => info.owner !== hp && isDig(info.stack) && hasSrc(holder, (c) => c.nameKo === '로제몬' || c.nameKo === 'X항체' || (c.types || []).includes('X항체')) } });
+sc('BT15-054::상대의 턴@육성 에어리어에서 배틀 에어리어로', [fn(async (ctx) => {
+  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && !s.suspended), '레스트시킬 상대의 디지몬 선택 (안 해도 됨)');
+  if (t) S.restStack(ctx.state, ctx.opp, t.uid);
+})]);
+// EX6-007/008/015/038/040/042 (자신의 턴) [턴에 1회]: 이 디지몬의 진화원이 효과로 늘어났을 때
+const srcGrew = { tag: '자신의 턴', has: '진화원이 효과로 늘어났을 때', limit: 1, events: { sourcesAdded: (state, hp, holder, info) => info.owner === hp && info.stack === holder && info.cause === 'effect' } };
+const SRC_KEY = '@진화원이 효과로 늘어났을 때';
+for (const id of ['EX6-007', 'EX6-008', 'EX6-015', 'EX6-038', 'EX6-040', 'EX6-042']) hk(id, srcGrew);
+for (const id of ['EX6-007', 'EX6-038']) sc(`${id}::자신의 턴${SRC_KEY}`, [{ op: 'draw', n: 1, who: 'self' }]);
+sc(`EX6-008::자신의 턴${SRC_KEY}`, [fn(async (ctx) => { const t = me(ctx); if (!t) return; S.grantKeyword(ctx.state, ctx.self, t.uid, '돌진', undefined, 'turn'); S.grantKeyword(ctx.state, ctx.self, t.uid, '관통', undefined, 'turn'); })]);
+for (const id of ['EX6-040', 'EX6-042']) sc(`${id}::자신의 턴${SRC_KEY}`, [fn(async (ctx) => { const t = me(ctx); if (!t) return; S.grantKeyword(ctx.state, ctx.self, t.uid, '재기동', undefined, 'opponentTurn'); S.grantKeyword(ctx.state, ctx.self, t.uid, '블로커', undefined, 'opponentTurn'); })]);
+sc(`EX6-015::자신의 턴${SRC_KEY}`, [fn(async (ctx) => {
+  const t = me(ctx); if (!t) return;
+  const pl = PL(ctx, ctx.self);
+  const idxs = t.sources.map((id, i) => i).filter(i => C(t.sources[i]).category === 'digimon' && lvl(t.sources[i]) <= 5 && (traitsOf(t.sources[i]).some(x => x.includes('수생'))));
+  if (!idxs.length) return;
+  const i = idxs.length === 1 ? idxs[0] : idxs[(await ctx.choose('multipleChoice', { prompt: '등장시킬 「수생」 디지몬 카드 선택', options: idxs.map(k => C(t.sources[k]).nameKo) })) || 0];
+  const [id] = t.sources.splice(i, 1);
+  S.recomputeStackGrants(t);
+  pl.trash.push(id);
+  S.playFreeFromZone(ctx.state, ctx.self, 'trash', pl.trash.length - 1, { fromSources: true });
+})]);

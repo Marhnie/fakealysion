@@ -583,7 +583,8 @@ SCRIPTS['BT5-111::상대의 턴'] = [fn(async (ctx) => {
   const st = srcStack(ctx);
   if (!st || st.sources.length < 2) return;
   if (!(await confirm(ctx, ctx.self, '이 디지몬의 진화원 2장을 파기하여 그 어택을 종료시키겠습니까?'))) return;
-  S.trashEvoSources(ctx.state, ctx.self, st.uid, 2, 'bottom');
+  const idxs = await S.chooseSourceIdxs(ctx.state, ctx.self, st, 2, ctx.choose, null, '파기할 진화원 2장을 선택하세요');
+  S.trashEvoSources(ctx.state, ctx.self, st.uid, 2, 'bottom', idxs);
   if (ctx.endAttack) ctx.endAttack(); else S.log(ctx.state, '어택 종료');
 })];
 
@@ -748,14 +749,17 @@ SCRIPTS['BT7-083::소멸 시'] = sisterRecover('시스터몬 느와르(각성)')
 const tamerEvolve = (zone, color, targetName) => [fn(async (ctx) => {
   const me = ctx.self, pl = plOf(ctx, me), st = srcStack(ctx);
   if (!st || !isTamer(st)) return;
-  const pred = (id) => hasTrait(id, '하이브리드체') && C(id).nameKo !== targetName;
-  if (pl[zone].filter(pred).length < 5) return;
-  const target = pl.hand.find(id => C(id).nameKo === targetName);
-  if (!target) return;
+  const pred = (id) => hasTrait(id, '하이브리드체'); // same-named cards are fine — only the evolve-into card itself is set aside below
+  const tIdx = pl.hand.findIndex(id => C(id).nameKo === targetName);
+  if (tIdx < 0) return;
+  const target = pl.hand[tIdx];
+  if (pl[zone].filter((id, i) => pred(id) && !(zone === 'hand' && i === tIdx)).length < 5) return;
   const base = evoCostAs(target, 5, [color]);
   if (base == null) return;
   if (!(await confirm(ctx, me, `${zone === 'trash' ? '트래시' : '패'}의 하이브리드체 카드 5장을 이 테이머 아래에 놓고 「${targetName}」(으)로 진화하시겠습니까?`))) return;
+  if (zone === 'hand') pl.hand.splice(tIdx, 1); // the card being evolved into can't also be one of the 5
   const taken = await pickNFrom(ctx, me, zone, 5, pred, '테이머 아래에 놓을 하이브리드체 카드 (놓는 순서)');
+  if (zone === 'hand') pl.hand.splice(tIdx, 0, target);
   if (!taken) return;
   st.sources.push(...taken);
   const cost = Math.max(0, base + evoAutoDelta(ctx.state, me, st, target, 'hand') + S.hookEvoCostDiscount(ctx.state, me, st, target));
@@ -1019,7 +1023,7 @@ SCRIPTS['BT9-018::서로의 턴'] = [fn(async (ctx) => {
 // ---- BT9-043 (진화 시): 진화원에 「홀리드라몬」/「X항체」 — 자신의 시큐리티 1장마다 상대의 디지몬과 시큐리티 디지몬 전부 DP-1000
 SCRIPTS['BT9-043::진화 시'] = [fn(async (ctx) => {
   const st = srcStack(ctx);
-  if (!st || !st.sources.some(id => nameHas(id, '홀리드라몬') || nameHas(id, 'X항체') || xAnti(id))) return;
+  if (!st || !st.sources.some(id => C(id).nameKo === '홀리드라몬' || C(id).nameKo === 'X항체')) return;
   const n = plOf(ctx, ctx.self).security.length;
   if (!n) return;
   for (const s of digimons(ctx.opp, ctx.state)) S.modifyDP(ctx.state, ctx.opp, s.uid, -1000 * n, 'turn');
@@ -1029,7 +1033,7 @@ SCRIPTS['BT9-043::진화 시'] = [fn(async (ctx) => {
 // ---- BT9-056 (어택 시): 진화원에 「레오몬」 포함/「X항체」가 있을 때 상대의 디지몬 또는 테이머 1장을 레스트
 SCRIPTS['BT9-056::어택 시'] = [fn(async (ctx) => {
   const st = srcStack(ctx);
-  if (!st || !st.sources.some(id => nameHas(id, '레오몬') || nameHas(id, 'X항체') || xAnti(id))) return;
+  if (!st || !st.sources.some(id => nameHas(id, '레오몬') || C(id).nameKo === 'X항체')) return;
   await restOppCard(ctx);
 })];
 
@@ -1160,6 +1164,22 @@ SCRIPTS['BT8-066::자신의 턴'] = [fn(async (ctx) => {
   if (!st) return;
   await evolveInteractive(ctx, { subject: st, from: 'hand', cardPred: xAnti, extraDelta: -1 });
 })];
+// BT8-057 【자신의 턴】 이 디지몬이 액티브 페이즈에서 액티브 상태가 되었을 때, 상대의 시큐리티를 위에서부터 1장 파기 (phase-unsuspend only; effect unsuspends don't count)
+D('BT8-057', '자신의 턴', '액티브 페이즈에서', { events: { unsuspend: (state, hp, holder, info) => info.owner === hp && info.stack === holder && info.cause === 'phase' } });
+// BT7-087 (inherited, 자신의 턴): [턴에 1회] 자신의 패가 효과로 늘어났을 때 메모리 +1, 그 후 이 턴 동안 이 디지몬은 블록당하지 않는다 (trigger = state.js parseEventWatcher)
+DI('BT7-087', '자신의 턴', '늘어났을 때', { ewTrusted: true });
+SCRIPTS['BT7-087::자신의 턴'] = [fn(async (ctx) => {
+  S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+  const st = srcStack(ctx);
+  if (st) setFlag(st, 'unblockable', ctx.state.turnNumber);
+})];
+// BT2-051 (자신의 턴): 이 디지몬이 배틀에서 상대의 디지몬만을 소멸시켰을 때 상대의 디지몬 1마리를 레스트시킨다
+D('BT2-051', '자신의 턴', '소멸시켰을 때', { events: { battleWin: (state, hp, holder, info) => info.owner === hp && info.stack === holder } });
+SCRIPTS['BT2-051::자신의 턴@소멸시켰을 때'] = [fn(async (ctx) => {
+  const st = await pickWhere(ctx, ctx.opp, isDigimon, '레스트시킬 상대의 디지몬 선택', 'rest');
+  if (st) S.restStack(ctx.state, ctx.opp, st.uid);
+})];
+SCRIPTS['BT8-057::자신의 턴'] = [fn(async (ctx) => { S.trashTopSecurityByEffect(ctx.state, ctx.opp); })];
 SCRIPTS['BT8-031::상대의 턴'] = [fn(async (ctx) => {
   const evt = evtOf(ctx);
   const st = evt && findStack(ctx.state, ctx.opp, evt.stackUid);
@@ -1200,6 +1220,10 @@ D('EX2-007', '서로의 턴', '어택할 수 없으며', { noAttack: () => true,
 // ---- DP
 D('BT5-008', '자신의 턴', '다른 「가오스몬」', { dp: (state, hp, holder, target, tp) => (tp === hp && target !== holder && C(target.cardId).nameKo === '가오스몬' ? 3000 : 0) });
 D('BT7-084', '자신의 턴', '다른 자신의 「에오스몬」', { dp: (state, hp, holder, target, tp) => (tp === hp && target !== holder && C(target.cardId).nameKo === '에오스몬' ? 1000 : 0) });
+// BT8-084: 「이 디지몬이 4색 이상인 동안 DP+4000」 (colors = own colors + colors of the evolution sources, own turn)
+D('BT8-084', '자신의 턴', '4색 이상', { dp: (state, hp, holder, target) => (target === holder && new Set([...stackColors(holder), ...holder.sources.flatMap(id => C(id).colors || [])]).size >= 4 ? 4000 : 0) });
+// BT7-085 (inherited): 「이 디지몬의 DP가 10000 이상인 동안 《S 어택 +1》」 (DP includes the +2000 above)
+DI('BT7-085', '자신의 턴', '10000 이상', { sAtk: (state, hp, holder, aStack) => (aStack === holder && S.effectiveDP(state, hp, holder) >= 10000 ? 1 : 0) });
 D('BT7-065', '자신의 턴', '진화원의 특징으로', { dp: (state, hp, holder, target) => (target === holder ? 1000 * holder.sources.filter(xAnti).length : 0) });
 DI('BT2-003', '상대의 턴', '시큐리티 디지몬', { s1securityDP: (state, hp, holder, info) => (info.p === hp && holder.suspended ? 1000 : 0) });
 D('EX2-011', '자신의 턴', '상한', { s1dpCap: (state, hp, holder, info) => (info.p === hp && tamersOf(hp, state).some(s => stackColors(s).includes('red')) ? 2000 : 0) });
@@ -1219,7 +1243,7 @@ D('BT7-055', '상대의 턴', '패를 1장 파기하지', { s1unsuspendGate: (st
 } });
 DI('BT9-109', '서로의 턴', '파기할 수 없다', { s1protectSource: (state, hp, holder, info) => info.stack === holder && nameHas(info.id, 'X항체') });
 D('BT3-056', '자신의 턴', '흡수진화', { s1absorbOpp: (state, hp, holder) => S.turnUsesRemaining(holder, S.onceLimitKey('BT3-056', ['자신의 턴']), 1) > 0 });
-D('BT9-044', '상대의 턴', '어택의 대상을', { s1redirect: (state, hp, holder, info) => info.p === hp && holder.sources.some(id => traitAny(id, ['아머체']) || nameHas(id, 'X항체') || xAnti(id)) ? [{ cardId: holder.cardId, stackUid: holder.uid, targetUid: holder.uid, limit: null }] : null });
+D('BT9-044', '상대의 턴', '어택의 대상을', { s1redirect: (state, hp, holder, info) => info.p === hp && holder.sources.some(id => traitAny(id, ['아머체']) || C(id).nameKo === 'X항체') ? [{ cardId: holder.cardId, stackUid: holder.uid, targetUid: holder.uid, limit: null }] : null });
 
 
 // ---- replacement abilities (preventLeave(state, hp, holder, target, tp, cause, mode)) ----
@@ -1234,17 +1258,29 @@ function paySources(state, hp, holder, n, pred) {
   return true;
 }
 const canPaySources = (holder, n, pred) => holder.sources.filter(pred).length >= n;
+// every distinct choice of which n matching sources to trash is its own candidate for the player (S.hookPreventLeave / preventLeaveOptions)
 const survive = (causeOk, nameOk, n, pred) => (state, hp, holder, target, tp, cause, mode) => {
-  if (target !== holder || !causeOk(cause) || !nameOk(holder)) return false;
+  if (target !== holder || !causeOk(cause) || !nameOk(holder)) return [];
   const p = typeof pred === 'function' ? pred : () => true;
-  const test = (id) => p(id, holder);
-  if (!canPaySources(holder, n, test)) return false;
-  return paySources(state, hp, holder, n, test);
+  const elig = holder.sources.map((id, i) => i).filter(i => p(holder.sources[i], holder));
+  const combos = [], seen = new Set();
+  const rec = (start, acc) => {
+    if (combos.length >= 24) return;
+    if (acc.length === n) { const key = acc.map(i => holder.sources[i]).sort().join(); if (!seen.has(key)) { seen.add(key); combos.push(acc.slice()); } return; }
+    for (let k = start; k < elig.length; k++) { acc.push(elig[k]); rec(k + 1, acc); acc.pop(); }
+  };
+  rec(0, []);
+  return combos.map(c => ({ apply() {
+    const removed = c.slice().sort((x, y) => y - x).map(i => holder.sources.splice(i, 1)[0]);
+    state.players[hp].trash.push(...removed);
+    S.recomputeStackGrants(holder);
+    return true;
+  } }));
 };
-D('BT5-086', '서로의 턴', '소멸할 때', { preventLeave: survive(c => c === 'effect', () => true, 1, id => C(id).category === 'digimon' && lvOf(id) === 6) });
+D('BT5-086', '서로의 턴', '소멸할 때', { preventLeaveOptions: survive(c => c === 'effect', () => true, 1, id => C(id).category === 'digimon' && lvOf(id) === 6) });
 const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레이몬') || nameHas(h.cardId, '오메가몬'), 2, (id, h) => lvOf(id) === lvOf(h.cardId));
-DI('BT9-012', '서로의 턴', '소멸할 때', { preventLeave: graySurvive(c => c === 'effect' || c === 'ownEffect') });
-DI('P-072', '서로의 턴', '소멸하거나', { preventLeave: graySurvive(c => c === 'effect') });
+DI('BT9-012', '서로의 턴', '소멸할 때', { preventLeaveOptions: graySurvive(c => c === 'effect' || c === 'ownEffect') });
+DI('P-072', '서로의 턴', '소멸하거나', { preventLeaveOptions: graySurvive(c => c === 'effect') });
 D('BT9-044', '서로의 턴', '소멸할 때', { preventLeave: (state, hp, holder, target, tp, cause, mode) => {
   if (target !== holder || mode !== 'delete' || !holder.sources.length) return false;
   const id = holder.sources.pop();

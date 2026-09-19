@@ -127,14 +127,16 @@ function renderDeckBuilderScreen() {
   const wasSearchFocused = prevActive && prevActive.placeholder === '이름/카드번호 검색';
   const prevCursor = wasSearchFocused ? prevActive.selectionStart : null;
 
+  const prevDbScroll = app.querySelector('.board')?.scrollTop || 0; // full rebuild would jump back to the top on every tap
   app.innerHTML = '';
   const v = DB.validate(dbDraft);
-  app.appendChild(h('div', { className: 'topbar' }, [
+  app.appendChild(h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
     h('b', {}, '덱 빌더'),
     h('span', {}, `메인 ${v.mainN}/50`),
     h('span', { style: v.digitamaN > 5 ? 'color:var(--danger)' : '' }, `디지타마 ${v.digitamaN}/5`),
+    h('button', { onClick: () => { const el = document.getElementById('db-deck'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, '내 덱 ↓'),
     h('button', { onClick: () => { state = null; render(); } }, '나가기'),
-  ]));
+  ])]));
 
   const filterRow = h('div', { className: 'actions-row' }, [
     (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
@@ -170,8 +172,8 @@ function renderDeckBuilderScreen() {
   const nameInput = h('input', { placeholder: '덱 이름', value: dbSavedName });
   nameInput.addEventListener('input', (e) => { dbSavedName = e.target.value; });
 
-  const rightCol = h('div', { className: 'player-panel', style: 'min-width:260px;' }, [
-    h('div', { className: 'section-title' }, '내 덱'),
+  const rightCol = h('div', { className: 'player-panel', id: 'db-deck', style: 'min-width:260px;' }, [
+    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 1장 제거)'),
     v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'),
     h('div', { className: 'zone-label' }, `메인덱 (${v.mainN}/50)`),
     h('div', { className: 'stack-list' }, draftMainList),
@@ -204,6 +206,8 @@ function renderDeckBuilderScreen() {
     rightCol,
   ]));
 
+  const dbBoard = app.querySelector('.board');
+  if (dbBoard && prevDbScroll) dbBoard.scrollTop = prevDbScroll;
   if (wasSearchFocused) {
     const freshInput = [...app.querySelectorAll('input')].find(i => i.placeholder === '이름/카드번호 검색');
     if (freshInput) { freshInput.focus(); freshInput.setSelectionRange(prevCursor, prevCursor); }
@@ -343,14 +347,24 @@ function render() {
       autoRunMandatoryPending();
     }
   }
+  // a full rebuild resets scroll positions — remember/restore them (essential on a phone where the board scrolls)
+  const prevBoard = app.querySelector('.board');
+  const prevScroll = prevBoard ? prevBoard.scrollTop : 0;
+  const prevModal = app.querySelector('.modal-panel');
+  const prevModalScroll = prevModal ? prevModal.scrollTop : 0;
   app.innerHTML = '';
   app.classList.toggle('log-open', panelsOpen.log);
+  app.classList.toggle('sheet-open', !!(sel.hand || sel.stack));
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
   app.appendChild(renderLog());
   const modal = renderModal();
   if (modal) app.appendChild(modal);
+  const newBoard = app.querySelector('.board');
+  if (newBoard && prevScroll) newBoard.scrollTop = prevScroll;
+  const newModal = app.querySelector('.modal-panel');
+  if (newModal && prevModalScroll) newModal.scrollTop = prevModalScroll;
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
 }
@@ -390,7 +404,7 @@ function renderTopbar() {
     h('button', {
       className: 'danger', disabled: state.phase !== 'main',
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
-    }, '패스 (메모리 상대측 3으로 고정하고 턴종료)'),
+    }, ['패스', h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
     ...['p1', 'p2'].map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
   ]);
   const rows = [mainRow];
@@ -403,15 +417,39 @@ function renderTopbar() {
     const canArmFusion = sel.stack && !sel.stack2 && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer
       && selStack && !selStack.suspended && S.card(selStack.cardId).category === 'digimon';
     rows.push(h('div', { className: 'topbar-info' }, [
-      h('div', { className: 'topbar-info-text' }, infoText),
-      canArmFusion && !sel.armFusion
-        ? h('button', { onClick: () => { sel.armFusion = true; render(); } }, '🔗 조그레스 상대 선택')
-        : null,
-      sel.armFusion ? h('span', { className: 'meta' }, '다른 내 디지몬을 클릭하세요') : null,
-      h('button', { onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; sel.armFusion = false; render(); } }, '✕'),
+      h('div', { className: 'topbar-info-text', onClick: (e) => e.currentTarget.classList.toggle('open') }, infoText),
+      h('div', { className: 'info-actions' }, [
+        ...selectionActionButtons(),
+        canArmFusion && !sel.armFusion
+          ? h('button', { onClick: () => { sel.armFusion = true; render(); } }, '🔗 조그레스 상대 선택')
+          : null,
+        sel.armFusion ? h('span', { className: 'meta' }, '다른 내 디지몬을 탭하세요') : null,
+        h('button', { className: 'info-close', onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; sel.armFusion = false; render(); } }, '✕'),
+      ]),
     ]));
   }
   return h('div', { className: 'topbar' }, rows);
+}
+
+// Selection action bar (touch-friendly; also fine on desktop): what the selected hand card / own stack can do.
+function selectionActionButtons() {
+  const out = [];
+  if (busy()) return out;
+  if (sel.hand && handPlayable(sel.hand.player)) {
+    const p = sel.hand.player, cat = S.card(state.players[p].hand[sel.hand.idx]).category;
+    out.push(h('button', { className: 'primary', onClick: () => { const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi); } }, cat === 'option' ? '▶ 사용' : '▶ 등장'));
+  }
+  const st = findStack(sel.stack);
+  if (st && sel.stack.player === state.activePlayer && state.phase === 'main') {
+    const p = sel.stack.player;
+    if (sel.stack.zone === 'battle' && !st.suspended && S.card(st.cardId).category === 'digimon') {
+      let can = false;
+      try { can = S.canAttackPlayer(state, p, st.uid) || S.legalDigimonTargets(state, p, st.uid).length > 0; } catch (e) { can = false; }
+      out.push(h('button', { className: 'danger', disabled: !can, title: '공격 대상 목록을 엽니다 (또는 보드의 빨간 테두리 대상을 직접 탭)', onClick: () => { const u = st.uid; sel.stack = null; attackFlow(p, u); } }, '⚔ 공격'));
+    }
+    for (const a of stackActionList(p, st, sel.stack.zone)) out.push(h('button', { disabled: a.disabled, title: a.title, onClick: () => a.run() }, a.label));
+  }
+  return out;
 }
 
 function cardChip(cardId, opts = {}) {
@@ -420,6 +458,7 @@ function cardChip(cardId, opts = {}) {
   if (opts.selected) cls.push('selected');
   if (opts.suspended) cls.push('suspended');
   if (opts.attackable) cls.push('attackable');
+  if (opts.target) cls.push('tap-target');
   if (opts.justDrawn) cls.push('just-drawn');
   // Show the LIVE effective DP (temp/inherited/turn-conditional modifiers
   // all folded in — see S.effectiveDP) rather than always the static
@@ -479,6 +518,189 @@ function activeKeywordBadges(stack) {
   return badges;
 }
 
+// Shared by the desktop drop handler AND the tap flow (doEvolve/doFuse): a hand card (or, for attacks, an
+// opposing stack) being "dropped" on `stack`. Everything the drop did lives here so a tap does exactly the same.
+async function handleStackDrop(p, stack, zoneKind, drag) {
+  const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
+  if (!drag) return;
+  // An opposing battle stack dropped directly onto this one is a direct
+  // attack declaration on THIS specific digimon — no separate target-
+  // choice menu needed, the drop location already said which target.
+  if (drag.kind === 'stack' && drag.player !== p && drag.zone === 'battle' && zoneKind === 'battle') {
+    attackFlow(drag.player, drag.uid, stack.uid);
+    dragData = null; render();
+    return;
+  }
+  if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
+  if (blockIfBusy()) return;
+  // Dropping the hand card on the SECOND of two selected battle stacks
+  // is how DNA/Jogress fusion is triggered — no separate button needed,
+  // the two-click stack1+stack2 selection already signals that intent.
+  if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
+    const stA = findStack(sel.stack);
+    const jr = stA ? S.canJogress(stA, stack, drag.cardId) : { ok: true };
+    if (!jr.ok) {
+      S.log(state, `${p} ${S.card(drag.cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stack.cardId).nameKo} (${jr.reason})`);
+      dragData = null; render();
+      return;
+    }
+    // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
+    const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
+    let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
+    if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
+    if (!S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
+    sel.stack = null; sel.stack2 = null;
+    E.checkAutoEndTurn(state);
+    dragData = null; render();
+    return;
+  }
+  // canEvolveAny checks evoNormal AND every special "〔진화〕 <이름/특징>"
+  // line on the target — a failure here means NO printed condition
+  // justifies this evolution, so the drop must be rejected outright
+  // rather than silently let through for cost 0.
+  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
+  // 8-1-2-1 / 8-1-3-1: the PLAYER picks which way to evolve (every satisfied printed condition, 버스트 진화, 어플 합체, effect-granted alternatives).
+  const evoRestr = S.evolveTargetRestriction(state, p, stack);
+  const methods = E.evolutionMethods(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), evoRestr, { state, p, stack });
+  let check = methods.length ? { ok: true } : E.canEvolveAny(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), evoRestr);
+  let method = methods[0] || null;
+  if (method && (methods.length > 1 || method.sideEffect)) {
+    const mDelta = S.previewEvoCostDelta(state, p, stack, drag.cardId);
+    const options = methods.map((m, i) => `${i + 1}. ${m.label}${m.conditionText ? ` (${m.conditionText})` : ''} — 기본 코스트 ${m.baseCost}, 효과 반영 후 ${Math.max(0, m.baseCost + mDelta)}`);
+    const pick = await ctxChoose('multipleChoice', { player: p, prompt: `${p}: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} — 진화 방법을 선택하세요 (룰 8-1-2-1)`, options: [...options, '취소'] });
+    if (pick == null || pick < 0 || pick >= methods.length) { S.log(state, `${p} 진화 취소`); dragData = null; render(); return; }
+    method = methods[pick];
+  }
+  if (method) check = { ok: true, cost: method.baseCost, raw: method.conditionText };
+  const special = method && (method.kind === 'burst' || method.kind === 'app') ? method.kind : null;
+  if (special) {
+    const evoSnap2 = S.snapshotEvoCostMods(state, p);
+    const burst = method, baseCost = method.baseCost;
+    const cost2 = Math.max(0, baseCost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId)); // 8-3-2-3 / 8-4-2-3
+    let tUid = null;
+    if (special === 'burst' && burst.tamerUids.length > 1) { tUid = await ctxChoose('pickStack', { player: p, uids: burst.tamerUids, required: true, prompt: '《버스트 진화》 — 패로 되돌릴 자신의 테이머를 선택하세요' }) || burst.tamerUids[0]; }
+    const res = special === 'burst' ? S.burstEvolve(state, p, stack.uid, drag.cardId, cost2, tUid) : S.appFusion(state, p, stack.uid, drag.cardId, cost2);
+    if (!res) S.restoreEvoCostMods(evoSnap2);
+    E.checkAutoEndTurn(state);
+    dragData = null; render();
+    return;
+  }
+  if (!check.ok) {
+    S.log(state, `${p} 진화 조건 불일치로 거부: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} (${check.reason})`);
+    dragData = null; render();
+    return;
+  }
+  const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected evolution must not burn the one-time discount
+  let evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
+  evoModDelta += S.hookEvoCostDiscount(state, p, stack, drag.cardId);
+  evoModDelta += S.s1EvoAuto(state, p, stack, drag.cardId); // shard1
+  for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
+  for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
+  const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
+  if (absorb && absorb.candidates.length && await askYN(p, `《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
+    // the player picks WHICH active Digimon is rested (8-x 《흡수진화》)
+    const au = absorb.candidates.length > 1 ? await ctxChoose('pickStack', { player: p, uids: absorb.candidates, required: true, prompt: '《흡수진화》 — 레스트시킬 자신의 액티브 디지몬을 선택하세요' }) : absorb.candidates[0];
+    S.restStack(state, p, au || absorb.candidates[0]);
+    evoModDelta += absorb.delta;
+  } else if (absorb && absorb.oppCandidates && absorb.oppCandidates.length && await askYN(p, `《흡수진화》 — 상대의 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
+    const ou = absorb.oppCandidates.length > 1 ? await ctxChoose('pickStack', { player: S.opponentOf(p), uids: absorb.oppCandidates, required: true, prompt: '《흡수진화》 — 레스트시킬 상대의 액티브 디지몬을 선택하세요' }) : absorb.oppCandidates[0];
+    S.restStack(state, S.opponentOf(p), ou || absorb.oppCandidates[0]); // shard1 (BT3-056)
+    evoModDelta += absorb.delta;
+  }
+  const cost = Math.max(0, check.cost + evoModDelta);
+  if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
+  E.checkAutoEndTurn(state);
+  dragData = null; render();
+}
+function handDrag(p, idx) { const cardId = state.players[p].hand[idx]; return cardId == null ? null : { kind: 'hand', player: p, idx, cardId }; }
+// Tap-flow entry points (same code path as the drops).
+const doEvolve = (p, stackUid, handIdx) => { const st = findStack({ player: p, uid: stackUid }); const d = handDrag(p, handIdx); return st && d ? handleStackDrop(p, st, state.players[p].raising?.uid === st.uid ? 'raising' : 'battle', d) : undefined; };
+const doPlayFromHand = (p, handIdx) => playFreshFromDrag(handDrag(p, handIdx), p);
+
+// Shared by the 🔗 badge drop AND the badge tap (hand card or another battle stack → link onto `stack`).
+async function handleLinkDrop(p, stack, drag) {
+  // 6-5-1-4-1: a Digimon standing in the battle area can be linked to another Digimon too (drag its stack onto the 🔗 badge).
+  if (drag && drag.kind === 'stack' && drag.zone === 'battle' && drag.player === p && drag.uid !== stack.uid && p === state.activePlayer && state.phase === 'main') {
+    if (blockIfBusy()) return;
+    const src = findStack({ player: p, uid: drag.uid });
+    const lk2 = src ? S.linkCheck(state, p, stack, src.cardId) : { ok: false, reason: '카드 없음' };
+    if (!lk2.ok) { S.log(state, `${p} 링크 거부: ${src ? S.card(src.cardId).nameKo : '?'} → ${S.card(stack.cardId).nameKo} (${lk2.reason})`); dragData = null; render(); return; }
+    S.linkFromBattle(state, p, drag.uid, stack.uid, Math.max(0, lk2.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, src.cardId) : 0)));
+    E.checkAutoEndTurn(state);
+    dragData = null; render();
+    return;
+  }
+  if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
+  if (blockIfBusy()) return; // 6-5-1: no link while something is unresolved
+  if (blockIfBusy()) return;
+  const lk = S.linkCheck(state, p, stack, drag.cardId);
+  if (!lk.ok) { S.log(state, `${p} 링크 거부: ${S.card(drag.cardId).nameKo} → ${S.card(stack.cardId).nameKo} (${lk.reason})`); dragData = null; render(); return; }
+  dragData = null;
+  const lcost = Math.max(0, lk.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0));
+  const dIdx = await S.linkDiscardIdx(state, p, stack.uid, ctxChoose); // 4-9-5: the player picks which old link card goes
+  S.linkCardTo(state, p, stack.uid, drag.cardId, drag.cardId, lcost, 'hand', dIdx);
+  E.checkAutoEndTurn(state);
+  render();
+}
+// The per-stack activated actions (≪딜레이≫ / ≪트레이닝≫ / 【메인】): descriptors shared by the little overlay buttons on
+// the card (desktop) and the selection action bar (touch). Same handlers as before — only relocated.
+function stackActionList(p, stack, zoneKind) {
+  const out = [];
+  // 16-17 ≪딜레이≫: this placed card can be discarded (from turns after the one it was placed on) to run its listed
+  // bullet effect, rerouted through state.pending like every other triggered effect.
+  const delayBody = zoneKind === 'battle' ? S.parseDelayEffect(S.card(stack.cardId).effectKo) : null;
+  if (delayBody && p === state.activePlayer && state.phase === 'main' && state.turnNumber > stack.placedTurn) {
+    out.push({ kind: 'delay', label: '🗑딜레이', title: `《딜레이》 발동: ${delayBody}`, run: () => {
+      if (blockIfBusy()) return;
+      const cardId = S.discardForDelay(state, p, stack.uid);
+      if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: delayBody, resolved: false });
+      render();
+    } });
+  }
+  // ≪트레이닝≫ — activated main-phase ability (also usable from the raising area).
+  if ((zoneKind === 'battle' || zoneKind === 'raising') && p === state.activePlayer && state.phase === 'main'
+    && S.hasKeyword(stack, '트레이닝') && !stack.suspended && state.players[p].deck.length > 0) {
+    out.push({ kind: 'train', label: '🏋트레이닝', title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음', run: () => { if (blockIfBusy()) return; S.useTraining(state, p, stack.uid); render(); } });
+  }
+  // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
+  const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
+  mainAbilities.forEach((ab, i) => {
+    const payable = Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text);
+    out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인', disabled: !payable, // 15-8-4-4-1
+      title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
+      run: () => {
+        if (blockIfBusy()) return;
+        if (!Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text)) { S.log(state, '처리 조건을 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'); render(); return; }
+        state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
+        render();
+      } });
+  });
+  return out;
+}
+
+// Tap flow: with a hand card selected, which own stacks can it act on? 'fuse' = the 2nd selected DNA partner,
+// 'evolve' = every printed/granted evolution condition satisfied — the SAME legality functions handleStackDrop uses.
+function handTargetKind(p, stack, zoneKind) {
+  if (!sel.hand || sel.hand.player !== p || p !== state.activePlayer || state.phase !== 'main') return null;
+  if (zoneKind !== 'battle' && zoneKind !== 'raising') return null;
+  const hc = state.players[p].hand[sel.hand.idx];
+  if (hc == null || S.card(hc).category !== 'digimon') return null;
+  if (sel.stack2 && sel.stack2.uid === stack.uid && sel.stack && sel.stack.player === p) return 'fuse';
+  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) return null;
+  try {
+    const restr = S.evolveTargetRestriction(state, p, stack);
+    const extra = S.evoExtraArg(state, p, stack);
+    if (E.evolutionMethods(stack.cardId, hc, extra, restr, { state, p, stack }).length) return 'evolve';
+    return E.canEvolveAny(stack.cardId, hc, extra, restr).ok ? 'evolve' : null;
+  } catch (e) { return null; }
+}
+// Can the selected hand card be played/used from the hand right now (tap the battle area / the ▶ button)?
+function handPlayable(p) {
+  if (!sel.hand || sel.hand.player !== p || p !== state.activePlayer || state.phase !== 'main') return false;
+  const hc = state.players[p].hand[sel.hand.idx];
+  return hc != null;
+}
+
 function renderStack(p, stack, zoneKind, opts = {}) {
   const isSelected = sel.stack && sel.stack.uid === stack.uid;
   const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
@@ -492,94 +714,19 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     draggable: isOwnActiveBattle,
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
-    onDrop: async (drag) => {
-      if (!drag) return;
-      // An opposing battle stack dropped directly onto this one is a direct
-      // attack declaration on THIS specific digimon — no separate target-
-      // choice menu needed, the drop location already said which target.
-      if (drag.kind === 'stack' && drag.player !== p && drag.zone === 'battle' && zoneKind === 'battle') {
-        attackFlow(drag.player, drag.uid, stack.uid);
-        dragData = null; render();
-        return;
-      }
-      if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
-      if (blockIfBusy()) return;
-      // Dropping the hand card on the SECOND of two selected battle stacks
-      // is how DNA/Jogress fusion is triggered — no separate button needed,
-      // the two-click stack1+stack2 selection already signals that intent.
-      if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
-        const stA = findStack(sel.stack);
-        const jr = stA ? S.canJogress(stA, stack, drag.cardId) : { ok: true };
-        if (!jr.ok) {
-          S.log(state, `${p} ${S.card(drag.cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stack.cardId).nameKo} (${jr.reason})`);
-          dragData = null; render();
-          return;
-        }
-        // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
-        const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
-        let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
-        if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
-        if (!S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
-        sel.stack = null; sel.stack2 = null;
-        E.checkAutoEndTurn(state);
-        dragData = null; render();
-        return;
-      }
-      // canEvolveAny checks evoNormal AND every special "〔진화〕 <이름/특징>"
-      // line on the target — a failure here means NO printed condition
-      // justifies this evolution, so the drop must be rejected outright
-      // rather than silently let through for cost 0.
-      if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
-      let check = E.canEvolveAny(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack));
-      const s1alt = S.s1EvolveAlt(state, p, stack, drag.cardId); // shard1: 진화조건 무시 + 고정 코스트
-      if (s1alt && (!check.ok || s1alt.cost < check.cost)) check = { ok: true, cost: s1alt.cost, raw: '특수 진화' };
-      // 8-3 버스트 진화 / 8-4 어플 합체: printed special evolutions (the normal condition check above never covers them).
-      const restrOk = E.evoRestrictionCheck(drag.cardId, S.evolveTargetRestriction(state, p, stack)).ok;
-      const burst = restrOk && S.parseBurstEvolution(drag.cardId) ? S.burstCheck(state, p, stack, drag.cardId) : null;
-      const appf = restrOk && S.parseAppFusion(drag.cardId) ? S.appFusionCheck(state, p, stack, drag.cardId) : null;
-      const special = burst && burst.ok ? 'burst' : appf && appf.ok ? 'app' : null;
-      if (special && (!check.ok || await askYN(p, special === 'burst' ? '《버스트 진화》로 진화할까요? (테이머를 패로 되돌림)' : '《어플 합체》로 진화할까요? (링크 카드를 위에 겹침)'))) {
-        const evoSnap2 = S.snapshotEvoCostMods(state, p);
-        const baseCost = special === 'burst' ? burst.cost : appf.cost;
-        const cost2 = Math.max(0, baseCost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId)); // 8-3-2-3 / 8-4-2-3
-        let tUid = null;
-        if (special === 'burst' && burst.tamerUids.length > 1) { tUid = await ctxChoose('pickStack', { player: p, uids: burst.tamerUids, required: true, prompt: '《버스트 진화》 — 패로 되돌릴 자신의 테이머를 선택하세요' }) || burst.tamerUids[0]; }
-        const res = special === 'burst' ? S.burstEvolve(state, p, stack.uid, drag.cardId, cost2, tUid) : S.appFusion(state, p, stack.uid, drag.cardId, cost2);
-        if (!res) S.restoreEvoCostMods(evoSnap2);
-        E.checkAutoEndTurn(state);
-        dragData = null; render();
-        return;
-      }
-      if (!check.ok) {
-        S.log(state, `${p} 진화 조건 불일치로 거부: ${S.card(stack.cardId).nameKo} → ${S.card(drag.cardId).nameKo} (${check.reason})`);
-        dragData = null; render();
-        return;
-      }
-      const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected evolution must not burn the one-time discount
-      let evoModDelta = S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId);
-      evoModDelta += S.hookEvoCostDiscount(state, p, stack, drag.cardId);
-      evoModDelta += S.s1EvoAuto(state, p, stack, drag.cardId); // shard1
-      for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
-      for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
-      const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
-      if (absorb && absorb.candidates.length && await askYN(p, `《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
-        // the player picks WHICH active Digimon is rested (8-x 《흡수진화》)
-        const au = absorb.candidates.length > 1 ? await ctxChoose('pickStack', { player: p, uids: absorb.candidates, required: true, prompt: '《흡수진화》 — 레스트시킬 자신의 액티브 디지몬을 선택하세요' }) : absorb.candidates[0];
-        S.restStack(state, p, au || absorb.candidates[0]);
-        evoModDelta += absorb.delta;
-      } else if (absorb && absorb.oppCandidates && absorb.oppCandidates.length && await askYN(p, `《흡수진화》 — 상대의 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
-        const ou = absorb.oppCandidates.length > 1 ? await ctxChoose('pickStack', { player: S.opponentOf(p), uids: absorb.oppCandidates, required: true, prompt: '《흡수진화》 — 레스트시킬 상대의 액티브 디지몬을 선택하세요' }) : absorb.oppCandidates[0];
-        S.restStack(state, S.opponentOf(p), ou || absorb.oppCandidates[0]); // shard1 (BT3-056)
-        evoModDelta += absorb.delta;
-      }
-      const cost = Math.max(0, check.cost + evoModDelta);
-      if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
-      E.checkAutoEndTurn(state);
-      dragData = null; render();
-    },
+    target: !!handTargetKind(p, stack, zoneKind),
+    onDrop: (drag) => handleStackDrop(p, stack, zoneKind, drag),
     onClick: opts.onClickOverride || (opts.attackTarget
       ? (() => { attackFlow(opts.attackTarget.attackerP, opts.attackTarget.attackerUid, stack.uid); sel.stack = null; render(); })
       : (() => {
+        // Tap flow: a hand card is selected and this stack is a legal evolve / DNA target → same action as dropping it here.
+        const tk = handTargetKind(p, stack, zoneKind);
+        if (tk) {
+          const hi = sel.hand.idx; sel.hand = null; sel.armFusion = false;
+          if (tk !== 'fuse') { sel.stack = null; sel.stack2 = null; }
+          doEvolve(p, stack.uid, hi);
+          return;
+        }
         if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; sel.armFusion = false; }
         // Only treat this click as picking a DNA/Jogress fusion partner when
         // the "조그레스 상대 선택" button was explicitly used first — otherwise
@@ -593,53 +740,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
           sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
           sel.stack2 = null;
           sel.armFusion = false;
+          sel.hand = null; // one thing selected at a time (a hand card is picked AFTER the DNA partners)
         }
         render();
       })),
   });
 
-  // 16-17 ≪딜레이≫: this placed card can be discarded (from turns after the
-  // one it was placed on) to run its listed bullet effect. Rerouted through
-  // state.pending instead of running it directly here, reusing the exact
-  // same auto-run/manual-resolve/delay-banner machinery every other
-  // triggered effect already goes through — no separate async plumbing
-  // needed in this onClick.
-  const delayBody = zoneKind === 'battle' ? S.parseDelayEffect(S.card(stack.cardId).effectKo) : null;
-  const canDelay = delayBody && p === state.activePlayer && state.phase === 'main' && state.turnNumber > stack.placedTurn;
-  const delayBtn = canDelay ? h('button', {
-    className: 'delay-btn',
-    title: `《딜레이》 발동: ${delayBody}`,
-    onClick: (e) => {
-      e.stopPropagation();
-      if (blockIfBusy()) return;
-      const cardId = S.discardForDelay(state, p, stack.uid);
-      if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: delayBody, resolved: false });
-      render();
-    },
-  }, '🗑딜레이') : null;
-
-  // ≪트레이닝≫ — activated main-phase ability (also usable from the raising area).
-  const canTrain = (zoneKind === 'battle' || zoneKind === 'raising') && p === state.activePlayer && state.phase === 'main'
-    && S.hasKeyword(stack, '트레이닝') && !stack.suspended && state.players[p].deck.length > 0;
-  const trainBtn = canTrain ? h('button', {
-    className: 'delay-btn train-btn',
-    title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음',
-    onClick: (e) => { e.stopPropagation(); if (blockIfBusy()) return; S.useTraining(state, p, stack.uid); render(); },
-  }, '🏋트레이닝') : null;
-  // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
-  const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
-  const mainBtns = mainAbilities.length ? h('div', { className: 'main-btns' }, mainAbilities.map((ab, i) => { const payable = Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text); return h('button', {
-    className: 'delay-btn main-btn',
-    disabled: !payable, // 15-8-4-4-1: an activated ability with an optional processing condition can only be declared while that condition can be executed
-    title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
-    onClick: (e) => {
-      e.stopPropagation();
-      if (blockIfBusy()) return;
-      if (!Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text)) { S.log(state, '처리 조건을 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'); render(); return; }
-      state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
-      render();
-    },
-  }, mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인'); })) : null;
+  const acts = stackActionList(p, stack, zoneKind);
+  const actBtn = (a, cls) => h('button', { className: cls, title: a.title, disabled: a.disabled, onClick: (e) => { e.stopPropagation(); a.run(); } }, a.label);
+  const delayBtn = acts.find(a => a.kind === 'delay') ? actBtn(acts.find(a => a.kind === 'delay'), 'delay-btn') : null;
+  const trainBtn = acts.find(a => a.kind === 'train') ? actBtn(acts.find(a => a.kind === 'train'), 'delay-btn train-btn') : null;
+  const mainActs = acts.filter(a => a.kind === 'main');
+  const mainBtns = mainActs.length ? h('div', { className: 'main-btns' }, mainActs.map(a => actBtn(a, 'delay-btn main-btn'))) : null;
   const extraBtns = [delayBtn, trainBtn, mainBtns].filter(Boolean);
 
   // 10-1-1: the link condition/cost are printed on the card being linked (S.linkCheck); any own battle Digimon can be a host candidate.
@@ -648,37 +760,18 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   if (!linkSlots.length) return extraBtns.length ? h('div', { className: 'stack-wrap' }, [chip, ...extraBtns]) : chip;
   // Small overlay badge, separately droppable, so dragging a hand card onto
   // it links instead of digivolving — distinct from dropping on the card art.
+  let linkOk = false;
+  try {
+    if (sel.hand && sel.hand.player === p && state.phase === 'main') { const hc = state.players[p].hand[sel.hand.idx]; linkOk = hc != null && S.linkCheck(state, p, stack, hc).ok; }
+    else if (sel.stack && sel.stack.player === p && sel.stack.zone === 'battle' && sel.stack.uid !== stack.uid && state.phase === 'main') { const src = findStack(sel.stack); linkOk = !!src && S.linkCheck(state, p, stack, src.cardId).ok; }
+  } catch (e) { linkOk = false; }
   const badge = h('div', {
-    className: 'link-badge',
+    className: 'link-badge' + (linkOk ? ' tap-target' : ''),
     title: linkSlots.map(s => `${S.card(s.grantedBy).nameKo} 링크: ${s.conditionText} (코스트 ${s.cost})`).join('\n'),
     ondragover: (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('drop-hover'); },
     ondragleave: (e) => { e.currentTarget.classList.remove('drop-hover'); },
-    ondrop: async (e) => {
-      e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover');
-      const drag = dragData;
-      // 6-5-1-4-1: a Digimon standing in the battle area can be linked to another Digimon too (drag its stack onto the 🔗 badge).
-      if (drag && drag.kind === 'stack' && drag.zone === 'battle' && drag.player === p && drag.uid !== stack.uid && p === state.activePlayer && state.phase === 'main') {
-        if (blockIfBusy()) return;
-        const src = findStack({ player: p, uid: drag.uid });
-        const lk2 = src ? S.linkCheck(state, p, stack, src.cardId) : { ok: false, reason: '카드 없음' };
-        if (!lk2.ok) { S.log(state, `${p} 링크 거부: ${src ? S.card(src.cardId).nameKo : '?'} → ${S.card(stack.cardId).nameKo} (${lk2.reason})`); dragData = null; render(); return; }
-        S.linkFromBattle(state, p, drag.uid, stack.uid, Math.max(0, lk2.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, src.cardId) : 0)));
-        E.checkAutoEndTurn(state);
-        dragData = null; render();
-        return;
-      }
-      if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
-      if (blockIfBusy()) return; // 6-5-1: no link while something is unresolved
-      if (blockIfBusy()) return;
-      const lk = S.linkCheck(state, p, stack, drag.cardId);
-      if (!lk.ok) { S.log(state, `${p} 링크 거부: ${S.card(drag.cardId).nameKo} → ${S.card(stack.cardId).nameKo} (${lk.reason})`); dragData = null; render(); return; }
-      dragData = null;
-      const lcost = Math.max(0, lk.cost + (S.s7LinkCostDelta ? S.s7LinkCostDelta(state, p, stack, drag.cardId) : 0));
-      const dIdx = await S.linkDiscardIdx(state, p, stack.uid, ctxChoose); // 4-9-5: the player picks which old link card goes
-      S.linkCardTo(state, p, stack.uid, drag.cardId, drag.cardId, lcost, 'hand', dIdx);
-      E.checkAutoEndTurn(state);
-      render();
-    },
+    onClick: (e) => { e.stopPropagation(); const d = sel.hand && sel.hand.player === p ? handDrag(p, sel.hand.idx) : (sel.stack && sel.stack.player === p && sel.stack.zone === 'battle' ? { kind: 'stack', player: p, uid: sel.stack.uid, zone: 'battle' } : null); if (!d) return; if (d.kind === 'hand') sel.hand = null; else sel.stack = null; handleLinkDrop(p, stack, d); },
+    ondrop: (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover'); handleLinkDrop(p, stack, dragData); },
   }, '🔗' + (stack.linkCards?.length ? stack.linkCards.length : ''));
   return h('div', { className: 'stack-wrap' }, [chip, badge, ...extraBtns]);
 }
@@ -717,6 +810,7 @@ async function playFreshFromDrag(drag, p) {
     // Card-specific "…등장할 때, <비용>하는 것으로 지불하는 등장 코스트 -N" abilities (HOOKS.playDiscount) — confirmed one by one.
     for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += await o.apply(ctxChoose) || 0; }
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
+    if (category === 'digimon') discount += S.handSelfPlayDiscount(state, drag.player, drag.cardId); // shard7: printed "이 카드가 등장할 때, …등장 코스트 -N"
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
     if (cost > 0) S.spendMemory(state, cost);
@@ -767,7 +861,7 @@ function renderPlayerPanel(p) {
   }, [
     h('b', {}, p.toUpperCase()),
     h('span', {}, pl.deckName),
-    canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 클릭/드래그로 이 플레이어 공격') : null,
+    canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 탭/드래그로 이 플레이어 공격') : null,
   ]);
 
   // 6-4: hatch OR move, not both, per breeding phase visit
@@ -782,21 +876,26 @@ function renderPlayerPanel(p) {
 
   const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && pl.raising && S.canMoveFromRaising(pl.raising);
   const raisingZone = h('div', { className: 'zone hex-field' }, [
-    zonePill(canMoveRaising ? '육성 에어리어 (카드 클릭=배틀 이동)' : '육성 에어리어'),
+    zonePill(canMoveRaising ? '육성 에어리어 (카드 탭=배틀 이동)' : '육성 에어리어'),
     h('div', { className: 'hex-slot-row' }, [
       pl.raising
         ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } } : {})
         : h('div', { className: 'empty-slot' }, '비어있음'),
       // digitama pile lives right next to the raising area it feeds, not
       // grouped with the unrelated deck/security/trash counters
-      pileChip(canHatch ? '디지타마 (클릭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } : undefined),
+      pileChip(canHatch ? '디지타마 (탭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } : undefined),
     ]),
   ]);
 
-  const battleZone = h('div', { className: 'zone drop-zone hex-field' }, [
-    zonePill('배틀 에어리어 (핸드카드를 여기로 드래그하면 등장)'),
+  const playTap = handPlayable(p);
+  const battleZone = h('div', { className: 'zone drop-zone hex-field' + (playTap ? ' tap-target' : '') }, [
+    zonePill(playTap ? ['배틀 에어리어 ', h('b', { style: 'color:var(--ok)' }, '(여기를 탭하면 등장/사용)')] : ['배틀 에어리어', h('span', { className: 'desk' }, ' (핸드카드를 여기로 드래그하면 등장)')]),
     h('div', {
       className: 'stack-list hex-slot-row',
+      onClick: (e) => { // tap flow: empty space in the battle area = play the selected hand card (same as dropping it)
+        if (!handPlayable(p) || e.target.closest('.card-chip, .link-badge, button')) return;
+        const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi);
+      },
       ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); },
       ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
@@ -818,7 +917,7 @@ function renderPlayerPanel(p) {
   const justDrawnCount = pl.pendingDrawFlash || 0;
   pl.pendingDrawFlash = 0;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
-    zonePill(`핸드 (${pl.hand.length}장, 연습용 전체 공개) — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격`),
+    zonePill([`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택')]),
     ...(() => {
       // "[패]【메인】"/"[트래시]【메인】" abilities printed on Digimon/Tamer cards (usable from hand / trash in the main phase)
       const abs = [...S.zoneMainAbilities(state, p, 'hand').map(a => ({ ...a, zone: 'hand' })), ...S.zoneMainAbilities(state, p, 'trash').map(a => ({ ...a, zone: 'trash' }))];
@@ -836,7 +935,11 @@ function renderPlayerPanel(p) {
       draggable: p === state.activePlayer && state.phase === 'main',
       dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
       justDrawn: i >= pl.hand.length - justDrawnCount,
-      onClick: () => { sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id }; render(); },
+      onClick: () => {
+        sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id };
+        if (sel.hand && !sel.stack2) { sel.stack = null; sel.armFusion = false; } // tap flow: the hand card is the only selection unless DNA partners are already picked
+        render();
+      },
     }))),
   ]);
 
@@ -1275,7 +1378,7 @@ function renderActions() {
 
   if (state.phase === 'breeding') {
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', { className: 'meta' }, '디지타마 파일 클릭 = 부화, 육성 에어리어의 카드 클릭 = 배틀 이동 (둘 다 선택사항이지만 이번 턴엔 둘 중 하나만 가능)'),
+      h('span', { className: 'meta' }, '디지타마 파일 탭/클릭 = 부화, 육성 에어리어의 카드 탭/클릭 = 배틀 이동 (둘 다 선택사항이지만 이번 턴엔 둘 중 하나만 가능)'),
     ]));
   }
 
@@ -1287,7 +1390,7 @@ function renderActions() {
       h('span', {}, 'DNA/링크 코스트'), numInput('costInput', 0),
     ]));
     rows.push(h('div', { className: 'actions-row' }, [
-      h('span', { className: 'meta' }, '핸드→필드/내 디지몬 드래그 = 등장·진화 · 스택1+스택2 선택 후 핸드→스택2 드래그 = DNA/조그레스 · 디지몬의 🔗 배지에 핸드카드 드롭 = 링크 · 내 디지몬→상대 진영 드래그 = 공격'),
+      h('span', { className: 'meta' }, '[PC] 핸드→필드/내 디지몬 드래그 = 등장·진화 · 스택1+스택2 선택 후 핸드→스택2 드래그 = DNA/조그레스 · 🔗 배지에 드롭 = 링크 · 내 디지몬→상대 진영 드래그 = 공격  [모바일] 핸드 카드 탭 → 초록 테두리 대상(배틀 에어리어/내 디지몬/🔗) 탭 · 내 디지몬 탭 → ⚔공격 → 대상 탭'),
     ]));
   }
 

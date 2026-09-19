@@ -346,14 +346,45 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
   if (!rc.ok) return rc;
   const conditions = parseEvoConditions(targetCardId);
   if (!conditions.length) return { ok: false, reason: '진화 조건 없음(Lv.2 디지타마이거나 데이터 누락)' };
-  const srcColors = [...(extraColors.replace || src.colors || []), ...extraColors]; // .replace: 원래 색 변경 효과(얻은 색은 그대로 추가)
-  // .names (from S.evoExtraArg -> S.effectiveInfo): every name the stack counts as (원래 명칭 변경 + 〈룰〉 「X」로도 취급 + 「명칭 전부를 얻는다」);
-  // .inclNames: 〈룰〉 「X」를 포함하는 것으로도 취급; .traits: printed 특징(속성/형태 포함) + hook-granted ones. Falls back to the printed card.
+  const sat =satisfiedEvoConditions(sourceCardId, targetCardId, extraColors, restriction);
+  let best = null; // canEvolveAny keeps returning the cheapest satisfied condition (callers that need the player's choice use evolutionMethods)
+  for (const c of sat) if (!best || c.cost < best.cost) best = { ok: true, cost: c.cost, raw: c.raw };
+  if (best) return best;
+  return { ok: false, reason: `어떤 진화 조건도 만족 못함 (대상: ${src.nameKo} Lv.${src.level})` };
+}
+// 8-1-2-1 / 8-1-3-1: EVERY printed condition (evoNormal + each 〔진화〕 line) the source satisfies, with its printed cost.
+function satisfiedEvoConditions(sourceCardId, targetCardId, extraColors = [], restriction = null) {
+  const src = S.card(sourceCardId);
+  const tgt = S.card(targetCardId);
+  if (S.isTokenId(sourceCardId) || !evoRestrictionCheck(targetCardId, restriction).ok) return [];
+  const conditions = parseEvoConditions(targetCardId);
+  // .replace: 원래 색 변경 효과(얻은 색은 그대로 추가). .names (from S.evoExtraArg -> S.effectiveInfo): every name the stack counts as
+  // (원래 명칭 변경 + 〈룰〉 「X」로도 취급 + 「명칭 전부를 얻는다」); .inclNames: 〈룰〉 「X」를 포함하는 것으로도 취급;
+  // .traits: printed 특징(속성/형태 포함) + hook-granted ones. Falls back to the printed card.
+  const srcColors = [...(extraColors.replace || src.colors || []), ...extraColors];
   const srcNames = (extraColors.names && extraColors.names.length) ? extraColors.names : [extraColors.nameReplace || src.nameKo];
   const srcInclNames = extraColors.inclNames || [];
   const srcTraits = extraColors.traits || src.types || [];
-  let best = null; // 8-1-2-1: several applicable conditions -> the cheapest one
+  const out = [];
   for (const cond of conditions) {
+    // printed 〔진화〕 lines: evaluate the WHOLE descriptor ("특징 「A」/「B」를 가진 Lv.5", "「A」/특징 「B」를 가진 Lv.4", "…특징 「X항체」를 갖지 않은 Lv.5",
+    // "자신의 「A」가 있는 동안, 「B」" …) with the shared descriptor parser; the field-by-field checks below only cover what it cannot parse.
+    const isNormalCond = cond === conditions[0] && !!tgt.evoNormal;
+    // "〔진화〕 특징으로 「X」를 가진 카드가 아래에 N장 있는 「Name」" (P-185/BT18-018/BT18-042): needs the source STACK's under-cards (extraColors.under)
+    const um = isNormalCond ? null : String(cond.raw || '').match(/^(?:(?:특징으로?|특징)\s*「([^」]+)」\s*(?:를|을)?\s*가진\s*)?카드가\s*아래에\s*(\d+)장\s*있는\s*「([^」]+)」\s*$/);
+    if (um) {
+      if (!srcNames.includes(um[3])) continue;
+      const cnt = (extraColors.under || []).filter(id => !um[1] || (S.card(id).types || []).includes(um[1])).length;
+      if (cnt >= Number(um[2])) out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
+      continue;
+    }
+    const pr = isNormalCond ? null : S.cardDescPredicate(String(cond.raw || '').replace(/^.*?(?:동안|있다면),\s*/, ''));
+    if (pr) {
+      const variants = [...new Set([...srcNames, ...srcInclNames])];
+      if (!variants.some(n => pr({ ...src, nameKo: n, types: srcTraits, colors: srcColors }))) continue;
+      out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
+      continue;
+    }
     if (typeof cond.level === 'number' && src.level !== cond.level) continue;
     if (cond.nameExact && !srcNames.includes(cond.nameExact)) continue;
     if (cond.nameIncludes && !srcNames.some(n => n.includes(cond.nameIncludes)) && !srcInclNames.some(n => n.includes(cond.nameIncludes))) continue;
@@ -362,8 +393,37 @@ function canEvolveAnyBase(sourceCardId, targetCardId, extraColors = [], restrict
       const isAny = cond.colors.length >= 7;
       if (!isAny && !cond.colors.some(c => srcColors.includes(c))) continue;
     }
-    if (!best || cond.cost < best.cost) best = { ok: true, cost: cond.cost, raw: cond.raw };
+    out.push({ cost: cond.cost, raw: cond.raw, isNormal: cond === conditions[0] && !!tgt.evoNormal });
   }
-  if (best) return best;
-  return { ok: false, reason: `어떤 진화 조건도 만족 못함 (대상: ${src.nameKo} Lv.${src.level})` };
+  return out;
+}
+
+// 8-1-2-1 / 8-1-3-1: ALL the ways `sourceCardId` can evolve into `targetCardId`, so the player can pick one (the evolution cost is the one printed
+// on the chosen condition, then cost modifiers apply on top). ctx = { state, p, stack } additionally offers the state-dependent methods:
+// 《버스트 진화》 (8-3), 《어플 합체》 (8-4) and effect-granted alternatives (s1EvolveAlt). restriction.alt = [{cost,test}] are hook-granted alternatives too.
+// -> [{ id, kind:'normal'|'special-line'|'burst'|'app'|'alt', label, baseCost, conditionText, ignoresCondition, sideEffect }]; [] when none applies.
+// Plain methods with an identical cost are merged (choosing between them changes nothing); burst/app always stay separate (they have side effects).
+export function evolutionMethods(sourceCardId, targetCardId, extraColors = [], restriction = null, ctx = null) {
+  const out = [];
+  const seenCost = new Set();
+  const addPlain = (m) => { if (seenCost.has(m.baseCost)) return; seenCost.add(m.baseCost); out.push(m); };
+  const sat = satisfiedEvoConditions(sourceCardId, targetCardId, extraColors, restriction);
+  sat.forEach((c, i) => addPlain({ id: (c.isNormal ? 'normal' : 'line') + i, kind: c.isNormal ? 'normal' : 'special-line', label: c.isNormal ? '일반 진화' : '특수 진화 조건', baseCost: c.cost, conditionText: c.raw || '', ignoresCondition: false, sideEffect: false }));
+  const okBase = !restriction || !restriction.cannotEvolve;
+  if (restriction && restriction.alt && okBase && !S.isTokenId(sourceCardId)) {
+    const src = S.card(sourceCardId), tgt = S.card(targetCardId);
+    restriction.alt.forEach((a, i) => { if (a.test(tgt, src)) addPlain({ id: 'alt-r' + i, kind: 'alt', label: '효과로 진화 조건 무시', baseCost: a.cost, conditionText: '진화 조건 무시', ignoresCondition: true, sideEffect: false }); });
+  }
+  if (ctx && ctx.state && ctx.stack) {
+    const { state, p, stack } = ctx;
+    const alt = S.s1EvolveAlt(state, p, stack, targetCardId); // shard1: 진화조건 무시 + 고정 코스트 (8-1-2-2: restrictions still apply)
+    if (alt && evoRestrictionCheck(targetCardId, restriction).ok && !(restriction && restriction.cannotEvolve)) addPlain({ id: 'alt-s1', kind: 'alt', label: '효과로 진화 조건 무시', baseCost: alt.cost, conditionText: '진화 조건 무시', ignoresCondition: true, sideEffect: false });
+    if (evoRestrictionCheck(targetCardId, restriction).ok) {
+      const burst = S.parseBurstEvolution(targetCardId) ? S.burstCheck(state, p, stack, targetCardId) : null;
+      if (burst && burst.ok) out.push({ id: 'burst', kind: 'burst', label: '《버스트 진화》', baseCost: burst.cost, conditionText: '테이머를 패로 되돌림', ignoresCondition: false, sideEffect: true, tamerUids: burst.tamerUids });
+      const appf = S.parseAppFusion(targetCardId) ? S.appFusionCheck(state, p, stack, targetCardId) : null;
+      if (appf && appf.ok) out.push({ id: 'app', kind: 'app', label: '《어플 합체》', baseCost: appf.cost, conditionText: '링크 카드를 위에 겹침', ignoresCondition: false, sideEffect: true });
+    }
+  }
+  return out;
 }
