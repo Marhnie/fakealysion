@@ -33,3 +33,8 @@ for (const id of ['BT9-050', 'BT9-051']) sc(id + '::서로의 턴', async (ctx) 
   if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '진화원의 「레오몬」을 코스트를 지불하지 않고 등장시키겠습니까?' }))) return;
   S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, { fromSources: true });
 });
+
+// EX10-037 【자신의 턴】 / EX10-050 【서로의 턴】 (inherited): 자신의 트래시 10장마다, 이 디지몬을 DP +1000 (the "N장마다" DP line was not parsed at all)
+const perTrash10 = (state, hp, h, target, tp) => (target === h && tp === hp ? 1000 * Math.floor(state.players[hp].trash.length / 10) : 0);
+HOOKS['EX10-037'] = [...(HOOKS['EX10-037'] || []), { tag: '자신의 턴', src: 'inheritedKo', has: '트래시 10장마다', dp: perTrash10 }];
+HOOKS['EX10-050'] = [...(HOOKS['EX10-050'] || []), { tag: '서로의 턴', src: 'inheritedKo', has: '트래시 10장마다', dp: perTrash10 }];

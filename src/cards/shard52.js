@@ -34,3 +34,22 @@ hk('BT25-076', { tag: '__handPlay', handPlayOption: (state, p, cardId) => {
     return -cost;
   } };
 } });
+
+// ---- BT26-041 inherited 【자신의 턴】[턴에 1회] 이 디지몬이 배틀에서 승리했을 때, 메모리 +1. (no watcher existed → never fired; same shape as EX11-028)
+hk('BT26-041', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리했을 때', limit: 1, events: { battleWin: (state, hp, h, info) => info.owner === hp && info.stack === h } });
+
+// ---- BT24-079 【서로의 턴】[턴에 1회] 다른 디지몬이 소멸했을 때, 이 디지몬의 【진화 시】 효과 1개를 발휘할 수 있다.
+// (generic compile of "이 디지몬의 【진화 시】 효과 1개를 발휘" was an empty script → the watcher fired but did nothing; same borrowing helper as shard38 BT22-040)
+OPS.s52_borrowEvo = async (instr, ctx, R) => {
+  const st = [ctx.state.players[ctx.self].raising, ...ctx.state.players[ctx.self].battle].filter(Boolean).find((s) => s.uid === ctx.sourceStackUid);
+  if (!st) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `${C(st.cardId).nameKo}의 【진화 시】 효과 1개를 발휘할까요?` }))) return;
+  const segs = S.parseEffectSegments(C(st.cardId).effectKo || '').segments.filter((sg) => sg.tags.some((t) => t.includes('진화 시')));
+  if (!segs.length) return;
+  let seg = segs[0];
+  if (segs.length > 1) { const k = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '발휘할 【진화 시】 효과 선택', options: segs.map((sg) => sg.body.replace(/\n/g, ' ').slice(0, 60)) }); if (k == null) return; seg = segs[k] || segs[0]; }
+  const text = seg.body.replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
+  const script = R.lookupCardSpecific(st.cardId, seg.tags, text) || R.compileToScript(text);
+  if (script && script.length) await R.runScript(script, { ...ctx, sourceCardId: st.cardId });
+};
+SCRIPTS['BT24-079::서로의 턴'] = [{ op: 's52_borrowEvo' }];

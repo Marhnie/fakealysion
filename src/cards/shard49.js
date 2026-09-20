@@ -66,3 +66,16 @@ sc('EX5-065::상대의 턴 개시 시', async (ctx, R) => {
     await R.runScript([{ op: 'atTurnEnd', when: 'this', then: [{ op: 'returnToHandStripSources', target: 'self', last: true, n: 1, filter: {}, requireSuspended: null, dest: 'hand' }] }], { ...ctx, _lastPick: { player: who, uid: last.uid } });
   }
 });
+
+// EX5-065 【자신의 턴】 자신의 디지몬에 겹쳐져 있는 카드가 디지몬의 진화원에 효과로 놓였을 때, 이 테이머를 레스트시키는 것으로, 메모리 +1.
+// (no watcher existed: never triggered.) The 「겹쳐진 카드를 진화원 아래로 옮기는」 effects (EX5-007/016/064 …) emit 'sourceRotated' for the digimon's stack.
+(HOOKS['EX5-065'] ||= []).push({ tag: '자신의 턴', has: '진화원에 효과로 놓였을 때', events: { sourceRotated: (state, hp, holder, info) => info.owner === hp && !!info.stack && C(info.stack.cardId).category === 'digimon' && !holder.suspended } });
+sc('EX5-065::자신의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  const t = pl.battle.find((s) => s.uid === ctx.sourceStackUid);
+  if (!t || t.suspended) return;
+  if (!(await ask(ctx, '이 테이머를 레스트시켜 메모리 +1을 얻을까요?'))) return;
+  S.restStack(state, ctx.self, t.uid);
+  if (!t.suspended) return; // rest was blocked -> cost not paid
+  S.grantMemory(state, ctx.self, 1, ctx.sourceCardId);
+});

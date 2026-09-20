@@ -21,6 +21,8 @@ import * as Fx from './effects.js';
 export const LEVEL_LABEL = { easy: '쉬움', normal: '보통', hard: '어려움' };
 export const SPEED_LABEL = { fast: '빠르게', normal: '보통', slow: '느리게' };
 const R = { rng: Math.random };
+// tunable knobs (scripts/test-cpu.mjs --tune=key:value,… used them to calibrate the levels)
+export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 0.6, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1 };
 export function setRng(fn) { R.rng = fn || Math.random; }
 const rnd = () => R.rng();
 const pickRand = (a) => a[Math.floor(rnd() * a.length)];
@@ -273,8 +275,7 @@ function lethalPlan(state, p) {
   return { lethal, sec, blockers, uids: lethal ? through.map((x) => x.uid) : [] };
 }
 
-const P_SEC_DIGIMON = 0.6;
-const pLoseVsSecurity = (aDP, jam) => (jam ? 0 : P_SEC_DIGIMON * Math.max(0, Math.min(1, (6800 - aDP) / 4300)));
+const pLoseVsSecurity = (aDP, jam) => (jam ? 0 : TUNE.pSecDig * Math.max(0, Math.min(1, (TUNE.secDpMid - aDP) / 4300)));
 
 function battleOutcome(aDP, bDP, valA, valB) { // value delta for the attacker when it fights a blocker/target
   if (aDP > bDP) return valB;
@@ -303,7 +304,7 @@ export function attackCandidates(state, p, cfg) {
     const isBl = hasKw(state, p, st, '블로커');
     // defensive reserve: a blocker keeps its job when I'm low on security and the opponent has attackers
     let reserve = 0;
-    if (level === 'hard' && isBl && mySec <= 3 && oppThreat >= 1 && !lp.lethal) reserve = 3.5;
+    if (level === 'hard' && isBl && mySec <= 3 && oppThreat >= 1 && !lp.lethal) reserve = TUNE.hardReserve;
     else if (level === 'normal' && isBl && mySec <= 2 && oppThreat >= 2 && !lp.lethal) reserve = 2.5;
     if (level === 'easy') {
       if (rnd() < 0.35) continue;
@@ -318,7 +319,7 @@ export function attackCandidates(state, p, cfg) {
       if (opl.security.length === 0) cands.push({ target: 'PLAYER', score: 900 });
       else if (lp.lethal && lp.uids.includes(st.uid)) cands.push({ target: 'PLAYER', score: 400 + aDP / 1000 });
       else {
-        const gain = Math.min(checks, opl.security.length) * (level === 'hard' && opl.security.length <= 2 ? 3.2 : 2.2);
+        const gain = Math.min(checks, opl.security.length) * (level === 'hard' && opl.security.length <= 2 ? TUNE.hardGain2 : 2.2);
         const pBlock = oppBlockers.length ? (bestBlockerDP >= aDP ? 0.75 : 0.35) : 0;
         const noBlock = gain - pLoseVsSecurity(aDP, jam) * valA * 1.3;
         const blk = oppBlockers.length ? battleOutcome(aDP, bestBlockerDP, valA, stackValue(state, op, bestBlocker)) + (hasKw(state, p, st, '관통') && aDP > bestBlockerDP ? gain : 0) : 0;
@@ -363,7 +364,7 @@ export function planMain(state, p, cfg) {
     if (ov.length && rnd() < 0.5) return pickRand(ov);
     return { type: 'pass' };
   }
-  const threshold = level === 'hard' ? 1.2 : 0.9;
+  const threshold = level === 'hard' ? TUNE.hardThreshold : 0.9;
   const lp = lethalPlan(state, p);
   // lethal first: all lethal attackers go (weakest first as bait when the defender still has blockers)
   if (level === 'hard' && lp.lethal) {
@@ -379,16 +380,16 @@ export function planMain(state, p, cfg) {
     return a;
   }
   // B: attacks
-  const thrA = level === 'hard' ? 0.4 : 0.6;
+  const thrA = level === 'hard' ? TUNE.hardThrA : TUNE.normThrA;
   const goodAtk = atk.filter((a) => a.score > thrA);
   if (goodAtk.length) {
     goodAtk.sort((a, b) => b.score - a.score);
     return goodAtk[0];
   }
   // C: actions that push memory to the opponent (a pass hands over 3 anyway, so up to 3 is free)
-  const gw = level === 'hard' ? 1.0 : 0.85;
+  const gw = level === 'hard' ? TUNE.hardGw : 0.85;
   const dangerous = level === 'hard' && state.players[p].security.length <= 2 && state.players[opp(p)].battle.filter(isDigi).length >= 2;
-  const limit = dangerous ? 3 : (cfg.giftLimit != null ? cfg.giftLimit : (level === 'hard' ? 5 : 4));
+  const limit = dangerous ? 3 : (cfg.giftLimit != null ? cfg.giftLimit : (level === 'hard' ? TUNE.hardLimit : 4));
   const C = over.map((a) => ({ a, gift: Math.min(10, a.cost - mem) })).filter((x) => x.gift <= limit && S.canPayCost(state, x.a.cost))
     .map((x) => ({ ...x.a, eff: x.a.score - Math.max(0, x.gift - 3) * gw })).filter((x) => x.eff > (level === 'hard' ? 1.5 : 1.2));
   if (C.length) return C.sort((a, b) => b.eff + rnd() * noise - (a.eff + rnd() * noise))[0];
@@ -437,7 +438,7 @@ export function decideBlock(state, c, cfg) {
     if (lethal) return (winners[0] || ties[0] || cheapest).b.uid; // must stop it
     if (winners.length) return winners.sort((x, y) => x.val - y.val)[0].b.uid; // free kill (cheapest winner)
     if (ties.length && (valA >= ties[0].val || secN <= 3)) return ties[0].b.uid;
-    const chumpAt = level === 'hard' ? 3 : 2;
+    const chumpAt = level === 'hard' ? TUNE.hardChump : 2;
     if (!pierce && secN <= chumpAt && cheapest.val < 4 + (level === 'hard' ? 1 : 0) && (level === 'hard' ? checks >= 1 : true)) return cheapest.b.uid;
     return null;
   }

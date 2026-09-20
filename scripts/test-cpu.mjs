@@ -15,6 +15,7 @@ const N = Number(process.argv.find((a) => /^\d+$/.test(a)) || 300);
 const RANDOM_DECKS = process.argv.includes('--random-decks');
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
 const TURN_CAP = 90;
+for (const kv of ((process.argv.find((a) => a.startsWith('--tune=')) || '').slice(7).split(',')).filter(Boolean)) { const [k, v] = kv.split(':'); if (k in Cpu.TUNE) Cpu.TUNE[k] = Number(v); else console.log('unknown tune key', k); } // e.g. --tune=hardReserve:0,hardThrA:0.2
 const rnd = (n) => Math.floor(Math.random() * n);
 const pick = (a) => a[rnd(a.length)];
 const cards = Object.values(S.CARDS);

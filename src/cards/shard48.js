@@ -61,3 +61,38 @@ sc('BT10-066::서로의 턴', async (ctx) => {
   if (pi == null || !ti.includes(pi)) return;
   S.playFreeFromZone(state, ctx.self, 'trash', pi, { fromSources: true });
 });
+
+// ------------------------------------------------------------------ AD1-006 【서로의 턴】 leaves the battle area other than by DigiXros: put up to 4 evolution cards with 「크로스 하트」/「블루 플레어」 under one of your Tamers, then play 1 of them free
+// (the evolution cards are already in the trash when the leave trigger resolves; evt.sources lists them)
+hk('AD1-006', { tag: '서로의 턴', has: '디지크로스 이외로', onLeave: (state, p, stack, cause) => cause !== 'xros' });
+sc('AD1-006::서로의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  const evt = ctx.trigger?.evt || {};
+  const pool = (evt.sources || []).slice();
+  const isT = (id) => ['크로스 하트', '블루 플레어'].some(t => (C(id).types || []).includes(t));
+  const idxs = () => { const rest = pool.slice(); const out = []; pl.trash.forEach((id, i) => { const k = rest.indexOf(id); if (k >= 0) { rest.splice(k, 1); if (isT(id)) out.push(i); } }); return out; };
+  if (!idxs().length) return;
+  const tamers = state.players[ctx.self].battle.filter(s => C(s.cardId).category === 'tamer');
+  if (!tamers.length) return;
+  if (!(await ask(ctx, '진화원의 「크로스 하트」/「블루 플레어」 카드를 최대 4장 테이머 아래에 놓고, 1장을 코스트 없이 등장시킬까요?'))) return;
+  const tm = tamers.length === 1 ? tamers[0] : findStack(state, ctx.self, await ctx.choose('pickStack', { player: ctx.self, uids: tamers.map(s => s.uid), prompt: '카드를 아래에 놓을 테이머 선택' }));
+  if (!tm) return;
+  const placed = [];
+  for (let n = 0; n < 4; n++) {
+    const el = idxs();
+    if (!el.length) break;
+    const i = el.length === 1 && n === 0 ? el[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: el, prompt: `테이머 아래에 놓을 카드 선택 (${n + 1}/4, 선택 안 함 = 종료)` });
+    if (i == null || !el.includes(i)) break;
+    const id = pl.trash[i];
+    pool.splice(pool.indexOf(id), 1);
+    if (S.saveCardUnderTamer(state, ctx.self, id, tm.uid)) placed.push(id);
+  }
+  const cand = placed.filter(id => C(id).category === 'digimon');
+  if (!cand.length) return;
+  if (!(await ask(ctx, '테이머 아래에 놓은 카드 중 1장을 코스트 없이 등장시킬까요?'))) return;
+  const pid = cand.length === 1 ? cand[0] : cand[await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 's48tmp', eligibleIdxs: cand.map((_, i) => i), prompt: '등장시킬 카드 선택' }) ?? 0];
+  const k = tm.sources.indexOf(pid);
+  if (k < 0) return;
+  tm.sources.splice(k, 1); pl.trash.push(pid);
+  S.playFreeFromZone(state, ctx.self, 'trash', pl.trash.length - 1, {});
+});

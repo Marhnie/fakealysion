@@ -28,6 +28,8 @@ const MAX_MIN = Number(flag('minutes', 0));
 const JSON_OUT = flag('json', null);
 const LOGN = Number(flag('logn', 8));
 const SELFTEST = !!flag('selftest', false);
+const INTERACTIVE = !!flag('interactive', false);
+let CURSTATE = null, PARKED = 0, TIMER = null;
 const T0 = Date.now();
 
 // ---------- seeded RNG (engine shuffles use Math.random too) ----------
@@ -157,7 +159,7 @@ function census(state) {
       const v = pl[k];
       if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string' && CARDS[x])) { unknownHolders.add('players.' + k); for (const id of v) if (!isTok(id)) list.push([id, 'X:' + k]); }
     }
-    for (const [id, z, own] of list) { const q = own || p; res[q].set(id, (res[q].get(id) || 0) + 1); ((res.where[id] ||= {})[q] ||= []).push(z + (own ? "(foreign)" : "")); }
+    for (const [id, z, own] of list) { if (own) res.foreign = true; const q = own || p; res[q].set(id, (res[q].get(id) || 0) + 1); ((res.where[id] ||= {})[q] ||= []).push(z + (own ? "(foreign)" : "")); }
   }
   for (const k of Object.keys(state)) {
     if (['players', 'log', 'pending', 'fxHistory', 'pendingVanishFlash', 'pendingVanishSrc', 'deletedInfo'].includes(k)) continue;
@@ -175,6 +177,7 @@ function diffMaps(cur, init) {
 }
 function checkConservation(g) {
   const st = g.state, c = census(st);
+  if (c.foreign) g.sawForeign = true;
   const d1 = diffMaps(c.p1, g.init.p1), d2 = diffMaps(c.p2, g.init.p2);
   const sig = JSON.stringify([d1, d2, c.extra || 0]);
   if (sig === g.lastConsSig) return;
@@ -184,7 +187,7 @@ function checkConservation(g) {
   const cls = new Set();
   for (const id of ids) {
     const a = d1[id] || 0, b = d2[id] || 0;
-    if (a < 0 && b > 0 || a > 0 && b < 0) cls.add('WRONG-OWNER');
+    if (a < 0 && b > 0 || a > 0 && b < 0) cls.add(g.sawForeign ? 'WRONG-OWNER(foreign stack: known limitation)' : 'WRONG-OWNER');
     else if (a + b < 0) cls.add('LOST');
     else if (a + b > 0) cls.add('DUP/CREATED');
   }
@@ -228,6 +231,9 @@ function structural(g, tag) {
       if (!Array.isArray(pl[z])) { report('STRUCT', 'zone not array ' + z, z); continue; }
       for (const id of pl[z]) if (!CARDS[id]) report('STRUCT', 'unknown card in ' + z, String(id));
     }
+    for (const z of ['hand', 'security', 'deck']) for (const id of pl[z]) if (CARDS[id] && CARDS[id].category === 'digitama') report('STRUCT', 'digitama card in ' + z + ' (3-1-3-9 says digitama deck)', id);
+    for (const st of pl.battle) { const cat = cardOf(st.cardId).category; if (!['digimon', 'tamer', 'option'].includes(cat) && !(cat === 'digitama' && cardOf(st.cardId).dp != null)) report('STRUCT', 'battle stack with category ' + cat, st.cardId); }
+    if (pl.raising && !['digimon', 'digitama'].includes(cardOf(pl.raising.cardId).category)) report('STRUCT', 'raising top category ' + cardOf(pl.raising.cardId).category, pl.raising.cardId);
     if (pl.secUp) for (const [id, n] of Object.entries(pl.secUp)) if (!(n >= 0)) report('STRUCT', 'secUp negative/NaN', id + '=' + n);
     for (const st of [pl.raising, ...pl.battle].filter(Boolean)) {
       if (objs.has(st)) report('STRUCT', 'same stack object twice', st.cardId); objs.add(st);
@@ -244,13 +250,13 @@ function structural(g, tag) {
         if (!(v === 'permanent' || v === true || (typeof v === 'number' && Number.isFinite(v)) || v === 1 || Array.isArray(v))) report('STRUCT', 'keyword value odd ' + k, JSON.stringify(v));
       }
       if (Number.isNaN(st.inheritedDP) || Number.isNaN(st.attackEligibleTurn)) report('NaN', 'stack dp/eligible', st.cardId);
-      try { const dp = S.effectiveDP(state, p, st); if (!Number.isFinite(dp)) report('NaN', 'effectiveDP', st.cardId + '=' + dp); } catch (e) { noteErr('effectiveDP', e); }
+      try { const dp = S.effectiveDP(state, p, st); if (!Number.isFinite(dp)) report('NaN', 'effectiveDP', st.cardId + '=' + dp); else if (dp <= 0 && st !== pl.raising && cardOf(st.cardId).category === 'digimon' && cardOf(st.cardId).dp != null && !state.turnEnding && !state.log.slice(0, 40).some(e => /벗어나지|소멸하지|생존|무효|survive|룰체크로 소멸/.test(e.msg))) report('DP', 'digimon with DP<=0 stays in battle area after resolution (17-1-3-1)', st.cardId + ' dp=' + dp + ' ' + JSON.stringify({ base: cardOf(st.cardId).dp, temp: st.tempDP, inh: st.inheritedDP, mods: st.dpMods, ex: Object.keys(st).filter(k => /dp/i.test(k)) }) + ' LOG: ' + state.log.slice(0, 12).map(e => e.msg).reverse().join(' / ')); } catch (e) { noteErr('effectiveDP', e); }
     }
   }
   const un = state.pending.filter(t => !t.resolved).length;
   if (un > 500) report('PENDING', 'unresolved > 500', String(un));
   if (state.pending.length > 3000) report('PENDING', 'array > 3000 (resolved never removed)', String(state.pending.length));
-  if (state.winner && !['p1', 'p2'].includes(state.winner)) report('WINNER', 'invalid winner value', String(state.winner));
+  if (state.winner && !['p1', 'p2', 'draw'].includes(state.winner)) report('WINNER', 'invalid winner value', String(state.winner));
   walkNaN(state, tag);
   // new log lines
   const L = state.log; const fresh = L.length - LOGMARK;
@@ -265,9 +271,12 @@ function structural(g, tag) {
 // ---------- realistic chooser (respects required / n like the UI) ----------
 function makeChoose(g, self) {
   const st = g.state;
-  const cancelP = 0.18;
+  const mode = g.chooser || 'random'; // per game: random | cancel (decline / pick nothing whenever allowed) | yes (accept everything, first candidates)
+  const cancelP = mode === 'cancel' ? 1 : 0.18;
   return async (kind, o) => {
     o = o || {};
+    if (mode === 'yes') { switch (kind) { case 'confirmEffect': return true; case 'pickStack': return (o.uids || [])[0] ?? null; case 'pickStackAnySide': return (o.entries || [])[0] ? { player: o.entries[0].player, uid: o.entries[0].uid } : null; case 'pickFromZoneIndex': return (o.eligibleIdxs || [])[0] ?? null; case 'pickFromHandIndexes': return (o.eligibleIdxs || []).slice(0, o.n || 1); case 'pickFromRevealed': return (o.eligible || []).slice(0, o.max ?? 1).map(x => x.i); case 'multipleChoice': return 0; } }
+    if (mode === 'cancel' && kind === 'confirmEffect') return false;
     switch (kind) {
       case 'pickStack': { const u = o.uids || []; if (!u.length) return null; if (!o.required && chance(cancelP)) return null; return pick(u); }
       case 'pickStackAnySide': { const e = o.entries || []; if (!e.length) return null; if (!o.required && chance(cancelP)) return null; const x = pick(e); return { player: x.player, uid: x.uid }; }
@@ -294,6 +303,7 @@ function makeChoose(g, self) {
 async function drainPending(g, ceiling = 250) {
   const state = g.state; let guard = 0;
   while (guard++ < ceiling) {
+    if (state.winner) return; // game over: the UI stops resolving anything (main.js hides the pending list)
     const t = state.pending.find(x => !x.resolved);
     if (!t) return;
     const age = (g.pendAge[t.uid] ??= g.actions);
@@ -545,9 +555,10 @@ async function playGame(gi) {
   const { kind, a, b } = makeDecks(gi);
   let state;
   try { state = S.newGame(a, b); } catch (e) { report('EXC', 'newGame ' + e.message, e.stack); return; }
-  const g = { state, seed, kind, decks: [a.name, b.name], actions: 0, pendAge: {}, lastConsSig: '[{},{},0]' };
+  const g = { state, seed, kind, chooser: ['random', 'random', 'random', 'cancel', 'yes'][seed % 5], decks: [a.name, b.name], actions: 0, pendAge: {}, lastConsSig: '[{},{},0]' };
   CURG = g; RAN = []; LASTACT = 'setup'; LOGMARK = state.log.length;
   try {
+    if (INTERACTIVE) { CURSTATE = state; }
     E.drawOpeningHand(state, 'p1'); E.drawOpeningHand(state, 'p2'); E.setSecurityStacks(state); E.beginGame(state, E.coinFlip());
   } catch (e) { noteErr('setup', e); return; }
   // initial multiset = everything each player owns right now
@@ -581,6 +592,7 @@ async function playGame(gi) {
         try { await drainPending(g); await flushAttacks(g); } catch (e) { noteErr('drain', e); }
         post(g);
         try { if (E.checkAutoEndTurn(state)) { await finishTurn(g); post(g); break; } } catch (e) { noteErr('autoEnd', e); break; }
+        if (!state.winner && !state.turnEnding && state.phase === 'main' && !state.pending.some(t => !t.resolved) && S.isTurnAutoEnding(state)) { report('TURN', 'turn-end condition (memory on opponent side) holds but turn did not end', 'memory=' + state.memory + ' active=' + state.activePlayer); break; }
       }
       if (!state.winner && state.activePlayer === p && state.phase === 'main') { LASTACT = 'endTurn'; try { E.endTurn(state, false); await finishTurn(g); } catch (e) { noteErr('endTurn', e); break; } post(g); }
     } catch (e) { noteErr('turn', e); break; }
@@ -590,6 +602,7 @@ async function playGame(gi) {
   if (state.winner) { gstat.wins++; winnerCheck(g); }
 }
 function winnerCheck(g) {
+  if (flag('dumpwin', false)) console.log(g.state.log.slice(0, 45).map(e => e.msg).reverse().join(String.fromCharCode(10)));
   const st = g.state; const w = st.winner, l = S.opponentOf(w);
   const recent = st.log.slice(0, Math.max(12, LOGN)).map(e => e.msg).join(' | ');
   const ok = /승리|패배|투항|덱아웃/.test(recent);
@@ -599,12 +612,14 @@ function winnerCheck(g) {
 }
 function post(g) {
   RAN = RAN.slice(-12);
+  try { S.normalizeDigitamaZones(g.state); } catch (e) { noteErr('normalizeDigitama', e); } // main.js render() does this through E.autoAdvance
   if (SELFTEST && g.actions === 6 && !g.selfDone) { g.selfDone = true; const pl = g.state.players.p1; pl.hand.pop(); pl.trash.push(pl.deck[0]); g.state.players.p2.hand.push(g.state.players.p1.deck.pop()); LASTACT = 'SELFTEST'; }
   try { checkConservation(g); } catch (e) { noteErr('checkConservation', e); }
   try { structural(g, ''); } catch (e) { noteErr('structural', e); }
 }
 
 // ---------- main ----------
+if (INTERACTIVE) { S.REPL.interactive = true; TIMER = setInterval(() => { const pr = CURSTATE && CURSTATE.pendingReplacements; if (!pr || !pr.length) return; const e = pr[0]; PARKED++; try { S.resumeReplacement(CURSTATE, e, Math.random() < 0.3 ? -1 : Math.floor(Math.random() * e.cands.length)); } catch (er) { noteErr('resumeReplacement', er); pr.shift(); } }, 1); }
 console.log(`fuzz: games=${G} gen=${GEN} seed=${BASE_SEED} maxTurns=${MAX_TURNS}`);
 for (let gi = 0; gi < G; gi++) {
   if (MAX_MIN && (Date.now() - T0) / 60000 > MAX_MIN) { console.log('time box reached after', gi, 'games'); break; }
@@ -622,5 +637,7 @@ for (const k of keys.slice(0, 60)) {
   console.log(`\n[${f.n}x] ${k}\n   seed=${e.seed} gen=${e.gen} decks=${(e.decks || []).join(' vs ')} turn=${e.turn} action="${e.action}" ran=${e.ran.join(',')}\n   ${String(e.detail).slice(0, 400)}\n   trace: ${(e.trace||[]).join(" > ")}
    log: ${e.logTail.slice(-(LOGN > 8 ? LOGN : 5)).join(' / ').slice(0, LOGN > 8 ? 6000 : 400)}`);
 }
+if (TIMER) clearInterval(TIMER);
+if (INTERACTIVE) console.log('replacement prompts answered:', PARKED);
 if (JSON_OUT) fs.writeFileSync(String(JSON_OUT), JSON.stringify({ gstat, found }, null, 1));
 process.exit(keys.length ? 1 : 0);

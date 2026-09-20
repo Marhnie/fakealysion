@@ -13,6 +13,13 @@ const fn = (f) => ({ op: 's51_fn', fn: f });
 OPS.s51_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
 const hk = (id, d) => { (HOOKS[id] ||= []).push(d); };
+const oppTurnEnd = (state, self) => (state.activePlayer === opp(self) ? state.turnNumber : state.turnNumber + 1);
+async function pickOne(ctx, who, stacks, prompt) {
+  if (!stacks.length) return null;
+  if (stacks.length === 1) return stacks[0];
+  const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map((s) => s.uid), prompt });
+  return stacks.find((s) => s.uid === uid) || null;
+}
 const digs = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
 const tams = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'tamer');
 
@@ -59,4 +66,47 @@ sc('BT22-028::진화 시@진화원에서', async (ctx) => {
     pl.trash.push(id);
     S.playFreeFromZone(state, me, 'trash', pl.trash.length - 1, { fromSources: true });
   }
+});
+
+// BT23-085 【등장 시】 상대의 턴 종료까지, 특징 「후디에」를 가진 자신의 디지몬 1마리는 상대의 효과로 DP가 마이너스되지 않고, 《재기동》과 《블로커》를 얻는다.
+// (generic compile dropped the "DP가 마이너스되지 않고" clause and the 「후디에」 filter)
+sc('BT23-085::등장 시', async (ctx) => {
+  const { state } = ctx, me = ctx.self;
+  const t = await pickOne(ctx, me, digs(state, me).filter((s) => (C(s.cardId).types || []).includes('후디에')), '효과를 받을 「후디에」 디지몬 선택');
+  if (!t) return;
+  S.grantShield(state, me, t.uid, { kinds: ['dpDown'], until: oppTurnEnd(state, me) });
+  S.grantKeyword(state, me, t.uid, '재기동', true, 'opponentTurn');
+  S.grantKeyword(state, me, t.uid, '블로커', true, 'opponentTurn');
+});
+
+// BT22-079 이터(원종형태) 상속 [육성]【자신의 턴】[턴 1회] 특징 「이터」를 가진 디지몬 카드가 등장할 때, 지불하는 코스트 -1 할 수 있다 (was not implemented)
+hk('BT22-079', { src: 'inheritedKo', tag: '자신의 턴', has: '코스트 -1', playDiscount: (state, hp, holder, cardId) => {
+  const c = C(cardId);
+  if (c.category !== 'digimon' || !(c.types || []).includes('이터')) return null;
+  const key = S.onceLimitKey('BT22-079', ['자신의 턴']);
+  if (S.turnUsesRemaining(holder, key, 1) <= 0) return null;
+  return { label: `${C(holder.cardId).nameKo}의 효과로 ${c.nameKo}의 등장 코스트 -1?`, apply: () => { S.markTurnEffectUsed(holder, key); return -1; } };
+} });
+
+// BT20-035 카즈치몬 상속 【서로의 턴】[턴에 1회] 자신의 시큐리티가 줄어들었을 때, 이 디지몬이 명칭에 「펜리루가몬」을 포함한다면, 《리커버리 +1《덱》》
+// (conditional event watcher text is EW_UNSAFE -> never queued)
+hk('BT20-035', { src: 'inheritedKo', tag: '서로의 턴', has: '줄어들었을 때', limit: 1, events: { securityDecrease: (state, hp, h, info) => info.owner === hp && C(h.cardId).nameKo.includes('펜리루가몬') } });
+sc('BT20-035::서로의 턴@줄어들었을 때', async (ctx, R) => { await R.runScript(compileToScript('《리커버리 +1《덱》》'), ctx); });
+
+// BT23-043 [시큐리티]【상대의 턴】 특징 「로얄 베이스」를 가진 자신의 디지몬 전부는 《블로커》를 얻는다 (while this card is a face-up security card; was not implemented)
+hk('BT23-043', { tag: '상대의 턴', zone: 'security', has: '《블로커》를 얻는다', grantKw: (state, hp, holder, target) => (C(target.cardId).category === 'digimon' && (C(target.cardId).types || []).includes('로얄 베이스') ? ['블로커'] : []) });
+
+// BT24-002 둥실몬 상속 【자신의 턴 종료 시】[턴에 1회] 1코스트를 지불하는 것으로, 특징 「TS」를 가진 블루인 이 디지몬을 액티브로 한다.
+// (generic compile dropped the 「TS」·블루 requirement on "이 디지몬" and paid/unsuspended unconditionally)
+sc('BT24-002::자신의 턴 종료 시', async (ctx) => {
+  const { state } = ctx, me = ctx.self;
+  const st = findStack(state, me, ctx.sourceStackUid); if (!st || !st.suspended) return;
+  const info = S.effectiveInfo(state, st, me);
+  const isTS = info.hasTrait ? info.hasTrait('TS') : (C(st.cardId).types || []).includes('TS');
+  const blue = (S.stackColors(st) || []).includes('blue');
+  if (!isTS || !blue) return;
+  if (!(await ctx.choose('confirmEffect', { player: me, prompt: '1코스트를 지불하여 이 디지몬을 액티브로 할까요?' }))) return;
+  S.spendMemory(state, 1);
+  S.unsuspendStack(state, me, st.uid);
+  S.log(state, `${me} ${C(st.cardId).nameKo} 액티브`);
 });

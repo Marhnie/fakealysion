@@ -670,7 +670,9 @@ OPS.s2_placeTrial = async (instr, ctx) => { // 「4대용의 시련」
   if (idx === -1) return;
   if (!(await confirmCtx(ctx, '패의 「4대용의 시련」 1장을 배틀 에어리어에 놓을까요?'))) return;
   const [id] = pl.hand.splice(idx, 1);
+  pl.trash.push(id); // pass2-b7: placeThisInBattle takes the card out of the TRASH (hand -> trash slot -> battle, like the other hand placers)
   const st = S.placeThisInBattle(state, ctx.self, id);
+  if (!st) { const ti = pl.trash.lastIndexOf(id); if (ti !== -1) { pl.trash.splice(ti, 1); pl.hand.push(id); } return; }
   S.emitGameEvent(state, 'trialPlaced', { owner: ctx.self, stack: st, cause: 'effect' });
 };
 OPS.s2_moveUnder = async (instr, ctx) => { // BT11-088 / BT12-083

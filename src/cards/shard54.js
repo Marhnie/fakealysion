@@ -28,3 +28,9 @@ SCRIPTS['EX12-048::서로의 턴'] = [{ op: 'p2b7_fn', fn: async (ctx) => {
   }
 } }];
 OPS.p2b7_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
+
+// EX2-046 ADR-02=서쳐: "자신의 다른 「ADR-02=서쳐」가 없는 동안, 패의 이 카드를 등장시킬 때, 지불하는 등장 코스트 -2."
+H('EX2-046', { tag: '__handPlay', selfPlayDiscount: (state, p) => (state.players[p].battle.some((s) => C(s.cardId).category === 'digimon' && C(s.cardId).nameKo === 'ADR-02=서쳐') ? 0 : -2) });
+
+// EX12-051 [상속] 【서로의 턴】[턴 1회] 「앙고라몬」이 기술되어 있거나 특징 「NSp」를 가진 이 디지몬이 배틀에서 이겼을 때, 상대의 시큐리티를 위에서부터 1장 파기한다.
+H('EX12-051', { tag: '서로의 턴', src: 'inheritedKo', has: '배틀에서 이겼을 때', limit: 1, events: { battleWin: (state, hp, holder, info) => info.owner === hp && info.stack === holder && (mentionsName(holder.cardId, '앙고라몬') || hasType(holder.cardId, 'NSp')) } });
