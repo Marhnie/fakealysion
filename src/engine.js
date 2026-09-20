@@ -71,6 +71,7 @@ export function nextPhase(state) {
     // every cycle, never consumed.
     const wokeUp = [];
     [...pl.battle, ...(pl.raising ? [pl.raising] : [])].forEach(s => { // 6-2-1: ALL own cards in the areas (breeding area included)
+      if (s.deferred) S.settleDeferred(state, s, active); // 15-15-5-2: recorded "다음 액티브 페이즈에 액티브되지 않는다" grants apply once the immunity is gone
       if (s.skipNextUnsuspend) { s.skipNextUnsuspend = false; return; }
       if (s.cannotUnsuspendUntil != null && state.turnNumber <= s.cannotUnsuspendUntil) return; // s8: 액티브 봉인 (~상대의 턴 종료까지)
       if (S.isPreventedFromUnsuspending(state, active, s)) return;

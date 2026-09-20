@@ -9,6 +9,7 @@ import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup 
 import * as DT from './decktools.js';
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
+import { peekWrap, peekNone, peekIdOf } from './peek.js'; // 👁 필드 보기: fold any prompt into a pill
 import { renderSecurityZone } from './securityui.js'; // 시큐리티 존 (스택/TOP/체크 연출)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 import * as CpuSearch from './cpusearch.js'; // 어려움 lookahead (registers itself into Cpu.HOOKS.search)
@@ -2130,11 +2131,19 @@ function renderModal() {
     return h('div', { className: 'cpu-choice-note' }, ['🤖 CPU가 선택 중…', pr ? h('div', { className: 'meta' }, String(pr).slice(0, 160)) : null]);
   }
   const choiceUi = renderUiChoice();
-  if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
+  if (choiceUi) {
+    const uc = state.uiChoice, pr = String((uc.payload && uc.payload.prompt) || '').replace(/\s+/g, ' ');
+    const KIND = { pickStack: '대상 선택', pickStackAnySide: '대상 선택', pickFromHand: '패에서 선택', pickFromHandIndexes: '패에서 선택', pickFromZoneIndex: '선택', pickFromRevealed: '오픈한 카드 선택', pickSourcesMulti: '진화원 선택', pickLinkCard: '링크 카드 선택', orderCards: '순서 선택', multipleChoice: '선택지', confirmEffect: '발동 확인', pickPendingOrder: '처리 순서' };
+    const fr = state._fxRec, src = fr && fr.src && fr.src.kind === 'effect' ? fxSrcLabel(fr) : '';
+    const what = KIND[uc.kind] || '선택';
+    const cancelable = uc.kind === 'confirmEffect' || (!(uc.payload && uc.payload.required) && /^pick(Stack|StackAnySide|FromHand|FromZoneIndex)$/.test(uc.kind));
+    return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]), { key: peekIdOf(uc), title: src ? `📌 ${src} — ${what}` : what, pill: `선택 대기: ${src ? src + ' — ' : ''}${what}${src ? '' : pr ? ' — ' + pr.slice(0, 30) : ''} (누르면 다시 열기)`, cancelable });
+  }
   const jogressUi = busy() ? null : renderJogressModal();
-  if (jogressUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]);
+  if (jogressUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]), { key: 'jogress', title: '조그레스/DNA 진화', pill: '조그레스 선택 대기 (누르면 다시 열기)', cancelable: true });
   const pendingUi = renderPendingAttack();
-  if (pendingUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]);
+  if (pendingUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]), { key: peekIdOf(sel.pendingAttack), title: '⚔ 공격 진행', pill: `⚔ 공격 진행 중: ${String(sel.pendingAttack.info || sel.pendingAttack.stage || '').replace(/\s+/g, ' ').slice(0, 34)} (누르면 다시 열기)`, cancelable: true });
+  peekNone();
   return null;
 }
 

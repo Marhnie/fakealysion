@@ -66,6 +66,7 @@ LG.fmodal = async () => {
   const allChips = [...mod.querySelectorAll('.card-chip')]; const chips = Math.random() < 0.85 ? allChips.filter(c => !c.classList.contains('selected')) : allChips; if (!ok0() && allChips.length) { if (!chips.length) { allChips[LG.rnd(allChips.length)].click(); return 'unsel'; } }
   const ok = bs.find(b => /^확인/.test(b.textContent));
   if (chips.length && Math.random() < 0.7 && (!ok || Math.random() < 0.6)) { chips[LG.rnd(chips.length)].click(); return 'chip'; }
+  if (!ok && allChips.length && !bs.length) { allChips[LG.rnd(allChips.length)].click(); return 'chip2'; }
   if (ok && Math.random() < 0.8) { ok.click(); return 'ok'; }
   const cancel = bs.filter(b => /취소|닫기|아니|건너|넘기기|하지 않/.test(b.textContent));
   if (cancel.length && Math.random() < 0.3) { cancel[0].click(); return 'cancel'; }
@@ -101,3 +102,4 @@ LG.pauseCpu = async () => { const b = [...document.querySelectorAll('button')].f
 LG.scenario = async (a = 'L1', b = 'L2') => { await LG.game(a, b); await wait(300); await LG.pauseCpu(); const { state: s } = __dbg(); s.phase = 'main'; s.activePlayer = 'p1'; s.memory = 10; s.pending.forEach(t => t.resolved = true); s.uiChoice = null; __dbg().render(); await wait(200); return s; };
 // answer/close every open prompt (random answers) until the UI is idle; returns the number of steps or 'STUCK:<modal text>'
 LG.drain = async (max = 60) => { for (let i = 0; i < max; i++) { await LG.settle(2500); let m = document.querySelector('.modal-panel'); if (!m) { await wait(700); m = document.querySelector('.modal-panel'); if (!m) { await LG.settle(1500); m = document.querySelector('.modal-panel'); } if (!m) return i; } const r = await LG.fmodal(); if (r === 'nobtn') return 'STUCK:' + m.innerText.replace(/\n/g, ' | ').slice(0, 300); await wait(120); } return 'STUCK-max:' + (document.querySelector('.modal-panel')?.innerText.replace(/\n/g, ' | ').slice(0, 300) || 'idle'); };
+LG.fx = async (m) => { const F = await import('/src/fx.js'); F.fxSetMode(m); return F.fxGetMode(); };

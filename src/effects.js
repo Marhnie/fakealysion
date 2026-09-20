@@ -500,6 +500,7 @@ function fxSourceOf(ctx) {
   }
   return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' };
 }
+const IMMUNE_SAFE_OPS = new Set(['destroy', 'destroySum', 'retreat', 'returnToHandStripSources', 'bounceToDeckBottomStripSources', 'rest', 'restAll', 'trashEvoSources', 'modifyDP', 'modifyDPAll', 'setDP', 'grantKeyword', 'restrictAttack', 'restrictAttackPlayer']);
 const PICK_KINDS = new Set(['pickStack', 'pickStackAnySide', 'pickFromHand', 'pickFromZoneIndex', 'pickFromRevealed']);
 function wrapChoose(ctx) {
   if (ctx._fxWrapped) return;
@@ -516,11 +517,15 @@ function wrapChoose(ctx) {
     if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && payload.player && payload.player !== ctx.self) {
       const fk = payload.fxKind || FX_KIND_OF_OP[state._fxOp] || 'other';
       const pl = state.players[payload.player];
-      const uids = payload.uids.filter(u => { const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === u); return !st || !S.effectBlocked(state, payload.player, st, fk); });
-      if (payload.uids.length && !uids.length) { S.log(state, '대상이 될 수 있는 디지몬이 없음 (상대의 효과를 받지 않음)'); return null; }
-      payload = { ...payload, uids };
+      // 15-15-5-3: an immune Digimon CAN be chosen (the effect just has no result on it). Every op in IMMUNE_SAFE_OPS handles immunity in its
+      // own outcome (one-shot ops: state.js effectBlocked; grants: S.grantGate records them). Other ops keep the legacy "not offered" filter.
+      if (!IMMUNE_SAFE_OPS.has(state._fxOp)) {
+        const uids = payload.uids.filter(u => { const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === u); return !st || !S.effectBlocked(state, payload.player, st, fk); });
+        if (payload.uids.length && !uids.length) { S.log(state, '대상이 될 수 있는 디지몬이 없음 (상대의 효과를 받지 않음)'); return null; }
+        payload = { ...payload, uids };
+      }
     }
-    if (kind === 'pickStackAnySide' && payload && Array.isArray(payload.entries)) {
+    if (kind === 'pickStackAnySide' && payload && Array.isArray(payload.entries) && !IMMUNE_SAFE_OPS.has(state._fxOp)) {
       const fk = FX_KIND_OF_OP[state._fxOp] || 'other';
       const entries = payload.entries.filter(e => { if (e.player === ctx.self) return true; const pl = state.players[e.player]; const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === e.uid); return !st || !S.effectBlocked(state, e.player, st, fk); });
       payload = { ...payload, entries };
@@ -1043,7 +1048,7 @@ async function runOneCore(instr, ctx) {
         if (!uids.length) break;
         const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
         if (!targetUid) break;
-        S.restStack(state, targetPlayer, targetUid);
+        S.restStack(state, targetPlayer, targetUid); // (an immune target simply isn't rested — 15-15-5-1; its skip-unsuspend rider below is a recorded grant, 15-15-5-2)
         // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — extremely
         // common tacked onto a rest effect (confirmed via the audit: a
         // dozen+ cards all print this exact "레스트시킨다. ... 액티브가 되지
@@ -1183,7 +1188,7 @@ async function runOneCore(instr, ctx) {
         for (const s of state.players[targetPlayer].battle) {
           if (matchesFilter(S, s, instr.filter, state) && (!instr.noEvoSources || s.sources.length === 0)) {
             S.restrictAttack(state, targetPlayer, s.uid, expiresAfterTurn);
-            if (instr.noBlock) S.setS3Flag(s, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn);
+            if (instr.noBlock) S.setS3FlagFx(state, targetPlayer, s, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn);
           }
         }
         if (instr.prompt) S.log(state, instr.prompt);
@@ -1193,7 +1198,7 @@ async function runOneCore(instr, ctx) {
       if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0 && S.card(s.cardId).category === 'digimon').map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '어택 불가로 만들 디지몬 선택' });
       if (targetUid && instr.distinct) ((ctx._distinctPicks ||= {})[instr.distinct] ||= new Set()).add(targetUid);
-      if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3Flag(tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
+      if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3FlagFx(state, targetPlayer, tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
       break;
     }
     case 'restrictAttackPlayer': {
@@ -1598,7 +1603,8 @@ async function runOneCore(instr, ctx) {
         })
         .map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '덱 아래로 되돌릴 [소멸시] 효과 보유 디지몬 선택' });
-      if (targetUid) {
+      if (targetUid && S.effectBlocked(state, targetPlayer, state.players[targetPlayer].battle.find(s => s.uid === targetUid), 'bounce')) S.log(state, '대상이 효과를 받지 않아 덱 아래로 되돌아가지 않음 (15-15-5-1)');
+      else if (targetUid) {
         const pl = state.players[targetPlayer];
         const stack = pl.battle.find(s => s.uid === targetUid);
         const idx = pl.battle.indexOf(stack);

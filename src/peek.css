@@ -1,0 +1,27 @@
+/* 👁 필드 보기 (see src/peek.js): collapse a pending prompt into a floating pill; presentation only */
+.peek-wrap { display: contents; }
+.peek-wrap.collapsed .modal-backdrop { display: none; }
+.peek-head { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; background: #0f1218; border-bottom: 1px solid var(--border, #333); border-radius: 10px 10px 0 0; }
+.peek-title { font-size: 12px; color: #9fb3cc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.peek-btn { flex: none; min-height: 32px; padding: 4px 10px; font-size: 13px; font-weight: 700; border-radius: 8px; border: 1px solid var(--accent, #3fd0ff); background: #14212e; color: #dff6ff; cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.peek-btn:focus-visible, .peek-pill:focus-visible { outline: 2px solid #ffd36a; outline-offset: 2px; }
+/* hold / hover on the 👁 button: everything but the button fades so the board shows through */
+.peek-wrap.peeking .modal-backdrop { background: transparent; pointer-events: none; }
+.peek-wrap.peeking .modal-panel { pointer-events: none; overflow: hidden; }
+.peek-wrap.peeking .modal-panel > *:not(.peek-head) { opacity: 0.15; }
+.peek-wrap.peeking .peek-head { background: transparent; border-color: transparent; }
+.peek-wrap.peeking .peek-head .peek-title { opacity: 0.15; }
+.peek-wrap.peeking .peek-btn { pointer-events: auto; }
+.modal-panel > *:not(.peek-head) { transition: opacity 0.12s; }
+.peek-pill {
+  display: none; position: fixed; left: 50%; bottom: var(--peek-bottom, 12px); transform: translateX(-50%); z-index: 64;
+  max-width: min(94vw, 620px); min-height: 44px; padding: 6px 14px; align-items: center; gap: 10px;
+  border-radius: 999px; border: 2px solid var(--accent, #3fd0ff); background: rgba(14,24,36,0.96); color: #fff; font-weight: 700; font-size: 13px;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.6); cursor: pointer; text-align: left;
+}
+.peek-wrap.collapsed .peek-pill { display: flex; }
+.peek-pill-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.peek-pill-x { flex: none; color: #ffd36a; }
+@media (prefers-reduced-motion: no-preference) { .peek-wrap.collapsed .peek-pill { animation: peekPillIn 0.16s ease-out; } }
+@keyframes peekPillIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (max-width: 900px), (pointer: coarse) { .peek-btn { min-height: 40px; } .peek-pill { min-height: 44px; } }

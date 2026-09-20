@@ -115,6 +115,11 @@ function genStarter(st) {
   for (const c of cs) { if (c.category === 'digitama') eggs[c.id] = 4; else if (c.level === 2 && c.category === 'digimon') eggs[c.id] = 2; }
   const body = cs.filter((c) => !isEgg(c));
   let g = 0; while (total(main) < 50 && body.length && g++ < 500) addCard(main, pick(body).id, chance(0.5) ? 2 : 1);
+  if (total(main) < 50) { // the ST list only has 12-16 distinct cards: top up with same-colour cards so the deck is a legal 50 (deck-outs used to dominate)
+    const cols = [...new Set(cs.flatMap(colorsOf))];
+    const pool = mainPool.filter((c) => colorsOf(c).length && colorsOf(c).every((x) => cols.includes(x)));
+    fill(main, pool.length ? pool : mainPool);
+  }
   if (!total(eggs)) Object.assign(eggs, eggsFor(colorsOf(cs[0] || {})));
   while (total(eggs) > 5) { const k = Object.keys(eggs).pop(); eggs[k]--; if (!eggs[k]) delete eggs[k]; }
   return { name: st, main, digitama: eggs };
@@ -152,7 +157,11 @@ function genFocus(fid) {
 }
 
 // ---------- specs ----------
+function trim50(d) { const keys = Object.keys(d.main); let g = 0; while (total(d.main) > 50 && g++ < 200) { const k = keys[keys.length - 1 - (g % keys.length)]; if (d.main[k] > 1) d.main[k]--; else if (keys.length > 1) { delete d.main[k]; keys.splice(keys.indexOf(k), 1); } } return d; }
 function makeDeck(kindSpec) {
+  const d = makeDeck0(kindSpec); if (total(d.main) > 50) trim50(d); return d;
+}
+function makeDeck0(kindSpec) {
   const [k, arg] = String(kindSpec).split('=');
   if (k === 'starter') return genStarter(arg);
   if (k === 'focus') return genFocus(arg);
@@ -193,6 +202,7 @@ function noteErr(where, e) {
 // ---------- exposure ----------
 const EXPO = {}; // id -> {top, src, hand, trig, played}
 const ex = (id) => (EXPO[id] ||= { top: 0, src: 0, hand: 0, trig: 0, manual: 0, hatch: 0 });
+const ILLEGAL = {};
 const MANUAL = {}; // "cardId|tag" -> n
 
 // ---------- census ----------
@@ -280,7 +290,9 @@ const actKey = (a) => a ? [a.type, a.cardId, a.uid, a.target, a.idx].join('|') :
 async function playGame(spec) {
   seedRng(spec.seed);
   const dA = makeDeck(spec.a), dB = makeDeck(spec.b);
-  const decksOk = S.deckLegality(dA).ok && S.deckLegality(dB).ok;
+  const lgA = S.deckLegality(dA), lgB = S.deckLegality(dB);
+  const decksOk = lgA.ok && lgB.ok;
+  if (!decksOk) { const e = [...lgA.errors, ...lgB.errors][0]; ILLEGAL[String(e).replace(/\d+\/50|[A-Z]+\d*-\d+|\d+장/g, '#').slice(0, 60)] = (ILLEGAL[String(e).replace(/\d+\/50|[A-Z]+\d*-\d+|\d+장/g, '#').slice(0, 60)] || 0) + 1; }
   const cfgs = { p1: { ...parseLv(spec.la), banned: new Set() }, p2: { ...parseLv(spec.lb), banned: new Set() } };
   const state = S.newGame(dA, dB);
   const g = { spec, state, lastAct: '', init: null, consSig: '[{},{}]', logMark: 0, recentTrig: [], seenHand: new Set(), tnf: {}, actions: 0, rejects: {} };
@@ -381,6 +393,7 @@ async function main() {
 function dump() {
   const ks = Object.keys(found).sort((a, b) => found[b].n - found[a].n);
   console.log(`cpu-hunt mode=${MODE} shard=${SH_I}/${SH_N} seed=${BASE_SEED}: ${JSON.stringify(stats)} in ${((Date.now() - T0) / 1000).toFixed(0)}s`);
+  console.log('illegal deck reasons:', JSON.stringify(ILLEGAL));
   console.log('distinct findings:', ks.length);
   for (const k of ks.slice(0, 60)) { const f = found[k]; console.log(`\n[${f.n}x] ${k}\n   spec=${JSON.stringify(f.ex && f.ex.spec)} turn=${f.ex && f.ex.turn} last=${f.ex && f.ex.lastAct}\n   detail=${f.ex && f.ex.detail}`); }
   if (OUT) fs.writeFileSync(OUT, JSON.stringify({ mode: MODE, stats, found, expo: EXPO, manual: MANUAL }, null, 1));

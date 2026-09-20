@@ -1547,15 +1547,12 @@ SC('EX10-003', '상대의 턴', '그 어택을 종료한다', RUN(async (ctx) =>
 }));
 
 // ---- #43 EX10-010: while an opposing DP>=13000 digimon exists: immune to opposing digimon effects, DP +3000
-let dpGuard = false;
-const bigOppExists = (state, hp) => {
-  if (dpGuard) return false;
-  dpGuard = true;
-  try { return digimonsOf(state, opp(hp)).some(s => S.effectiveDP(state, opp(hp), s) >= 13000); } finally { dpGuard = false; }
-};
+// The condition reads the opponent's DP, which (mirror match) may read ours back: evaluated through S.condFix — least fixed point,
+// see docs/verify-immune-circular.md. The SAME key serves dp and effectImmune, so both always agree.
+const bigOppExists = (state, hp, holder) => S.condFix('EX10-010|' + hp + '|' + (holder ? holder.uid : ''), () => digimonsOf(state, opp(hp)).some(s => S.effectiveDP(state, opp(hp), s) >= 13000));
 HK('EX10-010', { tag: '서로의 턴', has: 'DP 13000 이상의 상대의 디지몬이 있는 동안',
-  dp: (state, hp, holder, target, tp) => (target === holder && tp === hp && bigOppExists(state, hp) ? 3000 : 0),
-  effectImmune: (state, hp, holder, target, tp, o) => target === holder && !!o.src && o.src.category === 'digimon' && bigOppExists(state, hp) });
+  dp: (state, hp, holder, target, tp) => (target === holder && tp === hp && bigOppExists(state, hp, holder) ? 3000 : 0),
+  effectImmune: (state, hp, holder, target, tp, o) => target === holder && !!o.src && o.src.category === 'digimon' && bigOppExists(state, hp, holder) });
 
 // ---- #62 EX10-023: nobody else becomes active during the active phase
 HK('EX10-023', { tag: '서로의 턴', has: '액티브 페이즈에서는, 이 디지몬 이외의 디지몬과 테이머 전부는 액티브가 되지 않는다', noUnsuspendOthers: (state, hp, holder, target) => state.phase === 'unsuspend' && ['digimon', 'tamer'].includes(C(target.cardId).category) });

@@ -393,7 +393,7 @@ export function makeHooks(O) {
       if (target !== 'PLAYER') {
         const d = state.players[op].battle.find((s) => s.uid === target);
         const anyActive = /액티브\s*상태(?:의|인)\s*상대의\s*(?:디지몬|카드)|진격|어택할 수 있다/.test(boardText(state));
-        ck('A-target', !!d && (d.suspended || anyActive || Object.keys(st).some((k) => /^s\d/.test(k))), () => `target ${d && C(d.cardId).nameKo} suspended=${d && d.suspended}`);
+        ck('A-target', !!d && (d.suspended || anyActive || Object.keys(st).some((k) => /^s\d/.test(k)) || Object.keys({ ...(st.keywords || {}), ...(st.inheritedKeywords || {}) }).some((k) => /액티브/.test(k))), () => `target ${d && C(d.cardId).nameKo} suspended=${d && d.suspended}`);
       } else ck('A-target', true);
       ck('A-single', !state.players[op].battle.some((s) => s.uid === uid));
     },
@@ -422,7 +422,7 @@ export function makeHooks(O) {
       const expect = bb.a.dp > bb.d.dp ? 'attackerWins' : bb.a.dp < bb.d.dp ? 'defenderWins' : 'tie';
       ck('BT-dp', bing || res.result === expect || (res.aDp === bb.a.dp && res.dDp === bb.d.dp && res.result === (res.aDp > res.dDp ? 'attackerWins' : res.aDp < res.dDp ? 'defenderWins' : 'tie')), () => `DP ${bb.a.dp} vs ${bb.d.dp} -> ${res.result}`);
       if (!bing) {
-        const immuneLog = state.log.slice(0, 10).some((e) => /면역|소멸하지 않|살아|생존|길동무|재등장|불굴/.test(e.msg));
+        const immuneLog = state.log.slice(0, 10).some((e) => /면역|소멸하지 않|살아|생존|길동무|재등장|불굴|벗어나지 않/.test(e.msg));
         const shouldDelA = res.result !== 'attackerWins', shouldDelD = res.result !== 'defenderWins';
         ck('BT-delete', (!!a === !shouldDelA) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `attacker ${bb.a.name} result ${res.result} still-in-play=${!!a}`);
         ck('BT-delete', (!!d === !shouldDelD) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `defender ${bb.d.name} result ${res.result} still-in-play=${!!d}`);
@@ -479,7 +479,7 @@ export function makeHooks(O) {
           if (state.winner === p && cur.secAtConnect > 0 && !res.some((r) => r && r.empty)) ck('S-nowin-nonempty', fxLines(state.log.slice(0, 10)).length > 0 || cur.secAtConnect <= cur.secTotal0 && false, () => `winner ${p} with security ${cur.secAtConnect} at connect`);
           else ck('S-nowin-nonempty', true);
           // attacker that lost to a security digimon must be gone (unless jamming / immune)
-          if (last && (last.result === 'defenderWins' || last.result === 'tie') && !cur.ctl.gameOver) ck('S-attacker-deleted', !a || state.log.slice(0, 12).some((e) => /면역|소멸하지 않|생존/.test(e.msg) || e.src), () => `attacker survived ${last.result}`);
+          if (last && (last.result === 'defenderWins' || last.result === 'tie') && !cur.ctl.gameOver) ck('S-attacker-deleted', !a || state.log.slice(0, 12).some((e) => /면역|소멸하지 않|생존|벗어나지 않|불굴/.test(e.msg) || e.src), () => `attacker survived ${last.result}`);
           if (a && cur.secAtConnect > 0 && cur.ctl.total > 0) ck('S-atk-gone', cur.ctl.i > 0, () => 'no check performed though security available');
         }
       } else if (cur.connected && cur.connectKind === 'digimon') ck('S-count', !cur.ctl || cur.pierce, () => 'security check on a digimon attack without pierce');
@@ -721,6 +721,7 @@ export function jogressDiff() {
     const cand = [...new Set([...pool, ...extra])];
     for (const a of cand) for (const b of cand) {
       if (a === b && !((j.left(a) && j.right(a)))) { /* same card twice is allowed only when both sides accept it */ }
+      if (/조그레스 진화에서/.test((a.effectKo || '') + (b.effectKo || ''))) continue; // printed alias ("…를 Lv.6으로도 취급한다") widens what a material counts as
       const exp = (j.left(a) && j.right(b)) || (j.left(b) && j.right(a));
       const r = S.canJogress({ cardId: a.id, sources: [] }, { cardId: b.id, sources: [] }, t.id);
       out.pairs++; CAT['EV-jogress'].evals++;
