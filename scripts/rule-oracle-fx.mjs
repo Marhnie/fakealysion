@@ -91,7 +91,7 @@ export function makeFxChecker(O, H) {
       try { genCheck(); } catch (e) { /* oracle bug must not break the game */ } gen = null;
       const c = cur; cur = null; if (!c) return;
       const { t, x, p, o, sn } = c; const pl = state.players[p], ol = state.players[o]; const after = snap(state);
-      const blocked = state.log.slice(0, 5).some((e) => /무시됨|무효|대상이 될 수 있는/.test(e.msg)) || blockedBy(/드로우할 ?수 ?없|메모리를? ?(?:플러스|마이너스)할 ?수 ?없|플레이어에게 어택할 수 없|효과를 받지|효과로 등장시킬 수 없|서로는 효과로|상한/);
+      const blocked = state.log.slice(0, 5).some((e) => /무시됨|무효|대상이 될 수 있는|마이너스되지 않/.test(e.msg)) || blockedBy(/드로우할 ?수 ?없|메모리를? ?(?:플러스|마이너스)할 ?수 ?없|플레이어에게 어택할 수 없|효과를 받지|효과로 등장시킬 수 없|서로는 효과로|상한/);
       const where = () => `${t.cardId} "${x}" (${p})`;
       switch (c.kind) {
         case 'draw': { const d = Math.min(c.n, sn.p[p].deck); ck('FX-draw', blocked || state.winner || (pl.hand.length - sn.p[p].hand.length === d && sn.p[p].deck - pl.deck.length === d), () => `${where()}: hand ${sn.p[p].hand.length}->${pl.hand.length} deck ${sn.p[p].deck}->${pl.deck.length}`); break; }

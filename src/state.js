@@ -2138,6 +2138,7 @@ const SETTLING = new Set();
 export function settleDeferred(state, stack, p = null) {
   const list = stack && stack.deferred;
   if (!list || !list.length || SETTLING.has(stack)) return;
+  if (COND_ACTIVE.size) return; // inside a fixed-point evaluation the immunity answers are hypothetical (in-progress key = false): never commit a record then
   p = p || ownerOfStack(state, stack);
   if (!p) return;
   SETTLING.add(stack);

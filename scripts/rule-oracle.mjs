@@ -120,6 +120,7 @@ def('ZONE-ids-known', '3-1', '모든 존의 카드 ID는 카드 DB에 존재');
 def('EV-normal-missed', '8-1-1', '[전수조사] 인쇄된 일반 진화 조건(Lv.+색)을 만족하는 (진화원,대상) 쌍이 엔진에서 진화 가능');
 def('EV-extra-allowed', '8-1-1', '[전수조사] 인쇄 조건/특수 진화 줄 없이 엔진이 진화를 허용하는 쌍이 없음');
 def('EV-cost', '8-1-2-1', '[전수조사] 일반 진화 코스트는 인쇄 코스트와 같음');
+def('EV-jogress', '8-2-1', '[전수조사] 조그레스 재료 쌍의 허용 여부가 인쇄된 조건(색/Lv./명칭)과 일치');
 
 // ------------------------------------------------------------------ helpers
 const C = (id) => S.card(id);
@@ -141,7 +142,7 @@ function kwEvidence(state, p, st, kw) {
 function dpOf(state, p, st) { try { return S.effectiveDP(state, p, st); } catch { return NaN; } }
 function stSnap(state, p, st) {
   const c = C(st.cardId);
-  let excuse = false; if (st.suspended) { try { excuse = !!(st.skipNextUnsuspend || (st.cannotUnsuspendUntil != null && state.turnNumber <= st.cannotUnsuspendUntil) || S.isPreventedFromUnsuspending(state, p, st)); } catch { excuse = true; } }
+  let excuse = false; if (st.suspended && state.phase === 'unsuspend' && p === state.activePlayer) { const n0 = state.pending.length; /* (S.isPreventedFromUnsuspending has a side effect: BT7-055's gate queues a pending each time it is asked — undo it) */ try { excuse = !!(st.skipNextUnsuspend || (st.cannotUnsuspendUntil != null && state.turnNumber <= st.cannotUnsuspendUntil) || S.isPreventedFromUnsuspending(state, p, st)); } catch { excuse = true; } if (state.pending.length > n0) state.pending.length = n0; }
   return { excuse, uid: st.uid, id: st.cardId, src: st.sources.filter((x) => !isTok(x)), link: (st.linkCards || []).map((l) => l && l.cardId).filter((x) => !isTok(x)), top: st.cardId, tokTop: isTok(st.cardId), susp: !!st.suspended, elig: st.attackEligibleTurn, placed: st.placedTurn, dp: c.category === 'digimon' ? dpOf(state, p, st) : null, lv: c.level, cat: c.category };
 }
 export function snap(state) {
@@ -448,7 +449,8 @@ export function makeHooks(O) {
         ck('S-top', true);
         ck('S-secdec', true);
         const id = s.sec[0];
-        ck('S-trash', dp.trash.length === s.trash.length + 1 && dp.trash[dp.trash.length - 1] === id || fxLines(state.log.slice(0, 3)).length > 0, () => `checked ${id} not on top of trash (trash ${s.trash.length}->${dp.trash.length})`);
+        ck('S-trash', (dp.trash.length === s.trash.length + 1 && dp.trash[dp.trash.length - 1] === id) || (dp.trash.length > s.trash.length && msDiff(dp.trash, s.trash).includes(id)) || fxLines(state.log.slice(0, 3)).length > 0, // (a rule-check deletion caused by the security decrease may add cards after it)
+           () => `checked ${id} not on top of trash (trash ${s.trash.length}->${dp.trash.length})`);
         cur.checksDone++;
         cur.lastChecked = id;
       } else if (s.sec.length > 0) ck('S-secdec', fxLines(state.log.slice(0, 4)).length > 0 || ctl.total <= 0, () => `security ${s.sec.length}->${dp.security.length} on a check step`);
@@ -590,16 +592,15 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
     O.invariants(after, label);
     return after;
   };
-  const guardTurnEnd = async (p, preTurn, via) => {
-    // finishTurn: drain + settle, then compare flip
-    const preFlip = snap(state); const linesPre = O.takeLog();
+  const guardTurnEnd = async (p, preFlip, via, expMem) => { // preFlip: snapshot taken BEFORE the action that ended the turn (pass / memory crossing / forced)
+    const linesPre = O.takeLog();
     await sim.finishTurn();
-    const lines = O.takeLog(); const flipped = state.turnNumber !== preFlip.turn;
+    const lines = [...linesPre, ...O.takeLog()]; const flipped = state.turnNumber !== preFlip.turn;
     if (flipped) {
       const cur = snap(state);
       ck('T-flip-player', cur.active === opp(p) && cur.turn === preFlip.turn + 1 && cur.phase === 'unsuspend' && !cur.ending && !cur.breed, () => `active ${preFlip.active}->${cur.active} turn ${preFlip.turn}->${cur.turn} phase ${cur.phase}`);
       const fx = lines.filter((l) => l.src && /메모리|게이지/.test(l.msg) || /메모리|게이지/.test(l.msg) && !/턴 종료|패스/.test(l.msg));
-      ck('T-flip-memory', cur.mem === preFlip.mem || fx.length > 0, () => `mem ${preFlip.mem}->${cur.mem} across turn flip`);
+      ck('T-flip-memory', cur.mem === (expMem !== undefined ? expMem : preFlip.mem) || fx.length > 0, () => `mem ${preFlip.mem}->${cur.mem} across turn flip`);
       ck('T-turnEnd-clean', !state.turnEnding);
       modExpiry(O);
       if (!state.winner) ck('T-memory-newturn', via ? (own(state, opp(p)) >= 1 || fx.length > 0 || hookThresh(state, p)) : true, () => `new turn player ${opp(p)} own-side memory ${own(state, opp(p))} (mem ${cur.mem})`);
@@ -640,7 +641,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
         if (act.type === 'pass') {
           E.declarePass(state); const lines = O.takeLog(); const mid = snap(state);
           ck('T-pass-mem3', mid.mem === (p === 'p1' ? -3 : 3) || lines.some((l) => /메모리|게이지/.test(l.msg) && !/패스/.test(l.msg)), () => `mem after pass ${mid.mem}`);
-          if (await guardTurnEnd(p, pre.turn, true)) { ended = true; break; }
+          if (await guardTurnEnd(p, pre, true, p === 'p1' ? -3 : 3)) { ended = true; break; }
           break;
         }
         let sig0 = JSON.stringify([state.memory, pl.hand.length, pl.battle.length, pl.security.length, state.players[opp(p)].security.length, pl.trash.length, state.log.length]);
@@ -650,7 +651,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
           case 'option': { const i = pl.hand.indexOf(act.cardId); if (i < 0) break; S.useOptionCard(state, p, i); await post('option', pre, act, checkOption); break; }
           case 'evolve': S.digivolve(state, p, act.uid, act.cardId, act.cost, 'hand'); await post('evolve', pre, act, checkEvolve); break;
           case 'jogress': S.fuseStacks(state, p, act.a, act.b, act.cardId, act.cost, 'hand'); await post('jogress', pre, act, checkJogress); break;
-          default: await sim.exec(p, act); O.takeLog(); O.invariants(snap(state), act.type); break;
+          default: await sim.exec(p, act); await sim.drain(); await sim.drainRepl(); await sim.drain(); O.takeLog(); O.invariants(snap(state), act.type); break;
         }
         if (state.memory !== O.memAtStep) ck('L-fx-mem', O.actLines.some((l) => /메모리|코스트|게이지|패스/.test(l.msg)), () => `memory ${O.memAtStep}->${state.memory} unexplained by log`); else ck('L-fx-mem', true);
         if (act.key && sig0 === JSON.stringify([state.memory, pl.hand.length, pl.battle.length, pl.security.length, state.players[opp(p)].security.length, pl.trash.length, state.log.length])) { cfg.banned.add(act.key); }
@@ -658,12 +659,12 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
         // ---- automatic turn end (memory crossed)
         const preEnd = snap(state);
         const shouldEnd = !state.turnEnding && !state.pending.some((x) => !x.resolved) && (p === 'p1' ? state.memory <= -1 : state.memory >= 1);
-        if (E.checkAutoEndTurn(state)) { ck('T-autoend-side', shouldEnd, () => `turn ended at memory ${preEnd.mem}`); if (await guardTurnEnd(p, pre.turn, true)) { ended = true; break; } }
+        if (E.checkAutoEndTurn(state)) { ck('T-autoend-side', shouldEnd, () => `turn ended at memory ${preEnd.mem}`); if (await guardTurnEnd(p, preEnd, true)) { ended = true; break; } }
         else ck('T-autoend-side', !shouldEnd || S.isTurnAutoEnding(state) === false, () => `memory ${state.memory} on opponent side but turn did not end`);
       }
       if (state.winner) { checkWinner(O, null, snap(state)); break; }
-      if (!ended && state.activePlayer === p && state.phase === 'main' && !state.turnEnding) { E.endTurn(state, false); await guardTurnEnd(p, state.turnNumber, false); }
-      else if (!ended) await guardTurnEnd(p, state.turnNumber, false);
+      if (!ended && state.activePlayer === p && state.phase === 'main' && !state.turnEnding) { const pe = snap(state); E.endTurn(state, false); await guardTurnEnd(p, pe, false); }
+      else if (!ended) await guardTurnEnd(p, snap(state), false);
       ended = false;
     } catch (e) { errors.push('turn: ' + (e && e.stack || e)); break; }
   }
@@ -712,7 +713,6 @@ export function pairDiff(sample = 0) {
 // ---- exhaustive differential #2: jogress legality (8-2-1). For every jogress target whose 〔조그레스〕 line uses only color / Lv. / exact name / name-contains sides,
 // compare S.canJogress with the independent side predicates over (all cards that satisfy either side) x (same set + random extras).
 export function jogressDiff() {
-  def('EV-jogress', '8-2-1', '[전수조사] 조그레스 재료 쌍의 허용 여부가 인쇄된 조건(색/Lv./명칭)과 일치');
   const cards = Object.values(S.CARDS).filter((c) => !c.isToken && c.category === 'digimon');
   const out = { targets: 0, pairs: 0, missed: [], extra: [] };
   for (const t of cards.filter((c) => (c.effectKo || '').includes('〔조그레스〕'))) {
