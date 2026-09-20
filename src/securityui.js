@@ -65,7 +65,7 @@ export function renderSecurityZone(o) {
       c.up ? [cd.imgUrl ? h('img', { src: o.artUrl ? o.artUrl(c.id) : cd.imgUrl, alt: cd.nameKo, loading: 'lazy' }) : h('span', {}, cd.nameKo)] : []);
     return el;
   });
-  const stack = h('div', { className: 'sec-stack' }, fan.length ? fan : [h('div', { className: 'sec-none' }, '0')]);
+  const stack = h('div', { className: 'sec-stack', style: `--n:${Math.max(1, fan.length)}` }, fan.length ? fan : [h('div', { className: 'sec-none' }, '0')]);
   if (cnt > MAX_BACKS) stack.appendChild(h('span', { className: 'sec-more' }, `+${cnt - MAX_BACKS}`));
   if (a && (a.kind === 'lift' || a.kind === 'out' || a.kind === 'hand')) {
     stack.appendChild(h('div', { className: `sec-ghost sec-ghost-${a.kind}`, style: `${delayStyle(Date.now() - a.at)}` }, a.kind === 'hand' ? '✋' : ''));

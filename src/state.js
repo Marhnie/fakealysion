@@ -591,6 +591,7 @@ export function emitGameEvent(state, kind, info) {
   queueOwnDiscardTriggers(state, kind, info); // 옵션의 "이 카드가 <영역>에서 [효과로] 파기되었을 때" (덱/패/시큐리티/진화원/배틀 에어리어)
   queueTrashZoneEventTriggers(state, kind, info); // "[트래시]【자신의/서로의 턴】 자신의 디지몬이 「N」로 진화했을 때, 이 카드를 덱 아래로 되돌리는 것으로 …" (세븐스 옵션)
   const subjCard = info.stack ? card(info.stack.cardId) : null;
+  const subjRaising = !!info.stack && (state.players.p1.raising === info.stack || state.players.p2.raising === info.stack);
   for (const hp of ['p1', 'p2']) {
     const hpl = state.players[hp];
     for (const holder of [hpl.raising, ...hpl.battle].filter(Boolean)) {
@@ -602,6 +603,8 @@ export function emitGameEvent(state, kind, info) {
           if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
           const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === hp);
           if (!active) continue;
+          if ((seg.zoneMarker || '').includes('육성') !== (holder === hpl.raising)) continue;
+          if (subjRaising && kind !== 'hatch' && !(seg.zoneMarker || '').includes('육성')) continue; // 3-4-7-6: a breeding-area card can't satisfy the trigger condition of an effect that doesn't name the breeding area // 3-4-7-4: a [육성] effect works only in the breeding area (and an unmarked one never there — filtered by stackContributors)
           let ab = parseWatcherTrigger(seg.body);
           if (!ab) { // non-subject event phrasings ("상대의 패가 늘어났을 때", "액티브가 되었을 때", ...); per-card HOOKS descriptors win over this generic path
             const ew = parseEventWatcher(seg.body);
@@ -632,17 +635,17 @@ export function emitGameEvent(state, kind, info) {
           if (ab.limit != null && turnUsesRemaining(holder, onceLimitKey(id, seg.tags), ab.limit) <= 0) continue;
           // Leading conditions/costs we can evaluate here: "이 디지몬이 레스트|액티브 상태라면," and
           // the very common "이 테이머를 레스트시키는 것으로," (rest the holder Tamer as the cost).
-          let effect = ab.effect, ok = true, sm, restPaid = false;
+          let effect = ab.effect, ok = true, sm, restPaid = false, restPending = false;
           if ((sm = effect.match(/^이\s*디지몬이\s*(레스트|액티브)\s*상태라면,?\s*(.*)$/s))) {
             ok = (sm[1] === '레스트') === !!holder.suspended; effect = sm[2];
           }
           if (ok && (sm = effect.match(/^이\s*테이머를\s*레스트\s*시키는\s*것으로,?\s*(.*)$/s))) {
             ok = card(holder.cardId).category === 'tamer' && !holder.suspended; effect = sm[1];
-            if (ok) { holder.suspended = true; restPaid = true; }
+            if (ok) restPending = true; // 15-7-1: the tamer is rested only if the PLAYER agrees to pay this optional cost (Effects.runScript gate) — never silently at trigger time
           }
           if (!ok) continue;
           if (ab.limit != null) markTurnEffectUsed(holder, onceLimitKey(id, seg.tags));
-          state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text: effect, resolved: false, watcher: true, restPaid, inherited: !own, topId: holder.cardId, evtCause: info.cause ?? null, evtStackUid: info.stack ? info.stack.uid : null, evtSnap: info.stack ? { cardId: info.stack.cardId, level: card(info.stack.cardId).level ?? null, sources: info.stack.sources.slice(), viaFusion: !!info.stack.viaFusion } : null }); // 15-8-3-8: evtStackUid/evtSnap = the event subject and its state AT TRIGGER TIME (scripts read this, not the stack as it is when the effect finally resolves)
+          state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder.uid, tags: seg.tags, text: effect, resolved: false, watcher: true, restPaid, restPending, onceKey: ab.limit != null ? onceLimitKey(id, seg.tags) : null, inherited: !own, topId: holder.cardId, evtCause: info.cause ?? null, evtStackUid: info.stack ? info.stack.uid : null, evtSnap: info.stack ? { cardId: info.stack.cardId, level: card(info.stack.cardId).level ?? null, sources: info.stack.sources.slice(), viaFusion: !!info.stack.viaFusion } : null }); // 15-8-3-8: evtStackUid/evtSnap = the event subject and its state AT TRIGGER TIME (scripts read this, not the stack as it is when the effect finally resolves)
         }
       }
     }
@@ -1642,17 +1645,45 @@ function gainedEffectsId(id, tag) {
 const INH_FULL_CACHE = new Map();
 // stackContributors is a pure function of (top card, sources, face-down count, links, tamer-as-digimon flag) and is called from every hook scan
 // (DP / keywords / restrictions ...): memoized (the CPU lookahead search calls the scanners hundreds of thousands of times).
+// 3-4-7-4: the cards of a stack sitting in the BREEDING area lend only their [육성]-marked effects (a Digimon evolved in the breeding area, its sources and the hatched
+// Lv.2 card included). isRaisingStack consults the bound live state (same pattern as hookOwnerOf users); the result feeds EVERY stackContributors scanner centrally.
+let _zoneRecompute = false;
+function isRaisingStack(stack) { const st = S7_BOUND; return !!st && (st.players.p1.raising === stack || st.players.p2.raising === stack); }
+const BREED_CONTRIB = new Map();
+function breedingContributorId(id, own) { // synthetic card carrying ONLY the [육성]-marked segments of `id`'s effect / inherited text (null when it has none)
+  const key = `${id}|${own ? 1 : 0}`;
+  let v = BREED_CONTRIB.get(key);
+  if (v !== undefined) return v;
+  v = null;
+  try {
+    const c = card(id), text = own ? c.effectKo : c.inheritedKo;
+    if (text && /\[\s*육성\s*\]/.test(text)) {
+      const segs = parseEffectSegments(text).segments.filter(sg => (sg.zoneMarker || '').includes('육성'));
+      if (segs.length) {
+        const sid = `${id}~육성${own ? '' : 'i'}`;
+        const t = segs.map(sg => `[육성]${sg.tags.map(tg => `【${tg}】`).join('')} ${sg.body}`).join(String.fromCharCode(10));
+        CARDS[sid] = { ...c, id: sid, effectKo: own ? t : '', inheritedKo: own ? '' : t };
+        CARD_HOOKS[sid] = (CARD_HOOKS[id] || []).filter(d => ((d.src || 'effectKo') === 'effectKo') === own && segs.some(sg => sg.tags[0] === d.tag && (!d.has || sg.body.includes(d.has))));
+        v = sid;
+      }
+    }
+  } catch (e) { v = null; }
+  BREED_CONTRIB.set(key, v);
+  return v;
+}
 function stackContributors(stack) {
   // per-stack memo (non-enumerable, so clones / saves never see it), validated against everything the result depends on
-  const c = stack._cc, src = stack.sources, lk = stack.linkCards;
-  if (c && c.id === stack.cardId && c.fd === (stack.s5fd || 0) && c.as === !!stack.s2AsDigimon && c.n === src.length && (lk ? lk.length : 0) === c.ln) {
+  const c = stack._cc, src = stack.sources, lk = stack.linkCards, rz = isRaisingStack(stack);
+  if (c && c.rz === rz && c.id === stack.cardId && c.fd === (stack.s5fd || 0) && c.as === !!stack.s2AsDigimon && c.n === src.length && (lk ? lk.length : 0) === c.ln) {
     let ok = true;
     for (let k = 0; k < c.n; k++) if (c.src[k] !== src[k]) { ok = false; break; }
     if (ok && c.ln) for (let k = 0; k < c.ln; k++) if (c.lk[k] !== lk[k].cardId) { ok = false; break; }
     if (ok) return c.r;
   }
-  const r = stackContributorsRaw(stack);
-  try { Object.defineProperty(stack, '_cc', { value: { id: stack.cardId, fd: stack.s5fd || 0, as: !!stack.s2AsDigimon, n: src.length, src: src.slice(), ln: lk ? lk.length : 0, lk: lk ? lk.map(l => l.cardId) : [], r }, writable: true, configurable: true, enumerable: false }); } catch (e) { /* frozen stack */ }
+  let r = stackContributorsRaw(stack);
+  if (rz) r = r.map(x => { const sid = breedingContributorId(x.id, x.own); return sid ? { id: sid, own: x.own } : null; }).filter(Boolean);
+  try { Object.defineProperty(stack, '_cc', { value: { rz, id: stack.cardId, fd: stack.s5fd || 0, as: !!stack.s2AsDigimon, n: src.length, src: src.slice(), ln: lk ? lk.length : 0, lk: lk ? lk.map(l => l.cardId) : [], r }, writable: true, configurable: true, enumerable: false }); } catch (e) { /* frozen stack */ }
+  if (c && c.rz !== rz && !_zoneRecompute) { _zoneRecompute = true; try { recomputeStackGrants(stack); } finally { _zoneRecompute = false; } } // the stack changed between the breeding and battle area: its cached keyword / DP grants follow (3-4-7-4)
   return r;
 }
 function stackContributorsRaw(stack) {
@@ -3468,6 +3499,7 @@ export function moveRaisingToBattle(state, p) {
   cancelWaitingEffectsOf(state, stack.uid);
   pl.battle.push(stack);
   pl.raising = null;
+  recomputeStackGrants(stack); // 3-4-7-4: the cached keyword/DP grants were computed under the breeding-area filter — effects go live on the move
   state.breedingActionTaken = true;
   ruleCheckDP(state, p, stack); ruleSweepDP(state, stack); // moving in may change DP (continuous effects): 17-1-3-1 (fuzz)
   log(state, `${p} ${c.nameKo} 육성→배틀 에어리어 이동`);
@@ -4838,6 +4870,7 @@ function hookRaisingOk(id, d) {
   }
   return v;
 }
+function hookMarkedRaising(id, d) { let seg = null; try { seg = findSegmentFor(id.replace(/~육성i?$/, ''), d); } catch { seg = null; } return !!seg && (seg.zoneMarker || '').includes('육성'); }
 let ZONE_HOOK_IDS = null; // ids whose descriptors act from the trash / security zone (the registry is static after load)
 export function* activeHooks(state) {
   if (!ZONE_HOOK_IDS) { ZONE_HOOK_IDS = new Set(); for (const [zid, zl] of Object.entries(CARD_HOOKS)) if (zl.some(zd => zd.zone === 'trash' || zd.zone === 'security')) ZONE_HOOK_IDS.add(zid); }
@@ -4879,6 +4912,7 @@ function holderHookList(holder, inRaising) {
       if (d.zone === 'trash' || d.zone === 'security') continue;
       if (((d.src || 'effectKo') === 'effectKo') !== own) continue;
       if (inRaising && !hookRaisingOk(id, d)) continue; // 3-4-7-4/3-4-7-7: raising-area cards act only through [육성] effects
+      if (!inRaising && hookMarkedRaising(id, d)) continue; // a [육성]-marked descriptor is dormant in the battle area
       out.push({ id, d });
     }
   }
@@ -5028,9 +5062,11 @@ export function queueHookSegment(state, hp, holder, id, d, info = null) {
   state.pending.push({ uid: 'p' + (pendingUid++), player: hp, cardId: id, stackUid: holder ? holder.uid : null, tags: seg.tags, text, resolved: false, watcher: true, inherited: (d.src || 'effectKo') !== 'effectKo', evt: info || null });
 }
 export function dispatchHookEvents(state, kind, info) {
+  const subjRaising = !!info.stack && (state.players.p1.raising === info.stack || state.players.p2.raising === info.stack);
   for (const { hp, holder, id, d } of [...activeHooks(state)]) {
     const fn = d.events && d.events[kind];
     if (!fn) continue;
+    if (subjRaising && kind !== 'hatch' && !hookMarkedRaising(id, d)) continue; // 3-4-7-6: a breeding-area card can't satisfy the trigger of an effect that doesn't name the breeding area
     if (!fn(state, hp, holder, info)) continue;
     if (d.limit != null && holder && !hookUseOnce(holder, id, d, d.limit)) continue;
     queueHookSegment(state, hp, holder, id, d, { kind, ...info, stack: undefined, stackUid: info.stack?.uid });

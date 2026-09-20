@@ -601,6 +601,20 @@ export function costGroupPayable(ctx, instr) {
     return true;
   });
 }
+// 15-7-1: the player's yes/no for an optional processing condition ("~하는 것으로"). The payload identifies the effect (cardId / costKinds / effectText) for the CPU (cpu.js) and the UI.
+const COST_KIND_OF = { trashHand: 'trashHand', removeSecurity: 'removeSecurity', restStack: 'restTamer', rest: 'restOwn', destroy: 'destroyOwn', unsuspend: 'unsuspend', moveEach: 'moveCards', placeUnderSource: 'placeUnder', securityTopToHand: 'securityToHand', trashEvoSources: 'trashSources', returnToHandStripSources: 'returnOwn', gainMemory: 'memory', manualCost: 'manual' };
+const COST_LABEL = { trashHand: '패를 파기', removeSecurity: '시큐리티를 파기', restTamer: '이 카드를 레스트', restOwn: '자신의 디지몬/테이머를 레스트', destroyOwn: '자신의 디지몬을 소멸', unsuspend: '액티브로 함', moveCards: '카드를 덱 아래 등으로 이동', placeUnder: '카드를 진화원 아래에 놓음', securityToHand: '시큐리티를 패에 추가', trashSources: '진화원을 파기', returnOwn: '자신의 디지몬을 되돌림', memory: '메모리/코스트를 지불', manual: '수동 비용' };
+export function costKindsOf(cost) { return (cost || []).map(c => (c.op === 'destroy' && c.target === 'opponent') ? 'destroyOpp' : COST_KIND_OF[c.op] || c.op); }
+async function askOptionalCost(ctx, instr) {
+  if (ctx._optAsked) { ctx._optAsked = false; return true; } // the runner already asked for this whole effect ("할 수 있다" prompt)
+  const { S } = ctx;
+  const kinds = costKindsOf(instr.cost);
+  const name = (S.card(ctx.sourceCardId) || {}).nameKo || ctx.sourceCardId;
+  const costText = (instr.costText || kinds.map(k => COST_LABEL[k] || k).join(', ')).replace(/\s+/g, ' ').trim();
+  const effText = (instr.thenText || '').replace(/\([^()]*\)/g, '').replace(/\s+/g, ' ').trim();
+  const prompt = `${name}: 「${costText.slice(0, 80)}」 하는 것으로 ${effText ? '「' + effText.slice(0, 80) + '」 ' : ''}— 비용을 지불하고 효과를 발휘할까요? (아니오 = 효과 전체를 건너뜀)`;
+  return !!(await ctx.choose('confirmEffect', { player: ctx.self, prompt, optionalCost: true, cardId: ctx.sourceCardId, costKinds: kinds, costText, effectText: effText }));
+}
 // A 【메인】 (activated) ability that has an optional processing condition may only be DECLARED while that condition can be executed (15-8-4-4-1).
 export function mainAbilityPayable(state, S, p, stackUid, cardId, tags, text) {
   let script;
@@ -612,9 +626,59 @@ export function mainAbilityPayable(state, S, p, stackUid, cardId, tags, text) {
   return costGroupPayable({ state, S, self: p, opp: S.opponentOf(p), sourceStackUid: stackUid }, first);
 }
 
+// ---- 15-7-1 optional-cost gate for effects the compiler did not turn into a costGroup (bespoke shard scripts, watcher-rested tamers) ----
+// "<비용>하는 것으로, <효과>" printed in the FIRST sentence of a triggered effect: ask the player (naming the card, the cost and the benefit) BEFORE the bespoke script pays anything.
+export function optionalCostSplit(text) {
+  let t = String(text || '').replace(/\([^()]*\)/g, ' ').replace(/〈룰〉[^\n]*/g, ' ').replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '').replace(/Lv\./g, 'Lv');
+  if (/\n\s*[·▷]/.test(t)) return null; // multi-bullet / choose-one texts keep their own handling
+  t = t.replace(/「[^」]*」/g, s => s.replace(/것으로/g, '것○로')).replace(/\s+/g, ' ').trim();
+  const m = /^(.{2,200}?[가-힣》≫]\s*는)\s*것으로(?!\s*도|\s*취급)\s*,?\s*(.*)$/.exec(t);
+  if (!m || /[.。]\s*\S/.test(m[1])) return null; // must be inside the first sentence
+  const cost = m[1].replace(/^.*(?:때|경우|라면|다면|있다면|있을 때|한 때),\s*/, '').replace(/^그\s*후,?\s*/, '').replace(/[○]/g, '으').trim();
+  return { costText: cost, effectText: m[2].replace(/○/g, '으').replace(/[.。]\s*$/, '').trim() };
+}
+export function inferCostKinds(costText) {
+  const c = String(costText || ''), k = [];
+  if (/레스트/.test(c) && /이\s*(?:테이머|디지몬|카드)/.test(c)) k.push('restTamer'); else if (/레스트/.test(c)) k.push('restOwn');
+  if (/시큐리티/.test(c) && /(파기|패에|트래시)/.test(c)) k.push('removeSecurity');
+  if (/소멸/.test(c)) k.push(/상대/.test(c) ? 'destroyOpp' : 'destroyOwn');
+  if (/진화원/.test(c) && /(파기|되돌|덱)/.test(c)) k.push('trashSources');
+  if (/패(?:에서|를)?[^,]*파기|파기[^,]*패/.test(c) || /자신의 패[^,]*\d\s*장/.test(c) && /파기/.test(c)) k.push('trashHand');
+  if (/(패로|덱\s*아래)[^,]*되돌/.test(c) || /되돌리/.test(c)) k.push('returnOwn');
+  if (/(놓는)/.test(c) && /아래/.test(c)) k.push('placeUnder');
+  if (/코스트\s*지불|메모리/.test(c)) k.push('memory');
+  return k.length ? k : ['other'];
+}
+function scriptOwnConfirms(script) {
+  const seen = (ops) => (Array.isArray(ops) ? ops : []).some(o => o && (/confirm|askYN|yesNo|askYes/i.test(String(o.fn || '')) || (CARD_OPS[o.op] && /confirm|askYN|yesNo|askYes/i.test(String(CARD_OPS[o.op]))) || seen(o.then) || seen(o.else) || seen(o.cost)));
+  return seen(script);
+}
+const scriptHasCostGroup = (ops) => Array.isArray(ops) && ops.some(o => o && (o.op === 'costGroup' || scriptHasCostGroup(o.then) || scriptHasCostGroup(o.else)));
+async function optionalGate(script, ctx) {
+  const tr = ctx.trigger; const { state, S } = ctx;
+  ctx._gateDone = true;
+  if (!tr || tr.manualOnly || tr.schedFn || ctx._optAsked || !Array.isArray(script) || !script.length) return true;
+  const mk = (costText, effectText, kinds) => ctx.choose('confirmEffect', { player: ctx.self, prompt: `${(S.card(ctx.sourceCardId) || {}).nameKo || ctx.sourceCardId}: 「${String(costText).slice(0, 80)}」 하는 것으로 ${effectText ? '「' + String(effectText).slice(0, 80) + '」 ' : ''}— 비용을 지불하고 효과를 발휘할까요? (아니오 = 효과 전체를 건너뜀)`, optionalCost: true, cardId: ctx.sourceCardId, costKinds: kinds, costText, effectText });
+  const refund = () => { if (tr.onceKey && tr.stackUid) { const st = [state.players.p1, state.players.p2].flatMap(q => [q.raising, ...q.battle]).find(x => x && x.uid === tr.stackUid); const u = st && st.turnEffectUses; if (u && u[tr.onceKey] > 0) u[tr.onceKey]--; } };
+  if (tr.restPending && !tr.restPaid) { // a watcher-queued "이 테이머를 레스트시키는 것으로, …": the tamer is rested only when the player agrees
+    const holder = [state.players.p1, state.players.p2].flatMap(q => [q.raising, ...q.battle]).find(x => x && x.uid === tr.stackUid);
+    if (!holder || holder.suspended) { S.log(state, `${ctx.self} 이미 레스트 상태라 비용을 지불할 수 없어 효과를 건너뜀`); ctx._declined = true; ctx._costUnpaid = true; refund(); return false; }
+    if (!(await mk('이 테이머를 레스트', String(tr.text || '').replace(/\([^()]*\)/g, '').replace(/\s+/g, ' ').trim(), ['restTamer']))) { S.log(state, `${ctx.self} 비용을 지불하지 않기로 함 — 효과를 발휘하지 않음`); ctx._declined = true; ctx._costUnpaid = true; refund(); return false; }
+    holder.suspended = true; tr.restPaid = true; ctx._optAsked = true;
+    return true;
+  }
+  if (scriptHasCostGroup(script) || scriptOwnConfirms(script) || (ctx.trigger && ctx.trigger.optGateDone)) return true;
+  const sp = optionalCostSplit(tr.text);
+  if (!sp) return true;
+  if (!(await mk(sp.costText, sp.effectText, inferCostKinds(sp.costText)))) { S.log(state, `${ctx.self} 비용을 지불하지 않기로 함 — 효과를 발휘하지 않음`); ctx._declined = true; ctx._costUnpaid = true; refund(); return false; }
+  ctx._optAsked = true;
+  return true;
+}
+
 export async function runScript(script, ctx) {
   const { state, S } = ctx;
   wrapChoose(ctx);
+  if (ctx.trigger && !ctx._gateDone && !(await optionalGate(script, ctx))) return;
   const prevSrc = state._fxSrc, prevCaster = state._caster;
   state._caster = ctx.self; // S.durationEnd resolves 「상대의/자신의 턴 종료까지」 relative to the effect's controller
   if (!prevSrc) S.beginCause(state); // 15-8-5-4: a new cause (effect resolution) — immediate effects may be used once again
@@ -1503,6 +1567,8 @@ async function runOneCore(instr, ctx) {
       const canPay = costGroupPayable(ctx, instr);
       if (instr.else && (!canPay || !(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '비용을 지불하고 대신 다른 효과를 처리하시겠습니까? (아니오 = 원래 효과)' })))) { await runScript(instr.else, ctx); break; } // pass2-b2: replacement-style cost ("…것으로, 대신 …")
       if (!canPay) { S.log(state, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); ctx._costUnpaid = true; break; }
+      // 15-7-1: 「~하는 것으로」 is an optional processing condition — the PLAYER chooses whether to perform it, BEFORE anything is paid or moved (a 'no' skips the whole effect: no once-per-turn use is consumed, 15-14-1)
+      if (!instr.else && !(await askOptionalCost(ctx, instr))) { S.log(state, `${ctx.self} 비용을 지불하지 않기로 함 — 효과를 발휘하지 않음`); ctx._costUnpaid = true; ctx._declined = true; break; }
       // 15-7-2/15-7-3: an optional-processing-condition ("~ことで") cost must be performed IN FULL; if the player
       // picked fewer cards than required (or a step was blocked), nothing after the cost may run.
       const needHand = { p1: 0, p2: 0 }, needSec = { p1: 0, p2: 0 };
@@ -2343,7 +2409,7 @@ function compileInner(text) {
     if (db) {
       const bullet = compileToScript(db[2].trim());
       if (!bullet.length) return script;
-      return [{ op: 'costGroup', cost: [{ op: 'trashEvoSources', target: 'self', thisStack: true, count: Number(db[1]), digiburst: true }], then: bullet }];
+      return [{ op: 'costGroup', cost: [{ op: 'trashEvoSources', target: 'self', thisStack: true, count: Number(db[1]), digiburst: true }], then: bullet, costText: `진화원 ${Number(db[1])}장을 파기 (디지버스트 ${Number(db[1])})`, thenText: '' }];
     }
   }
 
@@ -3496,7 +3562,7 @@ function compileWithCost(text) {
   if (!eff.length) eff = [{ op: 'noop', note: `효과를 수동으로 처리하세요: ${cm[2].replace(/\([^()]*\)/g, '').slice(0, 120)}` }];
   const costOps = compileCostClause(cm[1].replace(/^.*?(?:했을|었을|있을|한)\s*때,?\s*(?=이\s*(?:테이머|디지몬)(?:을|를)\s*레스트\s*시키는$)/, '')); // "<트리거 조건>했을 때, 이 테이머를 레스트시키는 것으로": the trigger part is the watcher's job, only the rest is the cost
   if (!costOps.length) return inner;
-  return [{ op: 'costGroup', cost: costOps, then: eff }];
+  return [{ op: 'costGroup', cost: costOps, then: eff, costText: cm[1].trim(), thenText: cm[2].trim() }];
 }
 
 // Later sentences that open with a condition ("…한다. 그 후, <조건>라면, <효과>" / "<조건>일 때, 대신 <효과>" / "이 효과로 소멸하지 않았다면, …"):

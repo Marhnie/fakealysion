@@ -46,7 +46,7 @@
 .sec-fly-minus { color: #ff8d8d; }
 
 /* attack-time reveal panel: floats beside the zone, never shifts layout */
-.sec-reveal { position: absolute; z-index: 40; top: 100%; right: 0; margin-top: 4px; width: 132px; padding: 6px; border-radius: 10px; background: rgba(12,10,8,0.94); border: 2px solid #ffd36a; box-shadow: 0 6px 22px rgba(0,0,0,0.7); text-align: center; pointer-events: none; font-size: 11px; animation: sec-pop calc(0.35s * var(--sd)) ease-out both; }
+.sec-reveal { position: absolute; z-index: 40; top: 100%; right: 0; margin-top: 4px; width: 132px; padding: 6px; border-radius: 10px; background: #0c0a08; opacity: 1; border: 2px solid #ffd36a; box-shadow: 0 6px 22px rgba(0,0,0,0.7); text-align: center; pointer-events: none; font-size: 11px; animation: sec-pop calc(0.35s * var(--sd)) ease-out both; }
 .sec-rv-title { font-size: 10px; color: #ffd9a0; font-weight: 700; margin-bottom: 3px; }
 .sec-rv-cardwrap { display: flex; justify-content: center; animation: sec-flip calc(0.55s * var(--sd)) ease-out both; }
 .sec-reveal .card-chip { width: 96px; margin: 0; transform: none !important; }
@@ -80,7 +80,7 @@
 @keyframes sec-pop { 0% { transform: scale(0.85); opacity: 0; } 100% { transform: none; opacity: 1; } }
 @keyframes sec-flip { 0% { transform: rotateY(90deg) scale(0.8); } 100% { transform: none; } }
 @keyframes sec-verdict { 0% { transform: scale(1.6); opacity: 0; } 100% { transform: none; opacity: 1; } }
-@keyframes sec-dissolve { 0% { opacity: 1; filter: none; } 100% { opacity: 0.25; filter: blur(3px) grayscale(1); transform: scale(0.85) translateY(10px); } }
+@keyframes sec-dissolve { 0% { opacity: 1; filter: none; } 100% { opacity: 0.7; filter: grayscale(0.8); transform: scale(0.85) translateY(10px); } }
 @keyframes sec-shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
 
 .sec-static, .sec-static * { animation: none !important; }
@@ -94,4 +94,22 @@
   .sec-num { font-size: 20px; } .sec-label { font-size: 9px; }
   .sec-reveal { width: 124px; right: auto; left: 0; }
   .sec-pop { right: auto; left: 0; width: min(230px, 88vw); }
+}
+
+/* 실제 배치: 시큐리티는 플레이어 기준 왼쪽 세로 열, 카드는 90도 눕혀 위→아래로 쌓임 (TOP = 맨 위) */
+.field-row > .sec-zone { flex: 0 0 112px; min-width: 0; width: 112px; align-self: flex-start; }
+.sec-stack { height: calc(var(--n, 1) * 8px + 34px); min-height: 42px; margin: 4px 0 2px; }
+.sec-card { top: calc(var(--i) * 8px); left: 4px; width: 46px; height: 32px; }
+.sec-card.sec-top { top: 0; }
+.sec-none { left: 4px; top: 0; width: 46px; height: 32px; line-height: 32px; }
+.sec-card.sec-up img { transform: rotate(-90deg); transform-origin: center; object-fit: cover; width: 32px; height: 46px; position: absolute; left: 7px; top: -7px; }
+.sec-ghost { width: 46px; height: 32px; line-height: 32px; left: 4px; }
+.sec-fly { left: 60px; }
+.sec-more { right: 2px; bottom: -2px; }
+@keyframes sec-fanin { 0% { transform: translateY(-40px) rotate(-8deg); opacity: 0; } 100% { transform: none; opacity: 1; } }
+.sec-p1 .sec-pop, .sec-p1 .sec-reveal { left: 0; right: auto; }
+@media (max-width: 900px), (pointer: coarse) {
+  .field-row > .sec-zone { flex: 0 0 auto; width: 100%; }
+  .sec-stack { height: calc(var(--n, 1) * 4px + 34px); }
+  .sec-card { top: calc(var(--i) * 4px); }
 }

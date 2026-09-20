@@ -59,7 +59,7 @@ export function createSim(state, opts = {}) {
         H.effectBegin && H.effectBegin(t, script);
         await Fx.runScript(script, ctx);
         H.effectEnd && H.effectEnd(t, script, ctx);
-        if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
+        if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
         if (CX) CX.after(state, t, script, cxs);
       } catch (e) { if (CX) CX.error(state, t, e); onError('pending', e); }
       S.resolvePending(state, t.uid);

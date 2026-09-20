@@ -53,7 +53,7 @@ LG.play = async (max = 400, ms = 120) => {
   return 'max ' + snap() + ' ' + LG.stats();
 };
 // ---- card conservation + randomized modal answers + special-card injection ----
-LG.count = (s) => { let n = 0; const cnt = (st) => { if (!st) return 0; let k = 1 + (st.sources ? st.sources.length : 0) + (st.linkCards ? st.linkCards.length : 0); return k; }; for (const p of ['p1', 'p2']) { const pl = s.players[p]; n += pl.hand.length + pl.deck.length + pl.trash.length + pl.security.length + pl.digitamaDeck.length + cnt(pl.raising) + pl.battle.reduce((a, st) => a + cnt(st), 0); } return n; };
+LG.count = (s) => { let n = 0; const cnt = (st) => { if (!st) return 0; let k = /TOKEN/.test(st.cardId) ? 0 : 1; k += (st.sources ? st.sources.filter(x => !/TOKEN/.test(x)).length : 0) + (st.linkCards ? st.linkCards.length : 0); return k; }; for (const p of ['p1', 'p2']) { const pl = s.players[p]; n += pl.hand.length + pl.deck.length + pl.trash.length + pl.security.length + pl.digitamaDeck.length + cnt(pl.raising) + pl.battle.reduce((a, st) => a + cnt(st), 0); } return n; };
 LG.cons = (tag) => { const { state: s } = __dbg(); if (s.pending.some(t => !t.resolved) || document.querySelector('.modal-panel') || s.pendingAttack) return; const n = LG.count(s); if (LG.total == null || LG.stateRef !== s) { LG.total = n; LG.stateRef = s; LG.injected = 0; } if (n !== LG.total + (LG.injected || 0)) { LG.note(tag + ' CONSERVATION ' + LG.total + '+' + (LG.injected || 0) + ' -> ' + n); LG.total = n - (LG.injected || 0); } };
 LG.rnd = (n) => Math.floor(Math.random() * n);
 LG.fmodal = async () => {

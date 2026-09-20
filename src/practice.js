@@ -114,7 +114,9 @@ export function afterRender() {
   SN.sync(s, why);
   // auto-save once per turn (first stable render of a new turn) into the 'auto' slot
   if (P.autoFor !== s) { P.autoFor = s; P.lastAutoTurn = null; }
-  if (!why && !s.winner && P.lastAutoTurn !== `${s.turnNumber}${s.activePlayer}`) { const r = SG.autoSave(s); if (r.ok) P.lastAutoTurn = `${s.turnNumber}${s.activePlayer}`; }
+  if (!why && !s.winner && P.lastAutoTurn !== `${s.turnNumber}${s.activePlayer}`) { const r = SG.autoSave(s); if (r.ok) { P.lastAutoTurn = `${s.turnNumber}${s.activePlayer}`; P.lastAutoAt = Date.now(); P.lastAutoDig = SN.digest(s); } }
+  // long-game playtest: a reload / crash in the middle of a turn used to fall back to the START of that turn (all its actions lost) -> also refresh the auto slot at a stable point at most every 4 s when the position changed (a save is ~1 ms)
+  else if (!why && !s.winner && Date.now() - (P.lastAutoAt || 0) > 4000) { const dg = SN.digest(s); if (dg !== P.lastAutoDig) { const r = SG.autoSave(s); if (r.ok) { P.lastAutoAt = Date.now(); P.lastAutoDig = dg; } } }
   updateButtons();
   renderCheat();
   if (P.modal && P.modalKind === 'save') fillSaveModal();

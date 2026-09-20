@@ -1572,9 +1572,10 @@ function renderPlayerPanel(p) {
 
   // 6-4: hatch OR move, not both, per breeding phase visit
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
+  // 실제 대전 배치: 시큐리티는 각 플레이어 기준 왼쪽(아래쪽 P1=화면 왼쪽, 맞은편 P2=화면 오른쪽), 카드는 옆으로 눕혀 쌓인다
+  const secZone = renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() });
   const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
-    renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() }),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
     pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
     panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, { owner: p })) : [h('span', {}, '(비어 있음)')]) : null,
@@ -1660,6 +1661,7 @@ function renderPlayerPanel(p) {
         : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
       pileRail,
     ]);
+  fieldRow.insertBefore(secZone, p === 'p2' ? null : fieldRow.firstChild);
   // 위쪽 플레이어(P2)를 어택하는 대상 바는 메모리 게이지 바로 위(패널 맨 아래)에 둔다. 아래쪽 P1의 바는 게이지 바로 아래(패널 맨 위).
   return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, p === 'p2' ? [fieldRow, header] : [header, fieldRow]);
 }
@@ -1900,12 +1902,14 @@ async function runPendingScript(trigger, opts = {}) {
       render();
       return;
     }
+    ctx._optAsked = true; // the "할 수 있다" prompt above already covers the optional processing condition (no second prompt from costGroup)
   }
   if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null;
   if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
   if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
+  if (ctx._declined) { S.resolvePending(state, trigger.uid); render(); if (onceMark) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } return; } // 15-7-1 / 15-14-1: a declined optional cost = the effect was never activated (no 〔턴에 1회〕 use consumed, nothing else runs)
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited)) { // bespoke scripts cover the whole segment
@@ -2054,7 +2058,7 @@ function renderUiChoice() {
       rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], {
         owner: payload.player,
         selected: picked.includes(i),
-        onClick: () => { const p = picked.indexOf(i); if (p === -1) picked.push(i); else picked.splice(p, 1); render(); },
+        onClick: () => { const p = picked.indexOf(i); if (p === -1) { if (payload.n === 1) picked.length = 0; /* pick-exactly-1: choosing another card swaps the choice (used to give "2/1장 선택됨" + a dead 확인) */ picked.push(i); } else picked.splice(p, 1); render(); },
       }))));
       rows.push(h('div', { className: 'actions-row' }, [
         h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
@@ -2072,7 +2076,7 @@ function renderUiChoice() {
       const eligible = payload.eligible.some(x => x.i === i);
       return cardChip(id, {
         selected: picked.includes(i), target: eligible,
-        onClick: eligible ?() => { const p = picked.indexOf(i); if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
+        onClick: eligible ?() => { const p = picked.indexOf(i); if (p === -1 && payload.max === 1) { picked.length = 0; picked.push(i); } else if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
       });
     })));
     { // eligible cards are marked in the list above ("✔ 선택 가능" chips are clickable); with none, say so and let the player just continue
@@ -2091,7 +2095,7 @@ function renderUiChoice() {
     const picked = state._multiPick;
     rows.push(h('div', { className: 'hand-list' }, payload.ids.map((id, i) => cardChip(id, {
       selected: picked.includes(i),
-      onClick: () => { const k = picked.indexOf(i); if (k === -1) { if (picked.length < payload.n) picked.push(i); } else picked.splice(k, 1); render(); },
+      onClick: () => { const k = picked.indexOf(i); if (k === -1) { if (payload.n === 1) picked.length = 0; if (picked.length < payload.n) picked.push(i); } else picked.splice(k, 1); render(); },
     }))));
     rows.push(h('div', { className: 'actions-row' }, [
       h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
