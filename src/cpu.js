@@ -805,7 +805,7 @@ export function createUiDriver(api) {
         });
       } catch (e) { act = null; D.stats.fallbacks++; console.warn('[CPU] search error', e); } finally { D.searching = false; safe(() => api.thinkUpdate && api.thinkUpdate(), null); }
       if (!D.enabled || D.paused || api.getState() !== st) return false; // paused / game changed while thinking: decide again later
-      if (act && act.search) { D.lastSearch = act.search; D.stats.searches = (D.stats.searches || 0) + 1; if (D.showLine) note(`${act.search.depth}수 읽기 (${act.search.nodes}노드, ${Math.round(act.search.ms)}ms): ${act.search.line}`); }
+      if (act && act.search) { D.lastSearch = act.search; D.stats.searches = (D.stats.searches || 0) + 1; if (D.showLine) note(!act.search.depth ? `수 읽기 생략 (${act.search.line || '후보 1개'})` : `${act.search.depth}수 읽기 (${act.search.nodes}노드, ${Math.round(act.search.ms)}ms): ${act.search.line}`); }
     }
     if (!act) act = planMain(st, p, cfg());
     await execute(st, act);

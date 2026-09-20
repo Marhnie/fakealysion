@@ -14,6 +14,7 @@ import * as S from './state.js';
 import * as SN from './snapshot.js';
 import * as Cpu from './cpu.js';
 import { createSim } from './cpusim.js';
+import { logOdds, EVAL_SCALE } from './cpueval.js';
 
 const { stackValue, handCardValue, lethalPlan, canDeclareAttack, isDigi } = Cpu.HX;
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
@@ -23,16 +24,17 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
 // tunables (settings / self-play calibration)
 export const SEARCH = {
   enabled: true, depth: 4, budgetMs: 900, hardCapMs: 2500, maxNodes: 6000, sliceMs: 30,
-  rootBeam: 8, beam: 5, samples: 2, prior: 0.6, logLine: false,
+  rootBeam: 8, beam: 5, samples: 1, prior: 2.0, evalModel: 1, logLine: false,
+  rolloutTurns: 0, // extra full turn pairs played out by the policy at the leaves
   rollout: 2, // leaf completion: 0 = static eval, 1 = finish my turn with the heuristic policy, 2 = + the opponent's next turn
 };
 // evaluation weights (tuned by scripts/test-cpu-search.mjs self-play)
 export const W = {
-  sec: 1.0, oppSec: 1.15, board: 1.0, oppBoard: 1.0, hand: 0.4, oppHand: 0.4, handBase: 0.7, mem: 0.45, raising: 0.8, threat: 1.0, lethal: 60, deckLow: 25, ready: 0.25,
+  sec: 1.0, oppSec: 1.15, board: 1.0, oppBoard: 1.0, hand: 0.4, oppHand: 0.4, handBase: 0.7, mem: 0.45, raising: 0.8, threat: 1.0, lethal: 40, deckLow: 25, ready: 0.25,
 };
 const SEC_VAL = [0, 2.6, 5, 7.2, 9.2, 11, 12.6, 14, 15.2, 16.4, 17.5, 18.5];
 const secVal = (n) => SEC_VAL[Math.min(n, SEC_VAL.length - 1)] + (n >= SEC_VAL.length ? (n - SEC_VAL.length + 1) : 0);
-const WIN = 100000;
+const WIN = 200;
 
 function mulberry32(seed) { let a = seed >>> 0; const f = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; f.seed = (x) => { a = x >>> 0; }; return f; }
 function strHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -74,6 +76,22 @@ export function evaluate(state, p) {
   if (state.winner) return state.winner === p ? WIN : state.winner === o ? -WIN : 0;
   const me = state.players[p], op = state.players[o];
   const myTurn = state.activePlayer === p;
+  if (SEARCH.evalModel) { // fitted win-probability model (src/cpueval.js) + the tactical terms a linear model cannot see
+    const z = logOdds(state, p);
+    if (z != null) {
+      let v = EVAL_SCALE * z;
+      if (myTurn) { try { if (lethalPlan(state, p).lethal) v += W.lethal; } catch (e) { /* ignore */ } }
+      else {
+        const opAtk = op.battle.filter((s) => isDigi(s)).length;
+        const myBl = me.battle.filter((s) => isDigi(s) && !s.suspended && Cpu.HX.hasKw(state, p, s, '블로커')).length;
+        const through = Math.max(0, opAtk - myBl);
+        if (through > me.security.length) v -= W.lethal * 0.5 * W.threat; else v -= W.threat * Math.min(through, me.security.length) * 3;
+      }
+      if (me.deck.length <= 1) v -= W.deckLow;
+      if (op.deck.length <= 1) v += W.deckLow;
+      return v;
+    }
+  }
   let v = W.sec * secVal(me.security.length) - W.oppSec * secVal(op.security.length);
   const boardVal = (q, pl) => { let s = 0; for (const st of pl.battle) s += stackValue(state, q, st); if (pl.raising) s += W.raising + (card(pl.raising.cardId).level || 0) * 0.25; return s; };
   v += W.board * boardVal(p, me) - W.oppBoard * boardVal(o, op);
@@ -186,10 +204,14 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
     const sim = createSim(state, { cfgOf: (q) => (q === p ? cpuCfg : oppCfg), onError: () => {} });
 
     // the heuristic move (prior) — computed on the live, undeterminized state exactly as the caller would
-    let policy = null;
-    try { Cpu.setRng(mulberry32(seed0 ^ 0x51ed270b)); policy = Cpu.planMain(state, p, { level: 'hard', banned: new Set(banned) }); } catch (e) { policy = null; } finally { Cpu.setRng(realRng); }
+    // (some previews write log lines: run them with the scratch log so the live log stays untouched)
+    let policy = null, rootActs = [];
+    curRng = mulberry32(seed0 ^ 0x51ed270b); enter();
+    try {
+      try { policy = Cpu.planMain(state, p, { level: 'hard', banned: new Set(banned) }); } catch (e) { policy = null; }
+      if (!(policy && policy.type === 'attack' && policy.lethal)) rootActs = genActions(state, p, O.rootBeam, banned);
+    } finally { leave(); }
     if (policy && policy.type === 'attack' && policy.lethal) return { act: policy, depth: 0, nodes: 0, ms: 0, line: '확정 승리', values: [] };
-    const rootActs = genActions(state, p, O.rootBeam, banned);
     if (policy && !rootActs.some((a) => sameAct(a, policy))) rootActs.splice(Math.max(0, rootActs.length - 1), 0, policy);
     if (rootActs.length <= 1) return policy ? { act: policy, depth: 0, nodes: 0, ms: 0, line: '', values: [] } : null;
 
@@ -238,6 +260,16 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
       if (O.rollout >= 1 && !state.winner) {
         if (state.activePlayer === p && state.phase === 'main' && !state.turnEnding) { cpuCfg.banned = new Set(); R.seed(strHash(hashState(state, p)) ^ seed0 ^ 0x2545F491); await sim.mainLoop(p, () => Cpu.planMain(state, p, cpuCfg), 12); }
         if (O.rollout >= 2 && !state.winner && state.activePlayer !== p) { await tick(); await playOppTurn(); if (!state.winner && state.activePlayer === p && state.phase === 'unsuspend') await sim.beginTurn(p); }
+      }
+      // longer horizon: alternate full turns of both sides played by the heuristic policy (Monte-Carlo style), then evaluate / detect the winner
+      for (let t = 0; t < O.rolloutTurns && !state.winner; t++) {
+        if (state.activePlayer !== p || state.phase !== 'main' || state.turnEnding) break;
+        await tick();
+        cpuCfg.banned = new Set(); R.seed(strHash(hashState(state, p)) ^ seed0 ^ 0x2545F491);
+        await sim.mainLoop(p, () => Cpu.planMain(state, p, cpuCfg), 12);
+        if (state.winner || state.activePlayer === p) break;
+        await playOppTurn();
+        if (!state.winner && state.activePlayer === p && state.phase === 'unsuspend') await sim.beginTurn(p);
       }
       return evaluate(state, p);
     }

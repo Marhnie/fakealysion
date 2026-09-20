@@ -5,15 +5,15 @@
 //  3. determinism: the same state gives the same move + values, also when the search yields to the event loop at every tick
 //  4. no-peek:     permuting the human's hidden hand / deck / security (and the CPU's own deck / security) cannot change the decision
 //  5. time budget: with the real budget (900ms / cap 2500ms) the decision time stays under the cap (p95 reported)
-// Run: node scripts/test-cpu-search.mjs [states=300] [--timing=40] < /dev/null
+// Run: node scripts/test-cpu-search.mjs [states=60; 300 = full run] [--timing=15] < /dev/null
 import * as S from '../src/state.js';
 import * as SN from '../src/snapshot.js';
 import * as Cpu from '../src/cpu.js';
 import * as CS from '../src/cpusearch.js';
 import { init, makeRng, makeDriver } from './lib-driver.mjs';
 await init();
-const N = Number(process.argv.find((a) => /^\d+$/.test(a)) || 300);
-const TIMING = Number((process.argv.find((a) => a.startsWith('--timing=')) || '--timing=40').slice(9));
+const N = Number(process.argv.find((a) => /^\d+$/.test(a)) || 60); // default: quick regression (test-all); pass 300 for the full run
+const TIMING = Number((process.argv.find((a) => a.startsWith('--timing=')) || '--timing=15').slice(9));
 function sortKeys(v) { if (v instanceof Set) return { __set: [...v].map(sortKeys) }; if (Array.isArray(v)) return v.map(sortKeys); if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v).sort()) if (typeof v[k] !== 'function') o[k] = sortKeys(v[k]); return o; } return v; }
 const SKIP = new Set(['log', 'fxHistory', 'pendingVanishFlash', 'pendingVanishSrc', 'uiChoice', '_replWaiters', 'pendingReplacements', '_leavePending', '_fxRec']);
 function norm(state) {
@@ -24,6 +24,8 @@ function norm(state) {
 const full = (state) => norm(state) + '#' + JSON.stringify([state.log.length, state.log[0] && state.log[0].msg, state.log.slice(0, 5).map((e) => e.msg), state.fxHistory ? state.fxHistory.length : -1, (state.pendingVanishFlash || []).length, (state.pendingVanishSrc || []).length, state.uiChoice ? 1 : 0, (state.pendingReplacements || []).length]);
 let fails = 0;
 const fail = (m) => { fails++; if (fails <= 12) console.log('FAIL', m); };
+function diffPath(a, b, path = '') { if (a === b) return null; if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return path + ': ' + JSON.stringify(a).slice(0, 80) + ' -> ' + JSON.stringify(b).slice(0, 80); for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) { const d = diffPath(a[k], b[k], path + '/' + k); if (d) return d; } return null; }
+const whatChanged = (b, a) => { try { const [bn, be] = [b.slice(0, b.lastIndexOf('#')), b.slice(b.lastIndexOf('#') + 1)]; const [an, ae] = [a.slice(0, a.lastIndexOf('#')), a.slice(a.lastIndexOf('#') + 1)]; if (bn !== an) return diffPath(JSON.parse(bn), JSON.parse(an)); return 'extras ' + be + ' vs ' + ae; } catch (e) { return 'diff failed ' + e.message; } };
 const mk = (act) => (act ? [act.type, act.key || '', act.target || '', act.cardId || ''].join('|') : 'null');
 const DET = { budgetMs: 1e12, hardCapMs: 1e12, maxNodes: 120, depth: 4, samples: 2, sliceMs: 1e12 };
 const realRandom = Math.random;
@@ -63,7 +65,7 @@ for (let g = 0; g < Math.ceil(N / 4) + 40 && stat.states < N; g++) {
     const after = full(state);
     if (Math.random !== rng) fail(`state ${stat.states}: Math.random not restored`);
     if (state.log !== logRef || state.fxHistory !== fxRef) fail(`state ${stat.states}: log/fxHistory array identity changed`);
-    if (before !== after) { fail(`state ${stat.states}: live state changed by search (turn ${state.turnNumber}, ${mk(r1 && r1.act)})`); SN.restoreState(state, pre, { exactCounters: true }); }
+    if (before !== after) { fail(`state ${stat.states}: live state changed by search (turn ${state.turnNumber}, ${mk(r1 && r1.act)}) ${whatChanged(before, after)}`); SN.restoreState(state, pre, { exactCounters: true }); }
     if (!r1) { stat.nullRes++; continue; }
     stat.searched++; stat.depthSum += r1.depth; stat.nodesSum += r1.nodes; stat.byDepth[r1.depth] = (stat.byDepth[r1.depth] || 0) + 1; stat.kinds[r1.act.type] = (stat.kinds[r1.act.type] || 0) + 1;
     // 3. determinism (repeat + yield at every tick)
