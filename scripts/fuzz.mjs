@@ -128,7 +128,7 @@ function report(cls, key, detail) {
   const k = cls + ': ' + key;
   if (!found[k]) found[k] = { n: 0, cls, ex: null };
   found[k].n++;
-  if (!found[k].ex) found[k].ex = { seed: CURG && CURG.seed, gen: CURG && CURG.kind, decks: CURG && CURG.decks, turn: CURG && CURG.state.turnNumber, action: LASTACT, ran: RAN.slice(-6), detail, logTail: CURG ? CURG.state.log.slice(0, Math.max(0, CURG.state.log.length - LOGMARK)).slice(0, 8).map(e => e.msg).reverse() : [] };
+  if (!found[k].ex) found[k].ex = { seed: CURG && CURG.seed, gen: CURG && CURG.kind, decks: CURG && CURG.decks, turn: CURG && CURG.state.turnNumber, action: LASTACT, trace: (CURG && CURG.trace || []).slice(-8), ran: RAN.slice(-6), detail, logTail: CURG ? CURG.state.log.slice(0, Math.max(0, CURG.state.log.length - LOGMARK)).slice(0, 8).map(e => e.msg).reverse() : [] };
 }
 function noteErr(where, e) {
   const top = String(e && e.stack).split('\n').slice(1, 3).map(s => s.trim().replace(/^at /, '').replace(/\(?file:\/\/\/.*[\\/]([^\\/]+:\d+):\d+\)?/, '$1')).join(' < ');
@@ -140,7 +140,7 @@ const isTok = (id) => !!(CARDS[id] && CARDS[id].isToken);
 const KNOWN_PL = new Set(['hand', 'deck', 'trash', 'security', 'digitamaDeck', 'raising', 'battle', 'deckName', 'art', 'memoryLocks', 'secUp']);
 const unknownHolders = new Set();
 function stackCards(st, out, zone) {
-  if (!isTok(st.cardId)) out.push([st.cardId, zone + ':top']);
+  if (!isTok(st.cardId)) out.push([st.cardId, zone + ':top', st.foreignCardId === st.cardId ? st.foreignTop : undefined]);
   for (const id of st.sources || []) if (typeof id === 'string' && !isTok(id)) out.push([id, zone + ':src']);
   for (const l of st.linkCards || []) if (l && !isTok(l.cardId)) out.push([l.cardId, zone + ':link']);
 }
@@ -156,10 +156,10 @@ function census(state) {
       const v = pl[k];
       if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string' && CARDS[x])) { unknownHolders.add('players.' + k); for (const id of v) if (!isTok(id)) list.push([id, 'X:' + k]); }
     }
-    for (const [id, z] of list) { res[p].set(id, (res[p].get(id) || 0) + 1); ((res.where[id] ||= {})[p] ||= []).push(z); }
+    for (const [id, z, own] of list) { const q = own || p; res[q].set(id, (res[q].get(id) || 0) + 1); ((res.where[id] ||= {})[q] ||= []).push(z + (own ? "(foreign)" : "")); }
   }
   for (const k of Object.keys(state)) {
-    if (['players', 'log', 'pending', 'fxHistory'].includes(k)) continue;
+    if (['players', 'log', 'pending', 'fxHistory', 'pendingVanishFlash', 'pendingVanishSrc', 'deletedInfo'].includes(k)) continue;
     const v = state[k];
     if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string' && CARDS[x])) { unknownHolders.add('state.' + k); for (const id of v) if (!isTok(id)) { (res.where[id] ||= {})['state.' + k] = [k]; res.extra = (res.extra || 0) + 1; } }
   }
@@ -240,7 +240,7 @@ function structural(g, tag) {
       if (!st.keywords || !st.inheritedKeywords || !Number.isFinite(st.tempDP)) report('STRUCT', 'malformed stack', st.cardId);
       for (const m of [st.keywords, st.inheritedKeywords]) for (const [k, v] of Object.entries(m || {})) {
         if (!KEYWORDS.has(nk(k))) { (kwSeen[k] ||= []).push(st.cardId); }
-        if (!(v === 'permanent' || v === true || (typeof v === 'number' && Number.isFinite(v)) || v === 1)) report('STRUCT', 'keyword value odd ' + k, JSON.stringify(v));
+        if (!(v === 'permanent' || v === true || (typeof v === 'number' && Number.isFinite(v)) || v === 1 || Array.isArray(v))) report('STRUCT', 'keyword value odd ' + k, JSON.stringify(v));
       }
       if (Number.isNaN(st.inheritedDP) || Number.isNaN(st.attackEligibleTurn)) report('NaN', 'stack dp/eligible', st.cardId);
       try { const dp = S.effectiveDP(state, p, st); if (!Number.isFinite(dp)) report('NaN', 'effectiveDP', st.cardId + '=' + dp); } catch (e) { noteErr('effectiveDP', e); }
@@ -307,13 +307,18 @@ async function drainPending(g, ceiling = 250) {
       }
       const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text);
       const script = specific || Fx.compileToScript(t.text);
-      const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, attack: () => state.attackCtx || null, choose: makeChoose(g, t.player) };
+      const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (pp, uid, dt, ao) => { (g.attackQueue ||= []).push({ p: pp, uid, dt, ao }); }, attack: () => state.attackCtx || null, endAttack: () => { if (state.attackCtx && state.attackCtx.terminate) state.attackCtx.terminate(); }, choose: makeChoose(g, t.player) };
       await Fx.runScript(script, ctx);
     } catch (e) { noteErr('pending ' + t.cardId, e); }
     S.resolvePending(state, t.uid);
   }
   report('PENDING', 'drain ceiling hit (possible infinite trigger chain)', RAN.slice(-4).join(','));
   for (const t of state.pending) t.resolved = true;
+}
+async function flushAttacks(g) {
+  let n = 0;
+  while (g.attackQueue && g.attackQueue.length && n++ < 6 && !g.state.winner) { const a = g.attackQueue.shift(); if (a.p !== g.state.activePlayer) continue; RAN.push('queuedAttack'); try { await doAttack(g, a.p, a.uid, a.dt, a.ao); } catch (e) { noteErr('queuedAttack', e); } await drainPending(g); }
+  g.attackQueue = [];
 }
 async function finishTurn(g) {
   const state = g.state; let guard = 0;
@@ -430,6 +435,10 @@ async function tryLink(g, p) {
 }
 async function tryAbility(g, p) {
   const st = g.state, pl = st.players[p];
+  if (chance(0.3)) { // [패]/[트래시]【메인】 (zoneMainAbilities)
+    const abs = [...S.zoneMainAbilities(st, p, 'hand').map(x => ({ ...x, zone: 'hand' })), ...S.zoneMainAbilities(st, p, 'trash').map(x => ({ ...x, zone: 'trash' }))];
+    if (abs.length) { const x = pick(abs); st.pending.push({ uid: 'fzm' + Math.random().toString(36).slice(2), player: p, cardId: x.cardId, stackUid: null, tags: x.tags, text: x.text, resolved: false, zoneMain: x.zone, zoneIdx: x.idx }); return 'zoneMain ' + x.cardId; }
+  }
   const stack = pick(stacksOf(pl));
   if (!stack) return null;
   const r = Math.random();
@@ -444,23 +453,25 @@ async function tryAbility(g, p) {
   st.pending.push({ uid: 'fm' + Math.random().toString(36).slice(2), player: p, cardId: a.cardId, stackUid: stack.uid, tags: a.tags, text: a.text, resolved: false });
   return 'main ' + a.cardId;
 }
-async function doAttack(g, p) {
+async function doAttack(g, p, forcedUid, directTarget, atkOpts) {
   const st = g.state, pl = st.players[p], opp = S.opponentOf(p);
   const atts = pl.battle.filter(s => !s.suspended && cardOf(s.cardId).category === 'digimon');
-  if (!atts.length) return null;
-  const att = pick(atts);
-  const dec = S.declareAttack(st, p, att.uid);
+  const att = forcedUid ? pl.battle.find(s => s.uid === forcedUid) : (atts.length ? pick(atts) : null);
+  if (!att) return null;
+  const dec = S.declareAttack(st, p, att.uid, atkOpts || {});
   if (!dec.ok) return 'attack-rejected';
   const uid = att.uid;
+  if (atkOpts && atkOpts.anyActive) dec.stack.anyActiveOnce = true;
   const targets = S.legalDigimonTargets(st, p, uid);
-  const canPlayer = S.canAttackPlayer(st, p, uid);
+  if (dec.stack.anyActiveOnce) delete dec.stack.anyActiveOnce;
+  const canPlayer = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(st, p, uid);
   const pa = { attacker: p, uid, dp: S.effectiveDP(st, p, dec.stack), opp, digimonTargets: targets, canHitPlayer: canPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice', counterUsed: false };
   pa.terminate = () => { pa.ended = true; };
   st.attackCtx = pa;
   const ended = () => pa.ended || !S.findStackByUid && false;
   const find = (pp, u) => { const q = st.players[pp]; return q.raising?.uid === u ? q.raising : q.battle.find(s => s.uid === u); };
   try {
-    if (targets.length && (!canPlayer || chance(0.4))) { pa.targetKind = 'digimon'; pa.targetUid = pick(targets); } else if (canPlayer) pa.targetKind = 'player'; else { st.attackCtx = null; return 'attack-no-target'; }
+    if (directTarget === 'PLAYER' && canPlayer) pa.targetKind = 'player'; else if (directTarget && targets.includes(directTarget)) { pa.targetKind = 'digimon'; pa.targetUid = directTarget; } else if (targets.length && (!canPlayer || chance(0.4))) { pa.targetKind = 'digimon'; pa.targetUid = pick(targets); } else if (canPlayer) pa.targetKind = 'player'; else { st.attackCtx = null; return 'attack-no-target'; }
     const aSt = find(p, uid);
     S.queueTriggersForStack(st, p, aSt, 'attack'); S.emitGameEvent(st, 'attack', { owner: p, stack: aSt, cause: null });
     await drainPending(g);
@@ -565,7 +576,8 @@ async function playGame(gi) {
           const r = await fn(g, p);
           if (r) { LASTACT = String(r); const k = String(r).split(' ')[0].replace(/\+.*/, ''); gstat.actionKinds[k] = (gstat.actionKinds[k] || 0) + 1; }
         } catch (e) { noteErr(name + ' [' + LASTACT + ']', e); }
-        try { await drainPending(g); } catch (e) { noteErr('drain', e); }
+        (g.trace ||= []).push(p + ':' + LASTACT); if (g.trace.length > 12) g.trace.shift();
+        try { await drainPending(g); await flushAttacks(g); } catch (e) { noteErr('drain', e); }
         post(g);
         try { if (E.checkAutoEndTurn(state)) { await finishTurn(g); post(g); break; } } catch (e) { noteErr('autoEnd', e); break; }
       }
@@ -598,7 +610,7 @@ for (let gi = 0; gi < G; gi++) {
   if (VERBOSE) console.log('game', gi, 'seed', BASE_SEED + gi * 7919);
   await playGame(gi);
 }
-for (const [k, v] of Object.entries(kwSeen)) report('KEYWORD', 'unknown keyword key ' + JSON.stringify(k), [...new Set(v)].slice(0, 5).join(','));
+if (Object.keys(kwSeen).length) console.log('info: non-catalogued keyword-map keys (engine flags):', Object.keys(kwSeen).join(','));
 const keys = Object.keys(found).sort((a, b) => found[b].n - found[a].n);
 console.log(`\ngames ${gstat.games} turns ${gstat.turns} actions ${gstat.actions} wins ${gstat.wins} maxTurn ${gstat.maxTurn} games>=turn8 ${gstat.deepGames} kinds ${JSON.stringify(gstat.byKind)}`);
 console.log('action kinds:', JSON.stringify(gstat.actionKinds));
@@ -606,7 +618,8 @@ if (unknownHolders.size) console.log('extra card-id holders seen:', [...unknownH
 console.log('distinct findings:', keys.length, `(${((Date.now() - T0) / 1000).toFixed(0)}s)`);
 for (const k of keys.slice(0, 60)) {
   const f = found[k], e = f.ex;
-  console.log(`\n[${f.n}x] ${k}\n   seed=${e.seed} gen=${e.gen} decks=${(e.decks || []).join(' vs ')} turn=${e.turn} action="${e.action}" ran=${e.ran.join(',')}\n   ${String(e.detail).slice(0, 400)}\n   log: ${e.logTail.slice(-5).join(' / ').slice(0, 400)}`);
+  console.log(`\n[${f.n}x] ${k}\n   seed=${e.seed} gen=${e.gen} decks=${(e.decks || []).join(' vs ')} turn=${e.turn} action="${e.action}" ran=${e.ran.join(',')}\n   ${String(e.detail).slice(0, 400)}\n   trace: ${(e.trace||[]).join(" > ")}
+   log: ${e.logTail.slice(-5).join(' / ').slice(0, 400)}`);
 }
 if (JSON_OUT) fs.writeFileSync(String(JSON_OUT), JSON.stringify({ gstat, found }, null, 1));
 process.exit(keys.length ? 1 : 0);

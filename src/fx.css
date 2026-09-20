@@ -160,3 +160,5 @@
   .fxf-toast { bottom: 70px; }
 }
 @media (prefers-reduced-motion: reduce) { .fxf-arrow, .fxf-ring, .fxf-ghost, .fxf-label, .fxf-badge { animation: none; } }
+.fxf-bt { white-space: normal; max-width: 190px; text-align: center; line-height: 1.2; }
+.fxf-badge { white-space: normal; }

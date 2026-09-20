@@ -21,3 +21,15 @@ const onSelfActive = (state, hp, h, info) => info.stack === h && info.owner === 
 
 // BT9-031 【자신의 턴】[턴에 1회] 이 디지몬이 액티브가 되었을 때, (진화원에 「메탈가루몬」/「X항체」가 있다면) 가장 Lv.이 낮은 상대 디지몬 전부를 패로 (conditional text is "UNSAFE" for the generic watcher -> explicit hook)
 hk('BT9-031', { tag: '자신의 턴', has: '이 디지몬이 액티브가 되었을 때', limit: 1, events: { active: onSelfActive, unsuspend: onSelfActive } });
+
+// BT9-050 / BT9-051 【서로의 턴】 이 디지몬이 배틀에서 소멸할 때, 진화원에서 「레오몬」 1장을 코스트 없이 등장 — shard31's script picked the LAST trashed source card
+// (any name, e.g. the card right above the 「레오몬」), not the 「레오몬」 itself.
+for (const id of ['BT9-050', 'BT9-051']) sc(id + '::서로의 턴', async (ctx) => {
+  const pl = ctx.state.players[ctx.self];
+  const ids = [...(ctx.trigger?.evt?.sources || [])];
+  let i = -1;
+  for (let k = pl.trash.length - 1; k >= 0; k--) if (ids.includes(pl.trash[k]) && C(pl.trash[k]).category === 'digimon' && S.cardNameIs(pl.trash[k], '레오몬')) { i = k; break; }
+  if (i < 0) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '진화원의 「레오몬」을 코스트를 지불하지 않고 등장시키겠습니까?' }))) return;
+  S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, { fromSources: true });
+});

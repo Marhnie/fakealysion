@@ -67,7 +67,7 @@ ok(T.mulberry32(42)() === T.mulberry32(42)(), 'seeded rng deterministic');
 const tid = Object.keys(deck.main)[0], tc = deck.main[tid];
 const res = T.runBatchSync(deck, env, { n: 20000, rng: T.mulberry32(7), targetId: tid });
 ok(res.n === 20000, 'ran all hands');
-for (const k of ['pLv3', 'pLv2', 'pNoLow', 'pBlocker', 'pLine', 'pGood', 'pGoodAfterMulligan']) ok(res[k] >= 0 && res[k] <= 1, k + ' in [0,1]');
+for (const k of ['pLv3', 'pLv2', 'pNoLow', 'pBlocker', 'pLine', 'pLineEgg', 'pGood', 'pGoodAfterMulligan']) ok(res[k] >= 0 && res[k] <= 1, k + ' in [0,1]');
 ok(res.pGoodAfterMulligan >= res.pGood, 'mulligan never hurts');
 near(res.pLv3, T.hyperAtLeast(st.mainN, st.lv[3], 5, 1), 0.012, 'sim P(>=1 Lv3) ~ exact');
 const blk = model.flags.filter(f => f.blocker).length;

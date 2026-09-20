@@ -12,7 +12,7 @@ function norm(state) {
   o.endOfTurnEffects = (state.endOfTurnEffects || []).map(e => ({ ...e }));
   return JSON.stringify(sortKeys({ o, c: { ...S.getCounters(), fx: 0 } }));
 }
-let fails = 0, checks = 0, contChecks = 0, maxMs = 0, sumMs = 0, nSnap = 0, maxBytes = 0, lossyN = 0, splices = 0;
+let mutated = 0, eotSeen = 0, fails = 0, checks = 0, contChecks = 0, maxMs = 0, sumMs = 0, nSnap = 0, maxBytes = 0, lossyN = 0, splices = 0;
 function fail(msg) { fails++; if (fails <= 8) console.log('FAIL', msg); }
 const realRandom = Math.random;
 for (let g = 0; g < G; g++) {
@@ -34,6 +34,7 @@ for (let g = 0; g < G; g++) {
   // restore checks: go back to each snapshot (any order) and compare
   const finalN = norm(state);
   for (const s of snaps.sort(() => rng() - 0.5).slice(0, 4)) {
+    if (norm(state) !== s.n) mutated++;
     SN.restoreState(state, s.snap, { exactCounters: true }); checks++;
     if (norm(state) !== s.n) { fail(`game ${g} restore mismatch @${s.i}`); continue; }
     // battle arrays still track leaves after restore
@@ -59,6 +60,20 @@ for (let g = 0; g < G; g++) {
   }
 }
 Math.random = realRandom;
+// held end-of-turn entries: kept by reference in-session, rebuilt from desc after a JSON round trip
+{
+  const rng = makeRng(7); Math.random = rng; const d = makeDriver(rng); const st = d.newRandomGame();
+  S.scheduleEndOfTurn(st, () => S.grantMemory(st, 'p1', -2), { player: 'p1', label: 't', desc: { kind: 'memory', player: 'p1', n: 2 } });
+  S.scheduleEndOfTurn(st, () => {}, { player: 'p1', label: 'closure-only' });
+  const snap = SN.snapshotState(st); const before = st.endOfTurnEffects.length;
+  st.endOfTurnEffects = []; SN.restoreState(st, snap);
+  checks++; if (st.endOfTurnEffects.length !== before || typeof st.endOfTurnEffects[0].fn !== 'function') fail('eot not restored by reference');
+  const back = SN.snapFromObject(SN.parse(SN.stringify(SN.snapToObject(snap))), st);
+  checks++; if (back.eot.length !== 1 || back.eotLost !== 1 || typeof back.eot[0].fn !== 'function') fail('eot rebuild from desc failed');
+  const m0 = st.memory; back.eot[0].fn(); if (st.memory === m0) fail('rebuilt memory eot did nothing'); eotSeen++;
+  Math.random = realRandom;
+}
+console.log(`mutated-before-restore ${mutated}/${checks}, eot ok ${eotSeen}`);
 console.log(`games ${G}: snapshots ${nSnap} (avg ${(sumMs / nSnap).toFixed(2)}ms, max ${maxMs.toFixed(2)}ms, lossy ${lossyN}), restore checks ${checks}, continuation checks ${contChecks}, max json ${(maxBytes / 1024).toFixed(0)}KB`);
 console.log(fails ? `FAILED: ${fails}` : 'ALL OK');
 process.exit(fails ? 1 : 0);

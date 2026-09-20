@@ -362,8 +362,11 @@ function playFromStackSource(ctx, who, stack, srcIdx) {
   const pl = ctx.state.players[who];
   const [id] = stack.sources.splice(srcIdx, 1);
   S.recomputeStackGrants(stack);
+  const so = ['p1', 'p2'].find(pp => ctx.state.players[pp].battle.includes(stack) || ctx.state.players[pp].raising === stack); // the card's OWNER (1-3: cards always go to their owner's zones when they leave)
   pl.trash.push(id);
-  return S.playFreeFromZone(ctx.state, who, 'trash', pl.trash.length - 1, { fromSources: true });
+  const ns = S.playFreeFromZone(ctx.state, who, 'trash', pl.trash.length - 1, { fromSources: true });
+  if (ns && so && so !== who) { ns.foreignTop = so; ns.foreignCardId = ns.cardId; } // played from the OPPONENT's stack: it stands in our area but is owned by them (deleteStack sends the top card to the owner's trash)
+  return ns;
 }
 const faceUpSources = (st) => st.sources.map((id, i) => ({ id, i })).filter(x => x.i >= S.fdCount(st));
 

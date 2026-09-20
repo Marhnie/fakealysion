@@ -81,6 +81,7 @@ export function unstableReason(state, ui = {}) {
   if (state.uiChoice) return '선택 창이 열려 있어 지금은 할 수 없습니다 (선택을 마친 뒤 사용하세요)';
   if (state.pendingReplacements && state.pendingReplacements.length) return '대체 효과(회피/세이브 등) 선택 대기 중입니다';
   if (state.pending.some(t => !t.resolved)) return '해결 중인 효과가 남아 있어 지금은 할 수 없습니다';
+  if (ui.cpuBusy) return 'CPU가 진행 중입니다 (CPU 차례가 끝난 뒤 사용하세요)';
   if (ui.pendingAttack || ui.atkQueued) return '어택 진행 중에는 할 수 없습니다';
   if (state.turnEnding) return '턴 종료 처리 중에는 할 수 없습니다';
   return '';
@@ -149,18 +150,22 @@ function goto(state, i, tag) {
   TL.head = state.log[0] || null;
   notify();
 }
-export function undo(state) {
+// accept(entry) optionally restricts the landing point (vs-CPU: only states where it is the human's turn)
+export function undo(state, accept) {
   if (!state || TL.owner !== state) return { ok: false, why: '되돌릴 기록이 없습니다' };
   if (!canUndo()) return { ok: false, why: '더 이상 되돌릴 수 없습니다' };
   const from = TL.list[TL.cur];
-  goto(state, TL.cur - 1, `(되돌림) ${from.label || '직전 행동'} 이전 상태로`);
+  let i = TL.cur - 1; if (accept) while (i > floorIdx() && !accept(TL.list[i])) i--;
+  if (accept && !accept(TL.list[i])) return { ok: false, why: '되돌릴 수 있는 내 차례 기록이 없습니다' };
+  goto(state, i, `(되돌림) ${from.label || '직전 행동'} 이전 상태로`);
   return { ok: true };
 }
-export function redo(state) {
+export function redo(state, accept) {
   if (!state || TL.owner !== state) return { ok: false, why: '다시 실행할 기록이 없습니다' };
   if (!canRedo()) return { ok: false, why: '다시 실행할 기록이 없습니다' };
-  const to = TL.list[TL.cur + 1];
-  goto(state, TL.cur + 1, `(다시 실행) ${to.label || '행동'}`);
+  let j = TL.cur + 1; if (accept) while (j < TL.list.length - 1 && !accept(TL.list[j])) j++;
+  const to = TL.list[j];
+  goto(state, j, `(다시 실행) ${to.label || '행동'}`);
   return { ok: true };
 }
 // jump to any recorded index (replay viewer applies snapshots to a private scratch state instead — see replay.js)

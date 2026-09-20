@@ -79,6 +79,35 @@ for (const t of targets) {
     }
   }
 }
+// ---------- 2. chained conditions on ONE 〔진화〕 line ("… 코스트 3/자신의 시큐리티가 3장 이하인 동안, 「쿠레미 쿄코」 : 코스트 5") ----------
+for (const t of ['BT22-063', 'BT22-067']) {
+  const tn = S.card(t).effectKo.split('\n')[0].match(/「([^」]+)」\s*:\s*코스트\s*5/)[1];
+  const src = cards.find(c => c.nameKo === tn && c.category === 'tamer');
+  eq(t + ' chained named-tamer source exists', !!src, true);
+  if (!src) continue;
+  const st = newState(); const stk = put(st, 'p1', [src.id]);
+  st.players.p1.security = ['x', 'x', 'x'];
+  const ms = E.evolutionMethods(src.id, t, S.evoExtraArg(st, 'p1', stk), S.evolveTargetRestriction(st, 'p1', stk), { state: st, p: 'p1', stack: stk });
+  eq(t + ' 「' + tn + '」 line cost 5 offered (security<=3)', ms.some(m => m.baseCost === 5), true);
+  st.players.p1.security = ['x', 'x', 'x', 'x'];
+  const ms2 = E.evolutionMethods(src.id, t, S.evoExtraArg(st, 'p1', stk), S.evolveTargetRestriction(st, 'p1', stk), { state: st, p: 'p1', stack: stk });
+  eq(t + ' 「' + tn + '」 line gated off when security>3', ms2.some(m => m.baseCost === 5), false);
+}
+// ---------- 3. 효과로 진화원에 놓였을 때 watchers (BT22-004 / BT22-043 / BT22-044 / BT26-054) ----------
+for (const [top, srcs] of [['BT22-043', []], ['BT26-054', []], ['BT22-044', []], ['BT22-046', ['BT22-004']]]) {
+  const st = newState(); const h = put(st, 'p1', [top, ...srcs]);
+  S.emitGameEvent(st, 'sourcesAdded', { owner: 'p1', stack: h, cause: 'effect', added: ['BT22-046'], srcPlayer: 'p1', srcCategory: 'digimon' });
+  eq(top + ' sourcesAdded(CS digimon by effect) queues its trigger', st.pending.filter(x => !x.resolved).length, 1);
+}
+// ---------- 4. Options that ignore the color condition while a CS Digimon/Tamer is in an area ----------
+for (const id of ['BT22-099', 'BT23-100', 'BT23-096', 'BT23-095', 'BT23-091', 'BT23-092', 'BT23-094', 'P-225', 'P-238']) {
+  const c = S.card(id);
+  const h = cards.find(x => x.category === 'digimon' && (x.types || []).includes('CS') && !x.colors.some(k => c.colors.includes(k)));
+  const n = cards.find(x => x.category === 'digimon' && !(x.types || []).includes('CS') && !x.colors.some(k => c.colors.includes(k)));
+  const a = newState(); put(a, 'p1', [h.id]); const b = newState(); put(b, 'p1', [n.id]);
+  eq(id + ' usable with off-color CS digimon', S.optionColorOk(a, 'p1', id), true);
+  eq(id + ' NOT usable with off-color non-CS digimon', S.optionColorOk(b, 'p1', id), false);
+}
 console.log('CS lines checked:', nLines);
 console.log(fail ? 'FAILED ' + fail + ' (pass ' + pass + ')' : 'ALL PASS ' + pass);
 process.exit(fail ? 1 : 0);

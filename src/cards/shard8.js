@@ -686,8 +686,8 @@ OPS.s8_appFuse = async (i, ctx) => { // 8-4: rule-level flow lives in S.appFusio
   const pl = state.players[ctx.self];
   const combos = [];
   for (const host of pl.battle) {
-    if (!isDi(host.cardId) || !(host.linkCards || []).length) continue;
-    pl.hand.forEach((id, k) => { if (isDi(id) && S.appFusionCheck(state, ctx.self, host, id).ok) combos.push({ host, k, id }); });
+    if (!isDigi(host.cardId) || !(host.linkCards || []).length) continue;
+    pl.hand.forEach((id, k) => { if (isDigi(id) && S.appFusionCheck(state, ctx.self, host, id).ok) combos.push({ host, k, id }); });
   }
   if (!combos.length) { log(ctx, `${ctx.self} 어플 합체할 수 있는 조합이 없음`); return; }
   const hostUid = await pickOne(ctx, ctx.self, [...new Set(combos.map(c => c.host.uid))], '어플 합체할 디지몬 선택');

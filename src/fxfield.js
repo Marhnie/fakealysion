@@ -74,7 +74,11 @@ function resolve(a) {
   if (a.type === 'mem') { const r = rectOf(q1('.mem-active')) || rectOf(q1('.mem-track')); return r ? { rect: r, mem: true } : null; }
   if (a.type === 'hand') { const r = rectOf(q1(`[data-fxhand="${a.p}"]`)); return r ? { rect: r, hand: true } : null; }
   if (a.type === 'center') {
-    const w = isSmall() ? 90 : 120, hh = w * 1.4, cx = window.innerWidth / 2, cy = window.innerHeight * 0.42;
+    let cx = window.innerWidth / 2, cy = window.innerHeight * 0.42;
+    const zs = document.querySelectorAll('.drop-zone'), mt = rectOf(q1('.mem-track')); // centre-line: between the two battle areas (where the memory gauge sits)
+    if (zs.length >= 2) { const a1 = zs[0].getBoundingClientRect(), b1 = zs[zs.length - 1].getBoundingClientRect(); if (b1.top > a1.bottom - 4) cy = (a1.bottom + b1.top) / 2; }
+    if (mt) cx = mt.left + mt.width / 2;
+    const w = 60, hh = 30;
     return { rect: { left: cx - w / 2, top: cy - hh / 2, width: w, height: hh, right: cx + w / 2, bottom: cy + hh / 2 }, virtual: true };
   }
   return null;
@@ -192,7 +196,7 @@ function addItem(g, it) {
   const n = el('div', `fxf-badge fxf-${it.cls || 'neutral'} fxf-${g.rec.src.owner || 'rule'}`);
   n.appendChild(el('i', 'fxf-bi', it.icon || '')); n.appendChild(el('span', 'fxf-bt', it.text));
   n.title = `${shortSrc(g.rec)} → ${it.text} (눌러서 닫기)`;
-  const item = { anchor: it.anchor, node: n, text: it.text };
+  const item = { anchor: it.anchor, node: n, text: it.text, ghostUntil: Date.now() + 3000 };
   n.addEventListener('click', () => { killItem(item); g.items = g.items.filter(x => x !== item); layout(); });
   ensureRoot().appendChild(n);
   const path = document.createElementNS(SVGNS, 'path');
@@ -232,7 +236,7 @@ export function fxFieldSync(state, hist, baseId, lifeFor) {
     }
     let changed = false;
     for (const v of rec.vanished.slice(g.v)) {
-      addItem(g, { anchor: { type: 'tile', p: v.owner, name: v.name }, icon: '💀', text: `소멸 ← ${shortSrc(rec)}`, cls: 'down', ghost: true, cardId: v.cardId }); changed = true;
+      addItem(g, { anchor: { type: 'tile', p: v.owner, name: v.name }, icon: '💀', text: '소멸 ← ' + (isSmall() ? shortSrc(rec).replace(/^P\d /, '').replace(/【.*?】/, '') : shortSrc(rec)), cls: 'down', ghost: true, cardId: v.cardId }); changed = true;
     }
     g.v = rec.vanished.length;
     for (const e of rec.entries.slice(g.e)) {
@@ -254,7 +258,7 @@ export function fxFieldSync(state, hist, baseId, lifeFor) {
 function scheduleExpiry() {
   clearTimeout(timer);
   const ts = groups.filter(g => g.expires).map(g => g.expires);
-  if (ts.length) timer = setTimeout(() => layout(), Math.max(60, Math.min(...ts) - Date.now() + 30));
+  if (ts.length) timer = setTimeout(() => { if (on) layoutNow(); }, Math.max(60, Math.min(...ts) - Date.now() + 30));
 }
 export function fxFieldClear() {
   for (const g of [...groups]) dropGroup(g);
@@ -320,7 +324,8 @@ function layoutNow(state) {
       let box;
       if (it.anchor.type === 'tile') {
         box = placeNode(it.node, r.left + r.width / 2, r.top + 2 + off, 'c', 't');
-        if (it.ghostNode) { it.ghostNode.style.display = ''; Object.assign(it.ghostNode.style, { left: Math.round(r.left) + 'px', top: Math.round(r.top) + 'px', width: Math.round(r.width) + 'px', height: Math.round(r.height) + 'px' }); }
+        if (it.ghostNode && Date.now() > it.ghostUntil) it.ghostNode.style.display = 'none'; // neighbours have reflowed by now: a stale outline would sit on the wrong card
+        else if (it.ghostNode) { it.ghostNode.style.display = ''; Object.assign(it.ghostNode.style, { left: Math.round(r.left) + 'px', top: Math.round(r.top) + 'px', width: Math.round(r.width) + 'px', height: Math.round(r.height) + 'px' }); }
       } else if (it.anchor.type === 'pile') {
         const right = r.right + 4 + it.node.offsetWidth < W - 4;
         box = placeNode(it.node, right ? r.right + 4 : r.left - 4, r.top + off, right ? 'l' : 'r', 't');
@@ -378,6 +383,9 @@ function layoutChoice(state) {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('resize', () => { if (groups.length || choiceLabel) layout(); });
+  window.addEventListener('load', () => { if (groups.length || choiceLabel) layout(); }, true); // card images finishing loading shift tile geometry
+  setInterval(() => { if (on && !document.hidden && document.querySelector('[data-fxn]')) snapTiles(); }, 400); // keep last-known tile rects fresh (vanished stacks are drawn where they last stood)
+  setInterval(() => { if (on && (groups.length || choiceLabel)) layoutNow(); }, 250); // cheap safety net: layout settles after render (async images, scroll containers, animations)
   window.addEventListener('scroll', () => { if (groups.length || choiceLabel) layout(); }, true);
   window.__fxf = { get groups() { return groups; }, stats: fxFieldStats, layout: () => layoutNow(), clear: fxFieldClear };
 }

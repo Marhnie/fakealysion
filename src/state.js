@@ -206,6 +206,10 @@ export function parseEffectSegments(text) {
     }
     const atBoundary = boundaryIndex === 0 || text[boundaryIndex - 1] === '\n';
     if (!atBoundary) continue;
+    if (!zoneMarker && boundaryIndex > 0) { // marker printed alone on the line BEFORE the 【…】 line (EX6-037 "[패]\n【메인】 …") still scopes that segment (fuzz: the hand-only 【메인】 showed up as a battle-area button and duplicated the card)
+      const own = text.slice(0, boundaryIndex).match(/(?:^|\n)[\[〔]([^\[\]〔〕\n]*)[\]〕][ \t]*\n$/);
+      if (own && /패|트래시|육성|배틀|시큐리티/.test(own[1])) zoneMarker = own[1];
+    }
     // A line-start 【...】 inside a still-open "(" (e.g. a token's own printed abilities spelled out in
     // a parenthetical that wraps across lines) belongs to that sentence, not a new segment of this card.
     { const before = text.slice(0, boundaryIndex); if ((before.match(/[(（]/g) || []).length > (before.match(/[)）]/g) || []).length) continue; }
@@ -533,7 +537,22 @@ const EW_UNSAFE = /있다면|라면|이라면|마다|그\s*후|하는\s*것으�
 export function isHandledWatcherBody(body) { return !!parseWatcherTrigger(body) || !!parseEventWatcher(body); }
 
 // "<desc>" descriptor -> predicate over a card (traits/name/기술/color/Lv), shared with effects.js conditions.
-export function cardDescPredicate(desc) { return evoTargetPredicate(desc); }
+export function cardDescPredicate(desc) {
+  // pass2-b5 (BT24-088): "「A」 1장이나 Lv.N 이하의 「B」 의 기술이 있거나 (특징에) 「T」 를 가진 디지몬카드" / "「B」 의 기술이 있거나 특징에 「T」 를 가진 카드"
+  // — an OR of (name / text-mention / trait) clauses the generic descriptor parser can't read. 「삼총사」 is printed once for 「3총사」 (alias).
+  const d0 = String(desc || '').trim(); let m;
+  const mentionAlias = (n) => (n === '삼총사' ? '3총사' : n);
+  if ((m = d0.match(/^(?:「([^」]+)」\s*1장이나\s*)?(?:Lv\.?\s*(\d+)\s*이하의\s*)?「([^」]+)」\s*의\s*기술이\s*있거나\s*(?:특징에?\s*)?「([^」]+)」\s*를?\s*가진\s*(디지몬\s*카드|카드)$/))) {
+    const nameOnly = m[1], lvMax = m[2] != null ? Number(m[2]) : null, mention = mentionAlias(m[3]), trait = evoTargetPredicate(`특징 「${m[4]}」를 가진`), digiOnly = /디지몬/.test(m[5]);
+    return (c) => {
+      if (nameOnly && (c.nameKo || '').includes(nameOnly)) return true;
+      if (digiOnly && c.category !== 'digimon') return false;
+      if (lvMax != null && (c.level || 0) > lvMax) return false;
+      return cardMentions(c, mention) || !!(trait && trait(c));
+    };
+  }
+  return evoTargetPredicate(desc);
+}
 
 // info: { owner, stack, cause }. `stack` may already be off the board (delete).
 // A watcher text GRANTED by an effect ("…에게 「【서로의 턴】 이 디지몬이 레스트했을 때, 메모리 -1.」의 효과를 준다"): stack.s2Granted entries with trigger 'g:<event>'.
@@ -1381,6 +1400,7 @@ export function cardNameHas(idOrCard, n) { const i = cardNameInfo(typeof idOrCar
 export function cardMentions(idOrCard, n) {
   const c = typeof idOrCard === 'string' ? card(idOrCard) : idOrCard;
   if (!c) return false;
+  if (n === '삼총사') n = '3총사'; // BT24-088 prints 「삼총사」 for 「3총사」
   return (c.nameKo || '').includes(n) || `${c.effectKo || ''}\n${c.inheritedKo || ''}`.includes(`「${n}」`);
 }
 export function ownerOfStack(state, stack) {
@@ -3079,10 +3099,10 @@ export function optionColorOk(state, p, cardId) {
   if (need.every(col => have.has(col))) return true;
   const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
   // 16-42: 《사용조건《<지정 카드>》》 — a Digimon/Tamer in the area matching the designated card lets this option ignore its color condition.
-  const uc = txt.match(/[《≪]\s*사용\s*조건\s*[《≪]\s*([^》≫]+?)\s*[》≫]\s*[》≫]/);
+  const uc = txt.match(/[《≪]\s*사용\s*조건\s*[《≪]\s*([^》≫]+?)\s*[》≫]\s*[》≫]/) || txt.match(/<\s*사용\s*조건\s*\(\s*([^)]+?)\s*\)\s*>/); // 2nd spelling: "<사용 조건(특징 「CS」)>(지정된 카드로 색 조건을 무시할 수 있다)" (P-238)
   if (uc) { const pr = evoTargetPredicate(uc[1].trim()); if (pr && stacks.some(st => st !== pl.raising && pr(card(st.cardId)))) return true; }
   if (/(?:^|\n)\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/.test(txt)) return true; // unconditional (P-206 …)
-  const ig = txt.match(/([^.\n]*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/);
+  const ig = txt.replace(/있다면\s*색\s*조건을/g, '있는 동안, 이 카드는 색 조건을').match(/([^.\n]*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/); // P-225: "…자신의 디지몬/테이머가 있다면 색 조건을 무시하고 사용할 수 있다"
   if (!ig) return false;
   const cond = ig[1].trim();
   if (!cond) return true;
@@ -3947,7 +3967,7 @@ export function parseSurviveAbility(body) {
   }
   const cost = surviveCost(costText);
   if (!cost) return null;
-  return { limit, mode, pred, nameEq, other, causeTest, cond, cost };
+  return { limit, mode, pred, nameEq, other, causeTest, cond, cost, leaveWord: tm[2] !== '소멸할' };
 }
 
 export function isHandledSurviveBody(body) {
@@ -3957,7 +3977,7 @@ export function isHandledSurviveBody(body) {
 
 // Scan every stack on `p`'s board for a printed survive ability that covers
 // `protectedStack` for this deletion cause and whose cost can be paid.
-function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
+function trySurviveByPrintedAbility(state, p, protectedStack, cause, leaveOnly = false) {
   const pl = state.players[p];
   for (const holder of [pl.raising, ...pl.battle].filter(Boolean)) {
     for (const { id, own } of stackContributors(holder)) {
@@ -3969,7 +3989,7 @@ function trySurviveByPrintedAbility(state, p, protectedStack, cause) {
         const active = seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p);
         if (!active) continue;
         const ab = parseSurviveAbility(seg.body);
-        if (!ab || !ab.causeTest(cause)) continue;
+        if (!ab || !ab.causeTest(cause) || (leaveOnly && !ab.leaveWord)) continue;
         if (ab.mode === 'self') { if (holder !== protectedStack || !ab.pred(holder)) continue; }
         else {
           if (ab.other && holder === protectedStack) continue;
@@ -4111,6 +4131,7 @@ function leavePass(state, p, target, cause, mode) {
   REPL.depth++; if (top) state._replN = 0;
   try {
     for (const o of decoyOptions(state, p, target, cause, false)) if (replAttempt(state, () => applyDecoyOption(state, p, target, o), { key: 'dc:' + o.other.uid + o.kw })) return true;
+    if (mode !== 'delete' && trySurviveByPrintedAbility(state, p, target, cause, true)) return true; // printed "…배틀 에어리어를 벗어날 때, <비용>으로 벗어나지 않는다" also covers bounce/return-to-deck (BT11-111 etc.)
     return hookPreventLeave(state, p, target, cause, mode);
   } finally { REPL.depth--; }
 }
@@ -4164,7 +4185,12 @@ function deleteStackCore(state, p, uid, toZone, cause) {
   const leavePlays = fromBattle && toZone === 'trash' ? extractLeaveSourcePlays(state, p, stack, cause) : [];
   const linkIds = (stack.linkCards || []).map(l => l.cardId);
   const all = [...stack.sources, stack.cardId, ...linkIds];
-  if (toZone === 'trash') pl.trash.push(...all.filter(x => !CARDS[x]?.isToken));
+  if (toZone === 'trash') {
+    const fo = stack.foreignTop && stack.foreignTop !== p && stack.foreignCardId === stack.cardId ? stack.foreignTop : null; // played from the opponent's evolution sources (BT19-102 …): the top card is theirs -> their trash
+    const mine = fo ? all.filter((x, i) => !(x === stack.cardId && i === stack.sources.length)) : all;
+    pl.trash.push(...mine.filter(x => !CARDS[x]?.isToken));
+    if (fo && !CARDS[stack.cardId]?.isToken) state.players[fo].trash.push(stack.cardId);
+  }
   playExtractedSources(state, p, leavePlays);
   log(state, `${p} ${card(stack.cardId).nameKo} 스택 소멸 (진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 포함, 총 ${all.length}장 트래시)`);
   (state.pendingVanishFlash ||= []).push(card(stack.cardId).nameKo);
@@ -4476,7 +4502,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     return { ok: false, reason: 'attack restricted' };
   }
   if (!opts.noRest) stack.suspended = true; // s5: "레스트시키지 않고 어택" (BT21-072)
-  log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp}) 공격 선언${opts.noRest ? ' (레스트하지 않음)' : ''}`);
+  log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp ?? '-'}) 공격 선언${opts.noRest ? ' (레스트하지 않음)' : ''}`);
   return { ok: true, stack };
 }
 
@@ -5705,3 +5731,5 @@ export function setCounters(c, exact = false) {
 }
 // re-install the non-enumerable battle-array splice tracker (structuredClone/JSON drop it) and rebind the module's live-state pointer
 export function rebindState(state) { s7Bound(state); return trackLeaves(state); }
+// practice cheat helpers (src/practice.js drawer): raw stack creation without play/hatch triggers
+export function cheatMakeStack(state, cardId) { const st = makeStack(cardId, state.turnNumber); recomputeStackGrants(st); return st; }

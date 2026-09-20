@@ -163,7 +163,7 @@ export function judgeHand(model, idxs) {
   const hasLv3 = f.some(x => x.lv3), hasLow = f.some(x => x.lowDigi);
   const line = f.some(x => x.digi && (x.fromDigitama || f.some(y => y !== x && x.srcSet.has(y.id))));
   return {
-    lv3: hasLv3, lv2: f.some(x => x.lv2), noLow: !hasLow, blocker: f.some(x => x.blocker), line,
+    lineEgg: f.some(x => x.digi && x.fromDigitama), lv3: hasLv3, lv2: f.some(x => x.lv2), noLow: !hasLow, blocker: f.some(x => x.blocker), line,
     tamers: f.filter(x => x.tamer).length, options: f.filter(x => x.option).length,
     good: hasLv3 || hasLow,
   };
@@ -175,7 +175,7 @@ export function createBatch(deck, env, o = {}) {
   const N = model.ids.length, total = o.n || 10000, rng = o.rng || Math.random, handN = o.handSize || 5, turns = o.turns == null ? 3 : o.turns;
   const targetId = o.targetId || null;
   const arr = new Int32Array(Math.max(N, 1));
-  const acc = { n: 0, lv3: 0, lv2: 0, noLow: 0, blocker: 0, line: 0, tamers: 0, options: 0, good: 0, afterMull: 0, tgtOpen: 0, tgtTurns: 0 };
+  const acc = { n: 0, lv3: 0, lv2: 0, noLow: 0, blocker: 0, line: 0, lineEgg: 0, tamers: 0, options: 0, good: 0, afterMull: 0, tgtOpen: 0, tgtTurns: 0 };
   const hasTarget = (idxs) => targetId != null && idxs.some(i => model.ids[i] === targetId);
   const step = (k) => {
     if (N < handN) { acc.n = total; return true; }
@@ -184,7 +184,7 @@ export function createBatch(deck, env, o = {}) {
       drawIdx(rng, N, handN + turns, arr);
       const hand = Array.from(arr.subarray(0, handN)), seen = Array.from(arr.subarray(0, handN + turns));
       const r = judgeHand(model, hand);
-      if (r.lv3) acc.lv3++; if (r.lv2) acc.lv2++; if (r.noLow) acc.noLow++; if (r.blocker) acc.blocker++; if (r.line) acc.line++;
+      if (r.lv3) acc.lv3++; if (r.lv2) acc.lv2++; if (r.noLow) acc.noLow++; if (r.blocker) acc.blocker++; if (r.line) acc.line++; if (r.lineEgg) acc.lineEgg++;
       acc.tamers += r.tamers; acc.options += r.options;
       if (r.good) { acc.good++; acc.afterMull++; }
       else { drawIdx(rng, N, handN, arr); if (judgeHand(model, Array.from(arr.subarray(0, handN))).good) acc.afterMull++; } // mulligan the bad hand
@@ -194,7 +194,7 @@ export function createBatch(deck, env, o = {}) {
   };
   const result = () => {
     const n = Math.max(1, acc.n), p = (x) => x / n;
-    return { n: acc.n, total, pLv3: p(acc.lv3), pLv2: p(acc.lv2), pNoLow: p(acc.noLow), pBlocker: p(acc.blocker), pLine: p(acc.line),
+    return { n: acc.n, total, pLv3: p(acc.lv3), pLv2: p(acc.lv2), pNoLow: p(acc.noLow), pBlocker: p(acc.blocker), pLine: p(acc.line), pLineEgg: p(acc.lineEgg),
       avgTamers: acc.tamers / n, avgOptions: acc.options / n, pGood: p(acc.good), pGoodAfterMulligan: p(acc.afterMull), mulliganGain: p(acc.afterMull) - p(acc.good),
       pTargetOpen: p(acc.tgtOpen), pTargetTurns: p(acc.tgtTurns), hatchable: model.digN > 0 };
   };

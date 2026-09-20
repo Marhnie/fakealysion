@@ -83,10 +83,9 @@ export function createDeckAnalysis(ctx) {
   function bigHand(ids) { return h('div', { className: 'dt-hand' }, ids.map(id => ctx.cardChip(id, { art: ctx.artUrl(id), onClick: () => ctx.openPreview(id) }))); }
   function renderSample(box) {
     const d = ctx.getDraft();
-    const total = T.sumCounts(d.main);
     const kids = [];
     const act = (label, fn, cls = '', disabled = false) => h('button', { className: cls, disabled, onClick: () => { fn(); renderSample(box); } }, label);
-    const newS = () => { if (total < 6) { ctx.showToast('메인덱에 카드가 6장 이상 필요합니다'); return; } sample = T.sampleNew(d); };
+    const newS = () => { const dd = ctx.getDraft(); if (T.sumCounts(dd.main) < 6) { ctx.showToast('메인덱에 카드가 6장 이상 필요합니다'); return; } sample = T.sampleNew(dd); };
     if (!sample) kids.push(h('div', { className: 'actions-row' }, [act('🎲 새 샘플 핸드 뽑기', newS, 'primary')]));
     else {
       const s = sample;
@@ -103,7 +102,6 @@ export function createDeckAnalysis(ctx) {
       kids.push(h('details', { className: 'dt-hist' }, [h('summary', {}, `기록 (${s.history.length})`), ...s.history.map(t => h('div', { className: 'meta' }, t.replace(/[A-Z]{1,3}\d{0,2}-\d{1,3}/g, m => `${nm(m)}`)))]));
     }
     // batch
-    const model = T.buildSimModel(d, env);
     const cardIds = Object.keys(d.main);
     const sel = h('select', { className: 'db-scope', title: '특정 카드가 손패에 올 확률' }, [h('option', { value: '' }, '카드 지정 안 함'), ...cardIds.map(id => h('option', { value: id }, `${nm(id)} ×${d.main[id]}`))]);
     sel.value = cardIds.includes(batchTarget) ? batchTarget : '';
@@ -113,7 +111,9 @@ export function createDeckAnalysis(ctx) {
     const prog = h('div', { className: 'dt-prog', style: 'display:none' }, [h('div', { className: 'dt-prog-in' })]);
     const out = h('div', { className: 'dt-batch-out' });
     const runBtn = h('button', { className: 'primary', onClick: () => {
-      if (total < 6) { ctx.showToast('메인덱에 카드가 6장 이상 필요합니다'); return; }
+      const d = ctx.getDraft(); // (fresh: the deck may have changed since this panel was drawn)
+      if (T.sumCounts(d.main) < 6) { ctx.showToast('메인덱에 카드가 6장 이상 필요합니다'); return; }
+      const model = T.buildSimModel(d, env);
       const tok = ++batchTok; const N = Number(nSel.value);
       batch = T.createBatch(d, env, { n: N, targetId: sel.value || null, model });
       prog.style.display = ''; out.replaceChildren();
@@ -128,7 +128,6 @@ export function createDeckAnalysis(ctx) {
     kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위, 1회 멀리건 가정)', h('div', { className: 'actions-row' }, [nSel, sel, runBtn]), prog, out));
     box.replaceChildren(...kids);
     if (batchRes && batchRes.N && !out.firstChild && prog.style.display === 'none') renderBatch(out, batchRes, d);
-    void model;
   }
   function renderBatch(out, b, d) {
     const r = b.r, ex = (K, n) => T.hyperAtLeast(T.sumCounts(d.main), K, n, 1);
@@ -136,7 +135,8 @@ export function createDeckAnalysis(ctx) {
     const rows = [
       row('Lv.3 디지몬 1장 이상', r.pLv3, `디지타마 ${T.sumCounts(d.digitama)}장${r.hatchable ? ' (부화 가능)' : ' — 디지타마 없음!'}`),
       row('메인에 Lv.2 디지몬 1장 이상', r.pLv2),
-      row('진화 라인 조각 보유', r.pLine, '디지타마/손패 카드에서 진화 가능한 디지몬'),
+      row('디지타마에서 진화 가능한 디지몬 보유', r.pLineEgg, '부화 후 바로 이어지는 Lv.3'),
+      row('손패 안에서 진화 연결 (디지타마 포함)', r.pLine, '손패 카드끼리/디지타마로 이어지는 진화 쌍'),
       row('코스트 ≤3 디지몬 없음', r.pNoLow, '낮을수록 좋음'),
       row('블로커 1장 이상', r.pBlocker),
       row('키핑 가능 핸드', r.pGood, 'Lv.3 또는 코스트 ≤3 디지몬 포함'),
@@ -198,7 +198,7 @@ export function createDeckAnalysis(ctx) {
       const all = DB.loadSavedDecks(); let over = 0;
       for (const [k, v] of Object.entries(r.decks)) { if (all[k]) over++; all[k] = v; }
       DB.saveSavedDecks(all); ctx.refreshDeck();
-      msg.textContent = `덱 ${n}개 복원 완료 (같은 이름 ${over}개 덮어씀)${r.errors.length ? ` · 무시된 항목 ${r.errors.length}개` : ''}`;
+      msg.textContent = `덱 ${n}개 복원 완료 (같은 이름 ${over}개 덮어씀)${r.errors.length ? ` · 무시된 항목 ${r.errors.length}개` : ''}`; ctx.showToast(msg.textContent); // (the panel is redrawn after the deck list refresh)
     };
     const file = h('input', { type: 'file', accept: '.json,application/json' });
     file.addEventListener('change', () => { const f = file.files[0]; if (!f) return; f.text().then(t => { ta.value = t; msg.textContent = `파일 읽음: ${f.name} — 「복원」을 누르세요`; }); });
@@ -254,9 +254,8 @@ export function createDeckAnalysis(ctx) {
   // live update: cheap (only open panels, coalesced); sample hand & batch results are kept as they are
   function refresh() {
     clearTimeout(timer);
-    timer = setTimeout(() => { for (const key of ['stats', 'check', 'manage']) if (open[key]) sync(key); }, 120);
-    batchTok++; // an unfinished batch belongs to the previous deck
-    if (open.sample && bodies.sample.querySelector('.dt-prog') && bodies.sample.querySelector('.dt-prog').style.display !== 'none') sync('sample');
+    timer = setTimeout(() => { for (const key of ['stats', 'check', 'manage', 'sample']) if (open[key]) sync(key); }, 120);
+    batchTok++; batchRes = null; // an unfinished / finished batch belongs to the previous deck
   }
   return { el, refresh, renderSaved, openPanel: (k) => { open[k] = true; saveOpen(); sync(k); }, env };
 }

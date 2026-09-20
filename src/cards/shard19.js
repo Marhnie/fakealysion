@@ -182,7 +182,8 @@ sc('EX8-070::메인', async (ctx) => {
   if (!gone || !gone.length) return;
   for (const kw of ['충돌', '관통', '재기동']) S.grantKeyword(state, self, st.uid, kw, undefined, 'opponentTurn');
   S.modifyDP(state, self, st.uid, 3000, 'opponentTurn');
-  log(ctx, `${self} ${C(st.cardId).nameKo}: 《충돌》《관통》《재기동》 + DP +3000 (상대의 턴 종료까지; 「상대의 효과로 패/덱으로 되돌아가지 않는다」는 수동으로 적용)`);
+  S.grantShield(state, self, st.uid, { kinds: ['bounce'], until: state.activePlayer === self ? state.turnNumber + 1 : state.turnNumber }); // 상대의 효과로 패/덱으로 되돌아가지 않는다 (pass2-b8)
+  log(ctx, `${self} ${C(st.cardId).nameKo}: 《충돌》《관통》《재기동》 + DP +3000 + 상대의 효과로 패/덱으로 되돌아가지 않음 (상대의 턴 종료까지)`);
 });
 
 // BT20-098 애퍼리션 레기온: 상대의 트래시에서 디지몬 카드를 Lv. 합계 9가 되도록 덱 아래로 되돌리는 것으로, 자신의 트래시에서 「고스트형」이고 되돌린 카드와 같은 Lv.의 디지몬 카드 1장씩을 코스트 없이 등장. 등장한 디지몬은 상대의 턴 종료까지 《속공》《블로커》.
