@@ -272,3 +272,114 @@ D('EX3-065', '자신의 턴', '암룡형', { events: { digivolve: (state, hp, ho
   S.log(state, `${hp} 쿠리하라 히나를 레스트시켜 ${C(info.stack.cardId).nameKo}의 【등장 시】 효과를 발휘시킴`);
   return false;
 } }, skipTrigger: true });
+
+// ---- EX4 ----
+// EX4-011 카오스듀크몬 [트래시]【자신의 턴 종료 시】 진화원을 가진 「듀크몬」 포함 자신의 디지몬 1마리를 소멸시키는 것으로, 이 카드(트래시)를 코스트 없이 등장 (compiled as playing "a card from hand")
+sc('EX4-011::자신의 턴 종료 시', async (ctx) => {
+  const state = ctx.state, pl = state.players[ctx.self];
+  if (!pl.trash.includes('EX4-011')) return;
+  const cands = pl.battle.filter(s => isDigimon(s) && C(s.cardId).nameKo.includes('듀크몬') && s.sources.length > 0);
+  if (!cands.length) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '「듀크몬」을 포함하는 디지몬 1마리를 소멸시켜 트래시의 카오스듀크몬을 등장시킬까요?' }))) return;
+  const uid = cands.length === 1 ? cands[0].uid : await ctx.choose('pickStack', { player: ctx.self, uids: cands.map(s => s.uid), prompt: '소멸시킬 디지몬 선택' });
+  if (!uid) return;
+  S.deleteStack(state, ctx.self, uid, 'trash', 'ownEffect');
+  const ix = pl.trash.indexOf('EX4-011');
+  if (ix >= 0) S.playFreeFromZone(state, ctx.self, 'trash', ix, {});
+});
+// EX4-048 가이오몬 【자신의 턴 종료 시】 자신의 테이머가 있다면 이 디지몬을 패의 「가이오몬」 포함 등장 코스트 13 이상 카드 1장으로 진화 조건 무시·코스트 없이 진화 (the compiled script ALSO played a second card from hand)
+SCRIPTS['EX4-048::자신의 턴 종료 시'] = [{ op: 'condition', if: { hasTamer: true }, then: [{ op: 'evolveEffect', who: 'self', subject: { thisStack: true }, zone: 'hand', cardFilter: { nameAny: ['가이오몬'], costMin: 13, category: 'digimon' }, cost: { mode: 'free' }, ignoreCond: true, ignoreLevel: false }], else: [] }];
+// EX4-049 크레스가루몬 【진화 시】 1개: ·등장 코스트 합계 6까지 상대 디지몬을 덱 아래로 ·다른 디지몬을 그레이몬으로 무료 진화 ·조그레스 (option 1 was an empty "manual" branch)
+SCRIPTS['EX4-049::진화 시'] = [{ op: 'choice', prompt: '이하의 효과에서 1개를 골라 발휘한다', options: [
+  { label: '등장 코스트 합계 6까지 상대의 디지몬을 덱 아래로 되돌린다', then: [fn(async (ctx, R) => {
+    const opl = ctx.state.players[ctx.opp]; let left = 6, first = true;
+    for (;;) {
+      if (!opl.battle.some(s => isDigimon(s) && (C(s.cardId).cost || 0) <= left)) break;
+      if (!first && !(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `등장 코스트 합계 남은 ${left}: 상대 디지몬을 더 덱 아래로 되돌릴까요?` }))) break;
+      const before = new Map(opl.battle.map(s => [s.uid, C(s.cardId).cost || 0]));
+      await R.runOne({ op: 'returnToHandStripSources', target: 'opponent', n: 1, filter: { costMax: left }, requireSuspended: null, dest: 'deckBottom' }, ctx);
+      const gone = [...before.keys()].filter(u => !opl.battle.some(s => s.uid === u));
+      if (!gone.length) break;
+      left -= before.get(gone[0]); first = false;
+    }
+  })] },
+  { label: '다른 자신의 디지몬 1마리를 패의 「그레이몬」 포함 Lv.6 이하 디지몬으로 코스트 없이 진화', then: [{ op: 'evolveEffect', who: 'self', subject: { thisStack: false, other: true, desc: null, name: null }, zone: 'hand', cardFilter: { category: 'digimon', nameAny: ['그레이몬'], levelMax: 6 }, cost: { mode: 'free' }, ignoreCond: false, ignoreLevel: false }] },
+  { label: '이 디지몬과 다른 자신의 디지몬으로 조그레스 진화', then: [{ op: 'jogressEffect', who: 'self', partnerName: null, cardName: null }] },
+] }];
+// EX4-052 가짜 아구몬 박사 【자신의 턴】[턴에 1회] 상대의 디지몬이 소멸했을 때 패의 소멸한 디지몬과 같은 Lv.의 카드 1장을 파기하는 것으로 《2 드로우》 (was a manual cost + unconditional draw)
+D('EX4-052', '자신의 턴', '소멸했을 때', { limit: 1, events: { delete: (state, hp, holder, info) => { if (info.owner === hp || !isDigimon(info.stack)) return false; holder.s39DelLv = C(info.stack.cardId).level; return true; } } });
+sc('EX4-052::자신의 턴', async (ctx, R) => {
+  const st = me(ctx); if (!st) return; const pl = ctx.state.players[ctx.self];
+  const lv = st.s39DelLv; const idxs = pl.hand.map((id, i) => i).filter(i => C(pl.hand[i]).level != null && C(pl.hand[i]).level === lv);
+  if (!idxs.length) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `패의 Lv.${lv} 카드 1장을 파기하고 《2 드로우》할까요?` }))) return;
+  const ix = idxs.length === 1 ? idxs[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'hand', eligibleIdxs: idxs, prompt: `파기할 Lv.${lv} 카드 선택` });
+  if (ix == null) return;
+  S.trashFromHand(ctx.state, ctx.self, ix);
+  await R.runOne({ op: 'draw', who: 'self', n: 2 }, ctx);
+});
+// EX4-023 아구몬 박사 【상대의 턴】[턴에 1회] 상대의 디지몬이 등장했을 때 패의 그 디지몬과 같은 Lv.의 카드 1장을 오픈하는 것으로 그 카드를 시큐리티 위에 놓는다 (was a manual cost + manual noop)
+D('EX4-023', '상대의 턴', '오픈', { limit: 1, events: { play: (state, hp, holder, info) => { if (info.owner === hp || !isDigimon(info.stack)) return false; holder.s39PlayLv = C(info.stack.cardId).level; return true; } } });
+sc('EX4-023::상대의 턴', async (ctx) => {
+  const st = me(ctx); if (!st) return; const pl = ctx.state.players[ctx.self];
+  const lv = st.s39PlayLv; const idxs = pl.hand.map((id, i) => i).filter(i => C(pl.hand[i]).level != null && C(pl.hand[i]).level === lv);
+  if (!idxs.length) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `패의 Lv.${lv} 카드 1장을 오픈하여 시큐리티 위에 놓을까요?` }))) return;
+  const ix = idxs.length === 1 ? idxs[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'hand', eligibleIdxs: idxs, prompt: `오픈해서 시큐리티 위에 놓을 Lv.${lv} 카드 선택` });
+  if (ix == null) return;
+  const [id] = pl.hand.splice(ix, 1);
+  S.log(ctx.state, `${ctx.self} 패의 ${C(id).nameKo}을(를) 오픈`);
+  S.addToSecurity(ctx.state, ctx.self, id, 'top');
+});
+// EX4-058 레이브몬 【어택 종료 시】 진화원에 「조」/「새」/「병아리」 특징의 카드가 있는 이 디지몬을 소멸시키는 것으로, 다음 상대의 턴 종료 시 트래시의 「레이브몬」 1장을 코스트 없이 등장 (compiled: paid nothing and played immediately)
+sc('EX4-058::어택 종료 시', async (ctx) => {
+  const st = me(ctx), state = ctx.state; if (!st) return;
+  if (!srcCards(st).some(id => (C(id).types || []).some(t => ['조', '새', '병아리'].some(k => t.includes(k))))) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '이 디지몬을 소멸시키고 다음 상대의 턴 종료 시 트래시의 「레이브몬」을 등장시킬까요?' }))) return;
+  const owner = ctx.self, uid = st.uid;
+  S.deleteStack(state, owner, uid, 'trash', 'ownEffect');
+  if (state.players[owner].battle.some(s => s.uid === uid)) return; // the deletion was prevented
+  (state.endOfTurnEffects ||= []).push({ turnNumber: state.turnNumber + 1, player: owner, cardId: 'EX4-058', label: '트래시의 「레이브몬」 1장을 코스트 없이 등장', fn: () => {
+    const pl = state.players[owner]; const ix = pl.trash.findIndex(id => C(id).nameKo === '레이브몬');
+    if (ix >= 0) S.playFreeFromZone(state, owner, 'trash', ix, {});
+  } });
+});
+// EX4-064 한지호 【서로의 턴】 (테이머를 레스트한 뒤) 《1 드로우》. 그 디지몬이 효과로 소멸하고 있었다면 메모리 +1 (the memory was unconditional)
+sc('EX4-064::서로의 턴', async (ctx, R) => {
+  await R.runOne({ op: 'draw', who: 'self', n: 1 }, ctx);
+  const cause = ctx.trigger && ctx.trigger.evtCause;
+  if (cause === 'effect' || cause === 'ownEffect') await R.runOne({ op: 'gainMemory', who: 'self', n: 1 }, ctx);
+});
+// EX4-073 오메가몬 Alter-B 【어택 시】 진화원의 Lv.6 이상 카드 3장까지를 파기하는 것으로, 파기한 1장마다 [가장 등장 코스트가 낮은 상대 디지몬/테이머 1마리(명) 소멸]. 그 후 3장 파기했다면 상대 시큐리티 2장 파기 (was: one destroy + 2 security regardless of the count)
+sc('EX4-073::어택 시', async (ctx, R) => {
+  const st = me(ctx), state = ctx.state; if (!st) return;
+  const pred = (id) => (C(id).level || 0) >= 6;
+  const elig = st.sources.map((id, i) => i).filter(i => i >= S.fdCount(st) && pred(st.sources[i]));
+  const maxN = Math.min(3, elig.length); if (!maxN) return;
+  const k = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '진화원의 Lv.6 이상 카드를 몇 장 파기할까요? (0 = 발휘하지 않음)', options: ['0장', ...Array.from({ length: maxN }, (_, i) => `${i + 1}장`)] });
+  const n = k == null ? 0 : Math.min(maxN, k);
+  if (!n) return;
+  const idxs = await S.chooseSourceIdxs(state, ctx.self, st, n, ctx.choose, (id, i) => i >= S.fdCount(st) && pred(id));
+  const removed = S.trashEvoSources(state, ctx.self, st.uid, n, 'bottom', idxs);
+  for (let i = 0; i < removed.length; i++) await R.runOne({ op: 'destroy', target: 'opponent', mode: 'choose', anyKind: true, filter: { extreme: { stat: 'cost', dir: 'min' } } }, ctx);
+  if (removed.length >= 3) { await R.runOne({ op: 'removeSecurity', who: 'opponent', position: 'top' }, ctx); await R.runOne({ op: 'removeSecurity', who: 'opponent', position: 'top' }, ctx); }
+});
+// EX4-014 가오스몬 【자신의 턴】[턴에 1회] 「블루 플레어」 특징의 카드가 등장했을 때 《1 드로우》. 「트와일라잇」 특징의 카드가 등장했을 때 트래시의 디지크로스 조건 디지몬 1장을 패로 (two independent events were compiled into one script running both)
+D('EX4-014', '자신의 턴', '블루 플레어', { limit: 1, events: { play: (state, hp, holder, info) => info.owner === hp && !!info.stack && ((C(info.stack.cardId).types || []).includes('블루 플레어') || (C(info.stack.cardId).types || []).includes('트와일라잇')) } });
+sc('EX4-014::자신의 턴', async (ctx, R) => {
+  const uid = ctx.trigger && ctx.trigger.evt && ctx.trigger.evt.stackUid;
+  const st = uid && ctx.state.players[ctx.self].battle.find(s => s.uid === uid);
+  const types = st ? (C(st.cardId).types || []) : [];
+  if (types.includes('블루 플레어')) await R.runOne({ op: 'draw', who: 'self', n: 1 }, ctx);
+  if (types.includes('트와일라잇')) await R.runOne({ op: 'returnFromTrash', who: 'self', filter: { category: 'digimon', hasXros: true } }, ctx);
+});
+// EX4-061 매튜＆신태일 【자신의 턴】[턴에 1회] 자신의 디지몬이 진화했을 때 자신의 디지몬이 1마리 이하이고 그 디지몬이 「그레이몬」 포함 → 「파피몬」 / 「가루몬」 포함 → 「아구몬」 1장을 패/트래시에서 코스트 없이 등장 (unnamed/unconditional play)
+SCRIPTS['EX4-061::자신의 턴@1마리 이하'] = [fn(async (ctx, R) => {
+  const state = ctx.state, pl = state.players[ctx.self];
+  const digs = pl.battle.filter(s => isDigimon(s));
+  if (digs.length > 1 || !digs.length) return;
+  const nmz = C(digs[0].cardId).nameKo;
+  const want = nmz.includes('그레이몬') ? '파피몬' : nmz.includes('가루몬') ? '아구몬' : null;
+  if (!want) return;
+  await R.runOne({ op: 'playFree', who: 'self', zone: 'any', filter: { exactAny: [want] }, rested: false, noTriggers: false, optional: true }, ctx);
+})];

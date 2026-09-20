@@ -271,3 +271,43 @@ sc('EX7-037::진화 시@색이 서로 다른', async (ctx) => {
 });
 
 // (EX8-005/047/048/051 "이 카드가 특징으로 「광물형」/「광석형」을 가진 디지몬의 진화원에서 효과로 파기되었을 때": handled generically by state.js queueOwnDiscardTriggers)
+
+// EX8-015 메가로그라우몬 X항체 【진화 시】 상대의 턴 종료까지 이 디지몬은 패/덱으로 되돌아가지 않고, DP +3000. 그 후, 이 디지몬의 진화원에 「메가로그라우몬」/「X항체」가 있다면, DP 10000 이하의 상대의 디지몬 1마리를 소멸시킨다.
+// (compiled version dropped the protection + DP+3000 and only ran the conditional destroy)
+const oppTurnEnd = (state, p) => (state.activePlayer === p ? state.turnNumber + 1 : state.turnNumber);
+sc('EX8-015::진화 시', async (ctx, R) => {
+  const t = me(ctx); if (!t) return;
+  S.grantShield(ctx.state, ctx.self, t.uid, { kinds: ['bounce'], until: oppTurnEnd(ctx.state, ctx.self) });
+  await R.runOne({ op: 'modifyDP', target: 'self', thisStack: true, amount: 3000, duration: 'opponentTurn' }, ctx);
+  if (srcCards(t).some(id => S.cardNames(id).some(n => n === '메가로그라우몬' || n === 'X항체'))) await R.runOne({ op: 'destroy', target: 'opponent', mode: 'choose', filter: { dpMax: 10000 } }, ctx);
+});
+// EX8-043 메탈티라노몬 【등장 시】【진화 시】 디지몬 1마리를 레스트시킬 수 있다. 그 후, 이 디지몬이 레스트 상태라면, 상대의 디지몬 1마리를 《퇴화 1》하고, 상대의 턴 종료까지 이 디지몬은 상대의 효과로 패/덱으로 되돌아가지 않고, 《퇴화》의 효과를 받지 않는다.
+sc('EX8-043::등장 시', async (ctx, R) => {
+  await R.runOne({ op: 'rest', target: 'either' }, ctx);
+  const t = me(ctx); if (!t || !t.suspended) return;
+  await R.runOne({ op: 'retreat', target: 'opponent', n: 1 }, ctx);
+  S.grantShield(ctx.state, ctx.self, t.uid, { kinds: ['bounce', 'retreat'], until: oppTurnEnd(ctx.state, ctx.self) });
+});
+
+// EX8-065 류타로우 윌리엄스 【자신의 턴】 명칭에 「티라노몬」을 포함하는 자신의 디지몬이 어택했을 때, 이 테이머를 레스트시키는 것으로, 그 디지몬을 패의 명칭에 「티라노몬」을 포함하거나 특징으로 「공룡형」을 가진 디지몬 카드로 지불하는 진화 코스트 -1 하여 진화시킬 수 있다.
+// (the tamer rest is paid by the generic watcher; the remaining sentence was a manual noop)
+sc('EX8-065::자신의 턴', async (ctx, R) => {
+  const uid = ctx.trigger?.evtStackUid; if (!uid || !findStack(ctx.state, ctx.self, uid)) return;
+  await R.runOne({ op: 'evolveEffect', who: 'self', subject: { thisStack: true }, zone: 'hand', cardFilter: { category: 'digimon', anyOf: [{ nameAny: ['티라노몬'] }, { traitAny: ['공룡형'] }] }, cost: { mode: 'discount', n: 1 }, ignoreCond: false, ignoreLevel: false }, { ...ctx, sourceStackUid: uid });
+});
+// EX8-067 클로즈 【자신의 턴】 자신의 디지몬이 특징으로 「광물형」/「광석형」을 가진 디지몬으로 진화했을 때, 이 테이머를 레스트시키는 것으로, 자신의 트래시에서 특징으로 「광물형」/「광석형」을 가진 카드 2장까지를 그 디지몬의 진화원 아래에 놓는다.
+sc('EX8-067::자신의 턴', async (ctx) => {
+  const { state, self } = ctx; const uid = ctx.trigger?.evtStackUid; const t = uid && findStack(state, self, uid); if (!t) return;
+  const pl = state.players[self];
+  for (let k = 0; k < 2; k++) {
+    const idxs = pl.trash.map((id, i) => i).filter(i => hasTr(pl.trash[i], '광물형', '광석형'));
+    if (!idxs.length) break;
+    const i = await ctx.choose('pickFromZoneIndex', { player: self, zone: 'trash', eligibleIdxs: idxs, prompt: `그 디지몬의 진화원 아래에 놓을 카드 선택 (${k + 1}/2, 취소=종료)` });
+    if (i == null) break;
+    const [id] = pl.trash.splice(i, 1);
+    t.sources.splice(S.fdCount(t), 0, id);
+    S.recomputeStackGrants(t);
+    S.log(state, `${self} ${C(id).nameKo}을(를) ${C(t.cardId).nameKo}의 진화원 아래에 놓음`);
+    S.emitGameEvent(state, 'sourcesAdded', { owner: self, stack: t, cause: 'effect', added: [id], srcPlayer: self });
+  }
+});

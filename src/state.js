@@ -426,8 +426,8 @@ export function parseWatcherTrigger(body) {
       isTamer = mm[5] === '테이머'; anyKind = /\/|또는/.test(mm[5]); // 「디지몬/테이머」: either kind
       const desc = mm[1].replace(/다른\s*$/, (x) => { other = true; return ''; }).trim();
       if (desc) { const pr = evoTargetPredicate(desc); if (!pr) return null; subjPred = (c) => pr(c); }
-    } else if ((mm = rest.match(/^(다른\s*)?자신의\s*「([^」]+)」$/))) {
-      who = 'own'; anyKind = true; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => cardNameIs(c, nm); // b10: a bare quoted name may be a Digimon OR a Tamer (EX3-005/047 「쿠리하라 히나」)
+    } else if ((mm = rest.match(/^(다른\s*)?자신의\s*((?:「[^」]+」\s*(?:\/|또는)?\s*)+)$/))) { // (b10: 「A」/「B」 name alternatives — EX4-061)
+      who = 'own'; anyKind = true; if (mm[1]) other = true; const nms = [...mm[2].matchAll(/「([^」]+)」/g)].map(x => x[1]); subjPred = (c) => nms.some(n => cardNameIs(c, n)); // b10: a bare quoted name may be a Digimon OR a Tamer (EX3-005/047 「쿠리하라 히나」)
     } else if ((mm = rest.match(/^(다른\s*)?「([^」]+)」$/))) {
       who = 'any'; anyKind = true; if (mm[1]) other = true; const nm = mm[2]; subjPred = (c) => c.nameKo.includes(nm);
     } else if (/^(다른\s*)?디지몬$/.test(rest)) {
@@ -2381,6 +2381,8 @@ function evoTargetPredicate(desc) {
       const list = quoted(m[1]);
       cons.push(t => list.some(x => cardMentions(t, x)));
     }
+    if ((m = c.match(/[《≪]\s*([^》≫]+?)\s*[》≫]\s*(?:이|가)\s*기술되어/))) { const kwn = m[1].replace(/\s+/g, ''); cons.push(t => `${t.effectKo || ''}\n${t.inheritedKo || ''}`.replace(/\s+/g, '').includes(`《${kwn}`)); } // batch4: "《세이브》가 기술되어 있는 Lv.N" (BT12: ~20 cards) — the keyword-mention clause was ignored, leaving only the level
+    if ((m = c.match(/[《≪]\s*([^》≫]+?)\s*[》≫]\s*(?:이|가)\s*기술되어/))) { const kwn = m[1].replace(/\s+/g, ''); cons.push(t => `${t.effectKo || ''}\n${t.inheritedKo || ''}`.replace(/\s+/g, '').includes(`《${kwn}`)); } // batch4: "《세이브》가 기술되어 있는 Lv.N" (BT12: ~20 cards) — the keyword-mention clause was ignored, leaving only the level
     const stripped = c.replace(/특징(?:으로|에|은)?\s*(?:「[^」]+」\/?)+/g, '').replace(/명칭에\s*(?:「[^」]+」\/?)+/g, '');
     if ((m = stripped.match(new RegExp(String.raw`((?:${COLOR_WORD})(?:\/(?:${COLOR_WORD}))*)\s*(?:인|의|을\s*포함하는|를\s*포함하는)`)))) {
       const cols = m[1].split('/').map(x => KOR_COLOR_NAME[x]);
@@ -3403,6 +3405,19 @@ export function fuseStacks(state, p, uidA, uidB, newCardId, cost, source = 'hand
   noteDigivolved(state, p);
   queueTriggersForStack(state, p, fused, 'digivolve');
   emitGameEvent(state, 'digivolve', { owner: p, stack: fused, cause: null }); // b6: 「자신의 디지몬이 …로 진화했을 때」 watchers (BT16-084/085/088 …) also see a 조그레스 진화 (only the plain-digivolve path emitted it)
+  // batch4 (BT12-022/050 …): a MATERIAL's own printed "【자신의 턴】 이 디지몬이 <조건> 디지몬 카드로 조그레스 진화할 때, <효과>" (the material is now a source, so no ordinary trigger sees it)
+  for (const mat of [a, b]) {
+    if (!card(mat.cardId).effectKo || !card(mat.cardId).effectKo.includes('조그레스 진화할 때')) continue;
+    for (const seg of parseEffectSegments(card(mat.cardId).effectKo).segments) {
+      if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+      if (!(seg.tags[0] === '서로의 턴' || (seg.tags[0] === '자신의 턴') === (state.activePlayer === p))) continue;
+      const jm = seg.body.trim().match(/^이\s*디지몬이\s*(.*?)\s*(?:디지몬\s*)?카드로\s*조그레스\s*진화할\s*때,?\s*(.+)$/s);
+      if (!jm) continue;
+      const pr = evoTargetPredicate(jm[1].trim()); if (jm[1].trim() && !pr) continue;
+      if (pr && !pr(card(newCardId))) continue;
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: mat.cardId, stackUid: fused.uid, tags: seg.tags, text: jm[2].trim(), resolved: false, watcher: true, topId: fused.cardId });
+    }
+  }
   return fused;
 }
 
@@ -3450,11 +3465,7 @@ export function burstEvolve(state, p, stackUid, cardId, cost, tamerUid, source =
   if (!evolved) return null;
   evolved.viaBurst = true;
   const uid = evolved.uid;
-  scheduleEndOfTurn(state, () => {
-    const s = state.players[p].battle.find(x => x.uid === uid);
-    if (!s || !s.sources.length || card(s.sources[s.sources.length - 1]).category !== 'digimon') return;
-    trashEvoSources(state, p, uid, 1, 'top');
-  }, { player: p, cardId, label: '버스트 진화한 턴 종료 시, 진화원 위에서 1장 파기' });
+  scheduleEndOfTurn(state, burstEotFn(state, p, uid), { player: p, cardId, label: '버스트 진화한 턴 종료 시, 진화원 위에서 1장 파기', desc: { kind: 'burst', p, uid } });
   return evolved;
 }
 
@@ -5143,6 +5154,14 @@ function contGrantCond(cond) {
     const kinds = [m[3], m[4]].filter(Boolean).map(k => (k === '테이머' ? 'tamer' : 'digimon')), other = !!m[2];
     return (st, p, stack) => st.players[p].battle.some(x => (!other || x !== stack) && kinds.includes(card(x.cardId).category) && pr(card(x.cardId)));
   }
+  // batch4 (BT12-060/064 …): "《세이브》가 기술되어 있는 [이 디지몬은]" — the CURRENT top card's printed text mentions the token
+  if ((m = c.match(/^(?:「([^」]+)」|[《≪]([^》≫]+)[》≫])(?:이|가)\s*기술되어\s*있는$/))) { const tok = m[1] || m[2]; return (st, p, stack) => (card(stack.cardId).effectKo || '').includes(tok); }
+  // batch4 (BT10-049/060, BT11-080 …): "<조건> 자신의 [다른] 디지몬 또는 테이머가 있는 동안" / "옐로인 자신의 디지몬/ 테이머가 있는 동안" (either kind, "다른" excludes this stack)
+  if ((m = c.match(/^(.*?)\s*자신의\s*(다른\s*)?(디지몬|테이머)(?:\s*(?:또는|\/)\s*(디지몬|테이머))?(?:이|가)\s*있(?:는\s*동안|을\s*때)$/)) && (m[2] || m[4])) {
+    const pr = evoTargetPredicate(m[1].trim()); if (!pr) return null;
+    const kinds = [m[3], m[4]].filter(Boolean).map(k => (k === '테이머' ? 'tamer' : 'digimon')), other = !!m[2];
+    return (st, p, stack) => st.players[p].battle.some(x => (!other || x !== stack) && kinds.includes(card(x.cardId).category) && pr(card(x.cardId)));
+  }
   // own board with a descriptor: "레드인 자신의 디지몬이 있는 동안", "블루인 자신의 테이머가 있을 때"
   if ((m = c.match(/^(.+?)\s*자신의\s*(디지몬|테이머)(?:이|가)\s*있(?:는\s*동안|을\s*때)$/)) && m[1].trim()) {
     const pr = evoTargetPredicate(m[1].trim()), kind = m[2] === '테이머' ? 'tamer' : 'digimon';
@@ -5660,3 +5679,28 @@ function queueOwnDiscardTriggers(state, kind, info) {
     }
   }
 }
+
+// ---- snapshot / save-game support (src/snapshot.js, src/savegame.js) ----
+// Held end-of-turn entries carry a serializable `desc` so a saved game can rebuild their closures: EOT_REBUILD[kind](state, desc, entry) -> fn.
+function burstEotFn(state, p, uid) {
+  return () => {
+    const s = state.players[p].battle.find(x => x.uid === uid);
+    if (!s || !s.sources.length || card(s.sources[s.sources.length - 1]).category !== 'digimon') return;
+    trashEvoSources(state, p, uid, 1, 'top');
+  };
+}
+export const EOT_REBUILD = {
+  memory: (state, d) => () => grantMemory(state, d.player, -d.n),
+  burst: (state, d) => burstEotFn(state, d.p, d.uid),
+};
+// module-level counters that are part of the game (uids etc.); exact=true restores them verbatim (tests), else they only ever grow.
+export function getCounters() { return { uid: uidCounter, pend: pendingUid, fx: fxSeq, ts: TS_COUNTER }; }
+export function setCounters(c, exact = false) {
+  if (!c) return;
+  uidCounter = exact ? c.uid : Math.max(uidCounter, c.uid);
+  pendingUid = exact ? c.pend : Math.max(pendingUid, c.pend);
+  TS_COUNTER = exact ? c.ts : Math.max(TS_COUNTER, c.ts);
+  fxSeq = Math.max(fxSeq, c.fx);
+}
+// re-install the non-enumerable battle-array splice tracker (structuredClone/JSON drop it) and rebind the module's live-state pointer
+export function rebindState(state) { s7Bound(state); return trackLeaves(state); }

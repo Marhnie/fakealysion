@@ -221,3 +221,55 @@ for (const id of ['BT9-029', 'BT9-042', 'BT9-054']) sc(id + '::메인', async (c
 
 // BT9-059 테이파몬 (inherited, 【서로의 턴】) 이 디지몬이 2색 이상인 동안 이 디지몬을 DP+1000 (color-count condition not parsed generically)
 (HOOKS['BT9-059'] ||= []).push({ tag: '서로의 턴', has: '2색 이상인 동안', src: 'inheritedKo', dp: (state, hp, holder, target, tp) => (target === holder && tp === hp && S.stackColors(holder).length >= 2 ? 1000 : 0) });
+
+// ---- BT9 tamers whose trigger phrase uses "A 또는 B인 …" (the generic watcher parser skips alternatives): event hooks + explicit scripts ----
+const colorsAny = (stack, ...cols) => S.stackColors(stack).some(c => cols.includes(c));
+const restThen = (then) => [{ op: 'costGroup', cost: [{ op: 'restStack' }], then }];
+// BT9-084 신태일&신나리 【자신의 턴】 레드 또는 옐로인 자신의 디지몬이 어택했을 때, 이 테이머를 레스트시키는 것으로, 이 턴 동안 상대의 시큐리티 디지몬 전부를 DP-2000
+(HOOKS['BT9-084'] ||= []).push({ tag: '자신의 턴', has: '레드 또는 옐로인 자신의 디지몬이 어택했을 때', src: 'effectKo', events: { attack: (state, hp, holder, info) => info.owner === hp && isDig(info.stack) && colorsAny(info.stack, 'red', 'yellow') } });
+SCRIPTS['BT9-084::자신의 턴@어택했을 때'] = restThen([{ op: 'securityDPMod', target: 'opponent', amount: -2000, duration: 'turn' }]);
+// BT9-086 이청솔 【자신의 턴】 명칭에 「젤리몬」을 포함하거나 Lv.5 이상인 자신의 디지몬이 어택했을 때, 자신의 패가 7장 이하라면 이 테이머를 레스트시키는 것으로 《1 드로우》
+(HOOKS['BT9-086'] ||= []).push({ tag: '자신의 턴', has: '젤리몬」을 포함하거나', src: 'effectKo', events: { attack: (state, hp, holder, info) => info.owner === hp && isDig(info.stack) && (S.cardNameHas(info.stack.cardId, '젤리몬') || (C(info.stack.cardId).level || 0) >= 5) } });
+sc('BT9-086::자신의 턴@어택했을 때', async (ctx, R) => {
+  if (ctx.state.players[ctx.self].hand.length > 7) return;
+  await R.runScript(restThen([{ op: 'draw', who: 'self', n: 1 }]), ctx);
+});
+// BT9-087 리키&장한솔 【자신의 턴】 자신의 디지몬이 옐로 또는 그린인 디지몬으로 진화했을 때, 이 테이머를 레스트시키는 것으로, 다음 상대의 턴 종료까지 상대 디지몬 1마리를 DP-1000
+(HOOKS['BT9-087'] ||= []).push({ tag: '자신의 턴', has: '옐로 또는 그린인 디지몬으로 진화했을 때', src: 'effectKo', events: { digivolve: (state, hp, holder, info) => info.owner === hp && isDig(info.stack) && colorsAny(info.stack, 'yellow', 'green') } });
+SCRIPTS['BT9-087::자신의 턴@진화했을 때'] = restThen([{ op: 'modifyDP', target: 'opponent', amount: -1000, duration: 'nextOpponentTurn' }]);
+
+// BT9-075/078/081 【진화 시】 이 디지몬의 진화원에 「X」가 있거나, 트래시에서 진화하고 있었을 때, … — the "트래시에서 진화하고 있었을 때" half was a manual yes/no prompt; now auto (stack.byEffect.from === 'trash')
+const srcOrTrashEvo = (name) => (ctx) => { const st = me(ctx); return !!st && (st.sources.some(id => S.cardNameIs(id, name)) || st.byEffect?.from === 'trash'); };
+sc('BT9-075::진화 시@트래시에서 진화하고 있었을 때', async (ctx, R) => {
+  if (!srcOrTrashEvo('도루가몬')(ctx)) return;
+  const digs = ctx.state.players[ctx.self].battle.filter(isDig); if (!digs.length) return;
+  const uid = digs.length === 1 ? digs[0].uid : await ctx.choose('pickStack', { player: ctx.self, uids: digs.map(s => s.uid), prompt: '《블로커》와 《길동무》를 얻을 자신의 디지몬 선택' });
+  if (!uid) return;
+  S.grantKeyword(ctx.state, ctx.self, uid, '블로커', true, 'nextOpponentTurn');
+  S.grantKeyword(ctx.state, ctx.self, uid, '길동무', true, 'nextOpponentTurn');
+});
+sc('BT9-078::진화 시@트래시에서 진화하고 있었을 때', async (ctx, R) => {
+  if (!srcOrTrashEvo('도루그레몬')(ctx)) return;
+  await R.runScript(R.compileToScript('Lv.4 이하의 상대 디지몬 1마리를 소멸시킨다.'), ctx);
+});
+sc('BT9-081::진화 시@트래시에서 진화하고 있었을 때', async (ctx, R) => {
+  if (!srcOrTrashEvo('도루고라몬')(ctx)) return;
+  await R.runScript(R.compileToScript('가장 Lv.이 낮은 상대 디지몬 전부를 소멸시킨다.'), ctx);
+});
+
+// BT9-074 메이쿠몬 (inherited) 【소멸 시】 이 디지몬이 2색 이상이었을 때, 메모리+2 (the color gate was dropped; uses the deleted stack's top card)
+sc('BT9-074::소멸 시', async (ctx) => {
+  const info = ctx.state.deletedInfo && ctx.state.deletedInfo[ctx.sourceStackUid];
+  const cols = info ? C(info.cardId).colors || [] : [];
+  if (cols.length >= 2) S.grantMemory(ctx.state, ctx.self, 2, ctx.sourceCardId);
+});
+// BT9-080 라구엘몬 【등장 시】 트래시의 퍼플 또는 옐로 DP6000 이하 디지몬 1장을 코스트 없이 등장. 시큐리티가 1장 이하일 때, 대신 트래시(문맥)의 「천사형」/「타천사형」 Lv.6 이하 1장을 등장시킬 수 있다 (the replacement pulled from HAND)
+sc('BT9-080::등장 시', async (ctx, R) => {
+  if (ctx.state.players[ctx.self].security.length <= 1) {
+    await R.runOne({ op: 'playFree', who: 'self', zone: 'trash', filter: { category: 'digimon', traitAny: ['천사형', '타천사형'], levelMax: 6 }, rested: false, noTriggers: false, optional: true }, ctx);
+    return;
+  }
+  await R.runScript(R.compileToScript('자신의 트래시에서 퍼플 또는 옐로인 DP 6000 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킨다.'), ctx);
+});
+// BT9-112 데크스몬 이 카드가 등장할 때, 상대 디지몬과 테이머 1장마다 지불하는 등장 코스트 -3 (from hand)
+(HOOKS['BT9-112'] ||= []).push({ selfPlayDiscount: (state, p) => -3 * state.players[opp(p)].battle.filter(s => isDig(s) || C(s.cardId).category === 'tamer').length });

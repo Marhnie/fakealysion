@@ -602,3 +602,49 @@ button.jg-btn.jg-none { opacity: 0.6; }
 @media (max-width: 900px), (pointer: coarse) { .breed-bar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); } .breed-btn { min-height: 56px; font-size: 16px; flex-basis: 100%; } .breed-key { display: none; } #app.breeding-bar-on .board { padding-bottom: 260px; } }
 #app.breeding-bar-on .fx-chip { bottom: auto; top: 8px; right: 8px; left: auto; z-index: 46; } /* keep the effect chip off the breeding bar */
 @media (max-width: 900px), (pointer: coarse) { .breed-btn { min-height: 48px; font-size: 15px; } .breed-title { font-size: 14px; } .breed-reason { font-size: 12px; } }
+
+/* ---- deck analysis panels (decktools-ui.js) ---- */
+.dt-root { margin-top: 10px; }
+.dt-head { display: block; width: 100%; text-align: left; margin-top: 4px; }
+.dt-head.on { border-color: var(--accent); }
+.dt-body { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 2px 0 6px; background: rgba(0,0,0,0.2); font-size: 12px; }
+.dt-sect { margin: 6px 0 10px; }
+.dt-barrow { display: flex; align-items: center; gap: 6px; margin: 1px 0; }
+.dt-bl { width: 64px; flex: none; color: var(--muted); font-size: 11px; }
+.dt-track { flex: 1; display: flex; height: 10px; background: rgba(255,255,255,0.07); border-radius: 5px; overflow: hidden; min-width: 40px; }
+.dt-fill { display: block; height: 100%; background: var(--accent); }
+.dt-bn { width: 44px; flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+.dt-chip { display: inline-block; padding: 1px 7px; border: 1px solid var(--border); border-radius: 10px; font-size: 11px; margin: 1px 0; }
+.dt-link { background: none; border: 0; padding: 0 2px; min-height: 0 !important; color: var(--accent); text-decoration: underline; cursor: pointer; font-size: 12px; }
+.dt-evo { margin: 2px 0; line-height: 1.5; } .dt-evo.bad { color: var(--danger); } .dt-evo.warn { color: #e6c94a; }
+.dt-evo-src { color: var(--muted); }
+.dt-issue { border-left: 4px solid var(--border); padding: 4px 8px; margin: 4px 0; background: rgba(255,255,255,0.03); cursor: pointer; border-radius: 0 6px 6px 0; }
+.dt-issue.error { border-left-color: var(--danger); } .dt-issue.warn { border-left-color: #e6c94a; } .dt-issue.info { border-left-color: var(--accent); }
+.dt-issue:hover, .dt-issue:focus { background: rgba(255,255,255,0.08); }
+.dt-issue-t { font-weight: 700; } .dt-issue-w { color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.dt-hand { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.dt-hand .card-chip { width: 104px; transform: none !important; }
+.dt-hand .card-chip:hover { transform: translateY(-4px) !important; }
+.dt-prog { height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; margin: 4px 0; }
+.dt-prog-in { height: 100%; width: 0; background: var(--ok); }
+.dt-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+.dt-table td { padding: 2px 4px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: middle; }
+.dt-table td.num { text-align: right; font-variant-numeric: tabular-nums; width: 52px; }
+.dt-table td:nth-child(3) { width: 30%; }
+.dt-saved { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 3px 0; }
+.dt-saved-name { font-weight: 700; word-break: break-all; }
+.dt-saved button { padding: 2px 6px; min-height: 0; }
+.dt-line { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+.dt-line-ctl { display: flex; gap: 2px; } .dt-line-ctl button { padding: 0 6px; min-height: 0 !important; line-height: 20px; font-size: 12px; }
+.dt-drow.add b { color: var(--ok); } .dt-drow.del b { color: var(--danger); }
+.dt-idfilter { flex: 1 0 100%; padding: 4px 8px; background: rgba(78,168,222,0.15); border: 1px solid var(--accent); border-radius: 6px; font-size: 12px; }
+@media (max-width: 900px), (pointer: coarse) { .dt-hand .card-chip { width: 64px; } .dt-bl { width: 52px; } .dt-line-ctl button { min-width: 26px; min-height: 26px !important; } }
+#db-print { display: none; }
+@media print {
+  body > *:not(#db-print) { display: none !important; }
+  #db-print { display: block !important; color: #000; background: #fff; font: 12px/1.4 sans-serif; padding: 8px; }
+  #db-print h2 { margin: 0 0 4px; } #db-print h3 { margin: 10px 0 2px; }
+  .pr-table { border-collapse: collapse; width: 100%; } .pr-table td { border-bottom: 1px solid #ccc; padding: 2px 4px; }
+  .pr-img { height: 48px; }
+  html, body { background: #fff !important; }
+}

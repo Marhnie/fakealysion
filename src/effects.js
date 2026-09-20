@@ -923,6 +923,7 @@ async function runOneCore(instr, ctx) {
       break;
     }
     case 'playThisFree': { // this card (revealed by a security check / sitting in the trash) enters the battle area for free
+      if (instr.optional && !(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '이 카드를 코스트를 지불하지 않고 등장시킬까요?' }))) break;
       S.playThisFreeFromTrash(state, ctx.self, ctx.sourceCardId);
       break;
     }
@@ -976,7 +977,7 @@ async function runOneCore(instr, ctx) {
       const ref = resolveLast(ctx);
       const turnNumber = instr.when === 'opp' ? (state.activePlayer === ctx.self ? state.turnNumber + 1 : state.turnNumber) : state.turnNumber;
       const c2 = { ...ctx, _lastPick: ref || undefined, _fxWrapped: true };
-      (state.endOfTurnEffects ||= []).push({ turnNumber, player: ctx.self, cardId: ctx.sourceCardId, label: instr.when === 'opp' ? '다음 상대의 턴 종료 시 예약 효과' : '이 턴 종료 시 예약 효과', fn: () => { runScript(instr.then, c2).catch(() => {}); } });
+      (state.endOfTurnEffects ||= []).push({ turnNumber, player: ctx.self, cardId: ctx.sourceCardId, label: instr.when === 'opp' ? '다음 상대의 턴 종료 시 예약 효과' : '이 턴 종료 시 예약 효과', desc: { kind: 'script', then: instr.then, player: ctx.self, cardId: ctx.sourceCardId, stackUid: ctx.sourceStackUid }, fn: () => { runScript(instr.then, c2).catch(() => {}); } });
       S.log(state, `${ctx.self} 예약: ${instr.when === 'opp' ? '다음 상대의 턴' : '이 턴'} 종료 시 효과`);
       break;
     }
@@ -1799,7 +1800,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'memoryBorrowAndRepay':
       S.grantMemory(state, ctx.self, instr.n, ctx.sourceCardId);
-      S.scheduleEndOfTurn(state, () => S.grantMemory(state, ctx.self, -instr.n), { player: ctx.self, cardId: ctx.sourceCardId, label: `이 턴 종료 시 메모리 -${instr.n}` });
+      S.scheduleEndOfTurn(state, () => S.grantMemory(state, ctx.self, -instr.n), { player: ctx.self, cardId: ctx.sourceCardId, label: `이 턴 종료 시 메모리 -${instr.n}`, desc: { kind: 'memory', player: ctx.self, n: instr.n } });
       break;
     case 'setMemoryIfLE': {
       const val = ctx.self === 'p1' ? state.memory : -state.memory;
@@ -1993,8 +1994,6 @@ function parsePickGroups(desc) {
   let descs = [desc];
   const cm = desc.match(new RegExp(`(${COLOR_WORD}(?:\\s*(?:와|과)\\s*${COLOR_WORD})+)(인|의)`));
   if (cm) descs = cm[1].split(/\s*(?:와|과)\s*/).map(c => desc.replace(cm[0], c + cm[2]));
-  const lm = desc.match(/(Lv\.\d+(?:\s*(?:와|과)\s*Lv\.\d+)+)(인|의)/); // "Lv.5와 Lv.6의 디지몬 카드 1장씩" -> one criterion per level
-  if (lm) descs = lm[1].split(/\s*(?:와|과)\s*/).map(c => desc.replace(lm[0], c + lm[2]));
   const groups = [];
   for (const dd of descs) {
     const parts = dd.split(/(?<=」|카드|장|씩)\s*(?:과|와|,)\s*(?=\S)/).map(x => x.trim()).filter(Boolean);
@@ -2004,68 +2003,12 @@ function parsePickGroups(desc) {
       const dsc = (gm ? gm[1] : pt).trim(), max = gm ? Number(gm[2]) : 1;
       let f;
       if (/^(?:「[^」]+」\s*(?:\/|또는)?\s*)+$/.test(dsc)) f = { exactAny: [...dsc.matchAll(/「([^」]+)」/g)].map(x => x[1]) };
-      else f = criterionFilter(dsc);
-      groups.push({ ...(Object.keys(f).length ? { filter: f } : {}), max, label: dsc.replace(/^[,\s]+/, '').trim() || '카드' });
+      else f = strictCardFilter(dsc);
+      if (!f) return null;
+      groups.push({ ...(Object.keys(f).length ? { filter: f } : {}), max, label: dsc.replace(/\s*카드$/, '') || '카드' });
     }
   }
   return groups.length ? groups : null;
-}
-// verify-reveal-1: re-reads the whole "덱 위에서부터 N장 오픈한다. 그중 … " text of a compiled revealTop and fills in what the first pass can't:
-//   per-clause destinations (패에 추가 / 파기 / 코스트 없이 등장 / 이 디지몬(으로부터) 진화 / 코스트 없이 사용 / 진화원·테이머 아래 / 시큐리티 위), 「전부」, "상대 디지몬 1마리마다",
-//   "그 카드가 <조건>일 때 …", and where the rest goes (파기 / 패에 추가 / 덱 위·아래). A clause it can't read leaves the first-pass result untouched.
-function refineRevealTop(t, ins) {
-  const T = t.replace(/\([^()]*\)/g, '');
-  const sents = splitSentences(T);
-  if (/상대\s*디지몬\s*1\s*마리마다,?\s*자신의\s*덱/.test(T)) ins.nMulOpp = true;
-  const rIdx = sents.findIndex(x => /(?:남은\s*카드|나머지|오픈한\s*카드)(?:는|를|을)/.test(x));
-  if (rIdx >= 0) {
-    const r = sents[rIdx];
-    ins.restTo = /파기한다/.test(r) ? 'trash' : /패에\s*추가한다/.test(r) ? 'hand' : /덱(?:\s*의)?\s*위(?:\s*또는|나)\s*(?:덱(?:\s*의)?\s*)?아래/.test(r) ? 'either' : /덱(?:\s*의)?\s*위(?:로|에)/.test(r) ? 'top' : 'bottom';
-  }
-  const P = sents.find(x => /그\s*중|그\s*카드가/.test(x));
-  if (!P || /^자신의\s*디지몬\s*1\s*마리는/.test(P.trim()) || /합계/.test(P)) return;
-  const noTrig = /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(T);
-  const mkGroups = (desc) => {
-    desc = desc.trim().replace(/^[,\s]+/, '');
-    if (/전부$/.test(desc)) { const d = desc.replace(/\s*전부$/, ''); const fl = criterionFilter(d); return [{ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 99, all: true, label: d }]; }
-    if (/^\d+\s*장(?:까지)?씩?$/.test(desc)) return [{ max: Number(desc.match(/\d+/)[0]), label: '카드' }];
-    return parsePickGroups(desc);
-  };
-  const gs = [];
-  let mm;
-  if ((mm = P.match(/^그\s*카드가\s*(.*?)\s*(?:이)?(?:라면|다면|일\s*때|일\s*경우),?\s*(.*?)[.。]?$/s))) { // top-1 reveal: only a matching card may be taken / played
-    const fl = criterionFilter(mm[1]);
-    const play = /등장/.test(mm[2]);
-    if (!play && !/패(?:에|로)\s*추가/.test(mm[2])) return;
-    gs.push({ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 1, dest: play ? 'play' : 'hand', label: mm[1], ...(play ? { rested: /레스트\s*상태로/.test(mm[2]), noTriggers: noTrig } : {}) });
-  } else {
-    const body = P.replace(/^.*?그\s*중(?:에서|에)?\s*/, '').replace(/[.。]\s*$/, '').replace(/(?:을|를)\s*전부\s+(?=파기|패에)/g, ' 전부를 '); // "테이머 카드를 전부 파기한다" -> "… 전부를 파기한다"
-    const clauses = body.split(/(?<=추가한다|추가하고|파기한다|파기하고|등장시킬\s*수\s*있다|등장시킨다|진화할\s*수\s*있다|사용할\s*수\s*있다|놓는다|둔다)\s*,?\s*(?=\S)/).map(x => x.trim()).filter(Boolean);
-    for (const c of clauses) {
-      let dest, gg, ex = {};
-      if ((mm = c.match(/^(.*?)\s*(\d+)\s*장(?:까지)?(?:에|으로|로),?\s*(이\s*디지몬|어택한\s*디지몬|자신의\s*디지몬\s*1\s*마리)(?:에서|으로부터|을|를)?\s*코스트를?\s*지불하지\s*않고\s*진화할\s*수\s*있다$/s))) { dest = 'evolve'; gg = mkGroups(mm[1] + ' ' + mm[2] + '장'); ex = { evoTarget: /^이/.test(mm[3]) ? 'this' : /^어택/.test(mm[3]) ? 'attacker' : 'any' }; }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*패(?:에|로)\s*추가(?:한다|하고)$/s))) { dest = 'hand'; gg = mkGroups(mm[1]); }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*파기(?:한다|하고)$/s))) { dest = 'trash'; gg = mkGroups(mm[1]); }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*,?\s*(레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고\s*(레스트\s*상태로\s*)?등장(?:시킬\s*수\s*있다|시킨다)$/s))) { dest = 'play'; gg = mkGroups(mm[1]); ex = { rested: !!(mm[2] || mm[3]), noTriggers: noTrig }; }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*코스트를?\s*지불하지\s*않고\s*사용할\s*수\s*있다$/s))) { dest = 'useOption'; gg = mkGroups(mm[1]); }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*디지몬의\s*진화원\s*아래에\s*놓는다$/s))) { dest = 'sourcesThis'; gg = mkGroups(mm[1]); }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*테이머\s*아래에\s*놓는다$/s))) { dest = 'tamerUnder'; gg = mkGroups(mm[1]); }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*「([^」]+)」\s*1\s*마리의\s*진화원의\s*가장\s*아래에\s*놓는다$/s))) { dest = 'sourcesOf'; gg = mkGroups(mm[1]); ex = { targetFilter: { exactAny: [mm[2]] } }; }
-      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*시큐리티\s*위에\s*(?:뒷면으로\s*)?(?:둔다|놓는다)$/s))) { dest = 'security'; gg = mkGroups(mm[1]); ex = { secPos: 'top' }; }
-      else return;
-      if (!gg) return;
-      for (const g of gg) gs.push({ ...g, dest, ...ex });
-    }
-  }
-  if (!gs.length) return;
-  const optional = /수\s*있다|장까지/.test(P);
-  const pick = { min: 0, max: gs.reduce((a, g) => a + g.max, 0), ...(optional ? { optional: true } : {}) };
-  if (gs.length === 1) {
-    const { dest, filter, max, all, label, ...ex } = gs[0];
-    Object.assign(pick, { max }, filter ? { filter } : {}, dest !== 'hand' ? { action: dest } : {}, all ? { all: true } : {}, ex);
-  } else { if (gs.some(g => g.all)) return; pick.groups = gs; }
-  if (/상대\s*디지몬\s*1\s*마리마다/.test(P)) pick.maxMulOpp = true;
-  ins.pick = pick;
 }
 // "<zone>에서 <descriptor> N장을 코스트를 지불하지 않고 등장" (hand/trash) -> playFree ops; tokens -> spawnToken; evolution-source plays stay manual
 const SRC_PLAY_RE = /(?:^|,\s*|그\s*후,?\s*)(?:자신의\s*)?((?:패|트래시|이\s*디지몬의\s*진화원)(?:\s*(?:또는|\/|나)\s*(?:패|트래시|이\s*디지몬의\s*진화원))*)(?:에서|의|인)\s*,?\s*(.*?)\s*(\d+)\s*장(까지)?(?:을|를)?\s*,?\s*(?:레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고\s*(?:레스트\s*상태로\s*)?등장시(킬\s*수\s*있다|킨다)/s;
@@ -2474,8 +2417,8 @@ function compileInner(text) {
 
   // 【시큐리티】 "이 카드를 코스트를 지불하지 않고 등장시킨다" (331 printed segments): the card being checked, NOT a hand card of the
   // player's choice — it sits in limbo/trash after the check (13-1-6 / 13-1-8-4).
-  if (/(?:^|[.。]\s*|그\s*후,?\s*)(?:이\s*카드를\s*코스트를?\s*지불하지\s*않고\s*등장\s*시킨다|코스트를?\s*지불하지\s*않고\s*이\s*카드를\s*등장\s*시킨다)/.test(t) && !/(?:패|트래시)(?:\s*(?:또는|\/)\s*(?:패|트래시))?에서/.test(t)) {
-    script.push({ op: 'playThisFree' });
+  if (/(?:^|[.。]\s*|그\s*후,?\s*|배틀을\s*진행하지\s*않고,?\s*)(?:이\s*카드를\s*코스트를?\s*지불하지\s*않고\s*등장\s*시(?:킨다|킬\s*수\s*있다)|코스트를?\s*지불하지\s*않고\s*이\s*카드를\s*등장\s*시(?:킨다|킬\s*수\s*있다))/.test(t) && !/(?:패|트래시)(?:\s*(?:또는|\/)\s*(?:패|트래시))?에서/.test(t)) {
+    script.push({ op: 'playThisFree', ...(/등장\s*시킬\s*수\s*있다/.test(t) ? { optional: true } : {}) }); // b10: "…등장시킬 수 있다" (【소멸 시】 EX4-011/059, BT7-072 …) is optional
   } else
   // Play a card without paying cost, from hand or trash (or a token / evolution-source card).
   if ((/코스트를?\s*(?:지불하지\s*않고|支払わ)|코스트\s*없이/.test(t) || /\[\[TOK:[^\]]+\]\]\s*토큰[^.]*등장/.test(t)) && /등장/.test(t) && !script.some(o => (o.op === 'revealTop' && o.pick?.action === 'play') || (o.op === 'revealPick' && o.steps.some(s => s.dests.some(d => d.k === 'play'))))) {
@@ -2813,7 +2756,7 @@ function compileInner(text) {
     const tgX = findTgt(t, '상대', '디지몬', String.raw`(?:는|은|가)?\s*(?:,\s*)?어택(?:과\s*블록)?을?\s*할\s*수\s*없다`);
     const nbk = /어택과\s*블록/.test(t) ? { noBlock: true } : {}; // "어택과 블록을 할 수 없다": also lock blocking (s3 'noBlock' flag)
     if (tgX && tgX.all) script.push({ op: 'restrictAttack', target: 'opponent', allMatching: true, expiresAfterTurn: expires, ...nbk, ...tgtProps(tgX) });
-    else for (let i = 0; i < (tgX?.n || 1); i++) script.push({ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: expires, ...nbk, ...(tgX ? tgtProps(tgX) : {}), ...(tgX?.upTo ? { optional: true } : {}) });
+    else { const rak = 'ra' + (++DISTINCT_SEQ); for (let i = 0; i < (tgX?.n || 1); i++) script.push({ op: 'restrictAttack', target: 'opponent', expiresAfterTurn: expires, ...nbk, ...(tgX ? tgtProps(tgX) : {}), ...(tgX?.upTo ? { optional: true } : {}), ...((tgX?.n || 1) > 1 ? { distinct: rak } : {}) }); } // (batch4: "2마리" = 2 distinct digimon — BT12-028)
   } else if (/진화원을?\s*갖지\s*않은\s*상대(?:의)?\s*디지몬\s*1\s*마리를?\s*선택한다\.?\s*그\s*디지몬은\s*다음\s*상대(?:의)?\s*턴\s*종료\s*시?까지\s*어택과\s*블록을?\s*할\s*수\s*없다/.test(t)) {
     script.push({ op: 'restrictAttack', target: 'opponent', filter: { hasNoSources: true }, expiresAfterTurn: 'opponentTurn', noBlock: true });
   } else if (/상대는\s*진화원을?\s*갖지\s*않은\s*디지몬으로는\s*어택할\s*수\s*없다/.test(t)) {
@@ -3100,6 +3043,7 @@ function parseConditionExtra(c) {
 
 function parseConditionText(c) {
   c = c.trim().replace(/[,\s]+$/, '');
+  c = c.replace(/다른\s+(자신|상대)(의)\s*/g, '$1$2 다른 '); // b10: "레스트 상태인 다른 자신의 디지몬" (EX4-025/029/054/057) = "레스트 상태인 자신의 다른 디지몬"
   { const cx = parseConditionExtra(c); if (cx) return cx; }
   let m;
   const own = (ctx) => ctx.state.players[ctx.self];
@@ -3468,6 +3412,12 @@ function compileCostClause(raw) {
   return [{ op: 'manualCost', text: raw.trim() }];
 }
 
+// batch4: a body that follows a leading condition may itself be a "…N장마다, <효과>" sentence — compileWithCost (compileInner) has no per-count pass, so the count was dropped (BT12-085)
+function compileWithCostPer(text) {
+  const r = compileWithCost(text);
+  if (/\d+\s*(?:장|마리|명|색)\s*마다/.test(text) && !r.some(o => o.per)) { const rp = compilePerSentences(text); if (rp && rp.length) return rp; }
+  return r;
+}
 function compileWithCost(text) {
   const inner = compileInner(text);
   const t = text.trim().replace(/^[\[〔]턴\s*에?\s*\d+\s*회[\]〕]\s*/, '');
@@ -3843,11 +3793,51 @@ function compileToScriptCore(text) {
         if (t1 && t2 && restA.length) return [{ op: 'condition', if: { test: async (ctx) => !!(await t1(ctx)) && !!(await t2(ctx)) }, then: restA, else: [] }];
       }
     }
+    { // batch4 (BT10-021 …): "<조건 A>가지고/있고/이고, <조건 B>일 때, <효과>" — AND of two leading conditions (the effect must run only when BOTH hold; it used to run always)
+      const am = trimmed.replace(/Lv\./g, 'Lv\uE000').match(/^([^,.。\n]{2,90}?(?:가지|갖|포함하|있|없|이)(?:고|며)),\s*([^,.。\n]{2,90}?(?:있을|없을|이하일|이상일|일|가질|포함할|있었을|했을|기술되어\s*있을)\s*때),\s*(.*)$/s);
+      if (am && inner.length && !inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) {
+        const aUn = (x) => x.replace(/\uE000/g, '.');
+        const c1 = aUn(am[1]).replace(/있고$/, ' 있다면').replace(/없고$/, ' 없다면').replace(/(?:가지|갖)고$/, ' 가진다면').replace(/포함하고$/, ' 포함한다면').replace(/이고$/, '이라면').replace(/며$/, ' 있다면');
+        const t1 = parseConditionText(normCondText(c1).replace(/\s+/g, ' ')), t2 = parseConditionText(normCondText(aUn(am[2])));
+        const restA = compileWithCost(aUn(am[3]));
+        if (t1 && t2 && restA.length) return [{ op: 'condition', if: { test: async (ctx) => !!(await t1(ctx)) && !!(await t2(ctx)) }, then: restA, else: [] }];
+      }
+    }
+    { // batch4 (BT10-021 …): "<조건 A>가지고/있고/이고, <조건 B>일 때, <효과>" — AND of two leading conditions (the effect must run only when BOTH hold; it used to run always)
+      const am = trimmed.replace(/Lv\./g, 'Lv\uE000').match(/^([^,.。\n]{2,90}?(?:가지|갖|포함하|있|없|이)(?:고|며)),\s*([^,.。\n]{2,90}?(?:있을|없을|이하일|이상일|일|가질|포함할|있었을|했을|기술되어\s*있을)\s*때),\s*(.*)$/s);
+      if (am && inner.length && !inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) {
+        const aUn = (x) => x.replace(/\uE000/g, '.');
+        const c1 = aUn(am[1]).replace(/있고$/, ' 있다면').replace(/없고$/, ' 없다면').replace(/(?:가지|갖)고$/, ' 가진다면').replace(/포함하고$/, ' 포함한다면').replace(/이고$/, '이라면').replace(/며$/, ' 있다면');
+        const t1 = parseConditionText(normCondText(c1).replace(/\s+/g, ' ')), t2 = parseConditionText(normCondText(aUn(am[2])));
+        const restA = compileWithCost(aUn(am[3]));
+        if (t1 && t2 && restA.length) return [{ op: 'condition', if: { test: async (ctx) => !!(await t1(ctx)) && !!(await t2(ctx)) }, then: restA, else: [] }];
+      }
+    }
+    { // batch4 (BT10-021 …): "<조건 A>가지고/있고/이고, <조건 B>일 때, <효과>" — AND of two leading conditions (the effect must run only when BOTH hold; it used to run always)
+      const am = trimmed.replace(/Lv\./g, 'Lv\uE000').match(/^([^,.。\n]{2,90}?(?:가지|갖|포함하|있|없|이)(?:고|며)),\s*([^,.。\n]{2,90}?(?:있을|없을|이하일|이상일|일|가질|포함할|있었을|했을|기술되어\s*있을)\s*때),\s*(.*)$/s);
+      if (am && inner.length && !inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) {
+        const aUn = (x) => x.replace(/\uE000/g, '.');
+        const c1 = aUn(am[1]).replace(/있고$/, ' 있다면').replace(/없고$/, ' 없다면').replace(/(?:가지|갖)고$/, ' 가진다면').replace(/포함하고$/, ' 포함한다면').replace(/이고$/, '이라면').replace(/며$/, ' 있다면');
+        const t1 = parseConditionText(normCondText(c1).replace(/\s+/g, ' ')), t2 = parseConditionText(normCondText(aUn(am[2])));
+        const restA = compileWithCost(aUn(am[3]));
+        if (t1 && t2 && restA.length) return [{ op: 'condition', if: { test: async (ctx) => !!(await t1(ctx)) && !!(await t2(ctx)) }, then: restA, else: [] }];
+      }
+    }
+    { // batch4 (BT10-021 …): "<조건 A>가지고/있고/이고, <조건 B>일 때, <효과>" — AND of two leading conditions (the effect must run only when BOTH hold; it used to run always)
+      const am = trimmed.replace(/Lv\./g, 'Lv\uE000').match(/^([^,.。\n]{2,90}?(?:가지|갖|포함하|있|없|이)(?:고|며)),\s*([^,.。\n]{2,90}?(?:있을|없을|이하일|이상일|일|가질|포함할|있었을|했을|기술되어\s*있을)\s*때),\s*(.*)$/s);
+      if (am && inner.length && !inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) {
+        const aUn = (x) => x.replace(/\uE000/g, '.');
+        const c1 = aUn(am[1]).replace(/있고$/, ' 있다면').replace(/없고$/, ' 없다면').replace(/(?:가지|갖)고$/, ' 가진다면').replace(/포함하고$/, ' 포함한다면').replace(/이고$/, '이라면').replace(/며$/, ' 있다면');
+        const t1 = parseConditionText(normCondText(c1).replace(/\s+/g, ' ')), t2 = parseConditionText(normCondText(aUn(am[2])));
+        const restA = compileWithCost(aUn(am[3]));
+        if (t1 && t2 && restA.length) return [{ op: 'condition', if: { test: async (ctx) => !!(await t1(ctx)) && !!(await t2(ctx)) }, then: restA, else: [] }];
+      }
+    }
     const wm = trimmed.replace(/경우,/, '때,').replace(/Lv\./g, 'Lv\uE000').match(/^([^,.。\n]{2,80}?(?:있을|없을|이하일|이상일|장일|일|적을|많을|가질|같을|다를|포함할|가지고\s*있을|갖고\s*있을|기술되어\s*있을)\s*때),\s*(.*)$/s);
     if (wm && inner.length && !inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE' || x.op === 'oppMayPay')) {
       const wUn = (x) => x.replace(//g, '.');
       const cn = normCondText(wUn(wm[1]));
-      const rest = compileWithCost(wUn(wm[2]));
+      const rest = compileWithCostPer(wUn(wm[2]));
       if (rest.length) {
         const label = wUn(wm[1]);
         const test = parseConditionText(cn) || manualCondition(label);
@@ -3876,7 +3866,7 @@ function compileToScriptCore(text) {
   const test = parseConditionText(cm[1]) || manualCondition(cm[1]); // can't evaluate the condition → ask the player, never apply blindly
   // "<조건>라면, <효과>. 그 후, 《세이브》." — the condition belongs to the first sentence only; the trailing 《세이브》 sentence is unconditional (BT19-020)
   const svm = cm[2].match(/^(.*?[.。])\s*(?:(?:그\s*후|또한),?\s*)([≪《]\s*세이브\s*[≫》])\s*[.。]?\s*$/s);
-  const rest = compileWithCost(svm ? svm[1] : cm[2]);
+  const rest = compileWithCostPer(svm ? svm[1] : cm[2]);
   if (!rest.length) return [];
   return [{ op: 'condition', if: { test }, then: rest, else: [] }, ...(svm ? compileToScript(svm[2]) : [])];
 }
@@ -4014,3 +4004,61 @@ export function lookupCardSpecific(cardId, tags, text) {
 // main.js: a 〔턴에 1회〕 effect whose whole script is one leading condition ("자신의 패가 8장 이상일 때, …") that is unmet is not activated, so it must not use up the once-per-turn count
 export const evalConditionPublic = (cond, ctx) => evalCondition(cond, ctx);
 export const FX_HELPERS = { compileSecurityLook, prepText, strictCardFilter, xrosOptsFor, parseConditionText, condTestFor, parseCardFilter, matchesFilter, compileToScript, perCount };
+
+// verify-reveal-1: re-reads the whole "덱 위에서부터 N장 오픈한다. 그중 … " text of a compiled revealTop and fills in what the first pass can't:
+//   per-clause destinations (패에 추가 / 파기 / 코스트 없이 등장 / 이 디지몬(으로부터) 진화 / 코스트 없이 사용 / 진화원·테이머 아래 / 시큐리티 위), 「전부」, "상대 디지몬 1마리마다",
+//   "그 카드가 <조건>일 때 …", and where the rest goes (파기 / 패에 추가 / 덱 위·아래). A clause it can't read leaves the first-pass result untouched.
+function refineRevealTop(t, ins) {
+  const T = t.replace(/\([^()]*\)/g, '');
+  const sents = splitSentences(T);
+  if (/상대\s*디지몬\s*1\s*마리마다,?\s*자신의\s*덱/.test(T)) ins.nMulOpp = true;
+  const rIdx = sents.findIndex(x => /(?:남은\s*카드|나머지|오픈한\s*카드)(?:는|를|을)/.test(x));
+  if (rIdx >= 0) {
+    const r = sents[rIdx];
+    ins.restTo = /파기한다/.test(r) ? 'trash' : /패에\s*추가한다/.test(r) ? 'hand' : /덱(?:\s*의)?\s*위(?:\s*또는|나)\s*(?:덱(?:\s*의)?\s*)?아래/.test(r) ? 'either' : /덱(?:\s*의)?\s*위(?:로|에)/.test(r) ? 'top' : 'bottom';
+  }
+  const P = sents.find(x => /그\s*중|그\s*카드가/.test(x));
+  if (!P || /^자신의\s*디지몬\s*1\s*마리는/.test(P.trim()) || /합계/.test(P)) return;
+  const noTrig = /이\s*효과로\s*등장(?:시킨|한)\s*디지몬의\s*【등장\s*시】\s*효과는\s*발휘하지\s*않는다/.test(T);
+  const mkGroups = (desc) => {
+    desc = desc.trim().replace(/^[,\s]+/, '');
+    if (/전부$/.test(desc)) { const d = desc.replace(/\s*전부$/, ''); const fl = criterionFilter(d); return [{ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 99, all: true, label: d }]; }
+    if (/^\d+\s*장(?:까지)?씩?$/.test(desc)) return [{ max: Number(desc.match(/\d+/)[0]), label: '카드' }];
+    return parsePickGroups(desc);
+  };
+  const gs = [];
+  let mm;
+  if ((mm = P.match(/^그\s*카드가\s*(.*?)\s*(?:이)?(?:라면|다면|일\s*때|일\s*경우),?\s*(.*?)[.。]?$/s))) { // top-1 reveal: only a matching card may be taken / played
+    const fl = criterionFilter(mm[1]);
+    const play = /등장/.test(mm[2]);
+    if (!play && !/패(?:에|로)\s*추가/.test(mm[2])) return;
+    gs.push({ ...(Object.keys(fl).length ? { filter: fl } : {}), max: 1, dest: play ? 'play' : 'hand', label: mm[1], ...(play ? { rested: /레스트\s*상태로/.test(mm[2]), noTriggers: noTrig } : {}) });
+  } else {
+    const body = P.replace(/^.*?그\s*중(?:에서|에)?\s*/, '').replace(/[.。]\s*$/, '').replace(/(?:을|를)\s*전부\s+(?=파기|패에)/g, ' 전부를 '); // "테이머 카드를 전부 파기한다" -> "… 전부를 파기한다"
+    const clauses = body.split(/(?<=추가한다|추가하고|파기한다|파기하고|등장시킬\s*수\s*있다|등장시킨다|진화할\s*수\s*있다|사용할\s*수\s*있다|놓는다|둔다)\s*,?\s*(?=\S)/).map(x => x.trim()).filter(Boolean);
+    for (const c of clauses) {
+      let dest, gg, ex = {};
+      if ((mm = c.match(/^(.*?)\s*(\d+)\s*장(?:까지)?(?:에|으로|로),?\s*(이\s*디지몬|어택한\s*디지몬|자신의\s*디지몬\s*1\s*마리)(?:에서|으로부터|을|를)?\s*코스트를?\s*지불하지\s*않고\s*진화할\s*수\s*있다$/s))) { dest = 'evolve'; gg = mkGroups(mm[1] + ' ' + mm[2] + '장'); ex = { evoTarget: /^이/.test(mm[3]) ? 'this' : /^어택/.test(mm[3]) ? 'attacker' : 'any' }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*패(?:에|로)\s*추가(?:한다|하고)$/s))) { dest = 'hand'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*파기(?:한다|하고)$/s))) { dest = 'trash'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*,?\s*(레스트\s*상태로\s*)?코스트를?\s*지불하지\s*않고\s*(레스트\s*상태로\s*)?등장(?:시킬\s*수\s*있다|시킨다)$/s))) { dest = 'play'; gg = mkGroups(mm[1]); ex = { rested: !!(mm[2] || mm[3]), noTriggers: noTrig }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*코스트를?\s*지불하지\s*않고\s*사용할\s*수\s*있다$/s))) { dest = 'useOption'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*디지몬의\s*진화원\s*아래에\s*놓는다$/s))) { dest = 'sourcesThis'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*이\s*테이머\s*아래에\s*놓는다$/s))) { dest = 'tamerUnder'; gg = mkGroups(mm[1]); }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*「([^」]+)」\s*1\s*마리의\s*진화원의\s*가장\s*아래에\s*놓는다$/s))) { dest = 'sourcesOf'; gg = mkGroups(mm[1]); ex = { targetFilter: { exactAny: [mm[2]] } }; }
+      else if ((mm = c.match(/^(.*?)\s*(?:을|를)\s*자신의\s*시큐리티\s*위에\s*(?:뒷면으로\s*)?(?:둔다|놓는다)$/s))) { dest = 'security'; gg = mkGroups(mm[1]); ex = { secPos: 'top' }; }
+      else return;
+      if (!gg) return;
+      for (const g of gg) gs.push({ ...g, dest, ...ex });
+    }
+  }
+  if (!gs.length) return;
+  const optional = /수\s*있다|장까지/.test(P);
+  const pick = { min: 0, max: gs.reduce((a, g) => a + g.max, 0), ...(optional ? { optional: true } : {}) };
+  if (gs.length === 1) {
+    const { dest, filter, max, all, label, ...ex } = gs[0];
+    Object.assign(pick, { max }, filter ? { filter } : {}, dest !== 'hand' ? { action: dest } : {}, all ? { all: true } : {}, ex);
+  } else { if (gs.some(g => g.all)) return; pick.groups = gs; }
+  if (/상대\s*디지몬\s*1\s*마리마다/.test(P)) pick.maxMulOpp = true;
+  ins.pick = pick;
+}

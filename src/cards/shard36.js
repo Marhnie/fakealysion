@@ -213,3 +213,84 @@ sc('BT17-087::등장 시', async (ctx) => {
   S.grantKeyword(state, ctx.self, t.uid, '블로커', undefined, 'opponentTurn');
   S.modifyDP(state, ctx.self, t.uid, 3000, 'opponentTurn');
 });
+
+// ===================================================================== BT18
+// BT18-018 (진화 시): 이 디지몬의 진화원의 색 1색마다 상대의 디지몬의 진화원을 선택하여 1장 파기하고, 상대의 디지몬 1마리를 레스트시킨다. 그 후 이 디지몬으로 어택할 수 있다 (generic compile dropped the source-trash half)
+sc('BT18-018::진화 시', async (ctx, R) => {
+  const h = holderOf(ctx);
+  if (!h) return;
+  const colors = new Set(h.sources.flatMap(id => C(id).colors || []));
+  for (let k = 0; k < colors.size; k++) {
+    await R.runOne({ op: 'trashEvoSources', target: 'opponent', stacks: 1, count: 1, choose: true, prompt: '진화원을 파기시킬 상대의 디지몬 선택' }, ctx);
+    await R.runOne({ op: 'rest', target: 'opponent', n: 1, skipNextUnsuspend: false, digimonOnly: true }, ctx);
+  }
+  await R.runOne({ op: 'attackNow', who: 'self', thisStack: true }, ctx);
+});
+
+// BT18-042 (진화 시 / 상대의 턴 종료 시, 턴 1회): 이 디지몬의 진화원에서 디지몬 카드 1장을 시큐리티 아래에 놓는 것으로, 놓은 카드와 같은 Lv.의 상대의 디지몬 전부를 소멸시킨다 (generic destroyed EVERY opponent Digimon)
+const sc042 = async (ctx, R) => {
+  const { state } = ctx, pl = state.players[ctx.self], h = holderOf(ctx);
+  if (!h) return;
+  const idxs = h.sources.map((id, i) => i).filter(i => C(h.sources[i]).category === 'digimon');
+  if (!idxs.length) return;
+  pl.s36tmp = h.sources.slice();
+  let k;
+  try { k = await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 's36tmp', eligibleIdxs: idxs, prompt: '시큐리티 아래에 놓을 진화원의 디지몬 카드 선택' }); } finally { delete pl.s36tmp; }
+  if (k == null) return;
+  const [id] = h.sources.splice(k, 1);
+  S.recomputeStackGrants(h);
+  pl.security.push(id); // bottom
+  S.log(state, `${ctx.self} ${C(id).nameKo}을(를) 진화원에서 시큐리티 아래에 놓음`);
+  const lv = C(id).level;
+  await R.runOne({ op: 'destroy', target: 'opponent', mode: 'all', filter: { level: lv, category: 'digimon' } }, ctx);
+};
+sc('BT18-042::진화 시', sc042);
+sc('BT18-042::상대의 턴 종료 시', sc042);
+
+// BT18-079 (등장/진화 시): 상대의 디지몬과 테이머의 색 1색마다 서로의 덱 위에서부터 1장 파기. 그 후, 이 효과로 파기한 1장마다 턴 종료까지 이 디지몬을 DP +1000 (generic: flat +1000)
+const sc079 = async (ctx, R) => {
+  const { state } = ctx;
+  const colors = new Set(state.players[ctx.opp].battle.filter(s => C(s.cardId).category === 'digimon' || isTamerSt(s)).flatMap(s => S.stackColors(s)));
+  const n = colors.size;
+  const before = state.players.p1.trash.length + state.players.p2.trash.length;
+  if (n) { S.trashTopOfDeck(state, ctx.opp, n); S.trashTopOfDeck(state, ctx.self, n); }
+  const discarded = (state.players.p1.trash.length + state.players.p2.trash.length) - before;
+  const h = holderOf(ctx);
+  if (h && discarded > 0) S.modifyDP(state, ctx.self, h.uid, 1000 * discarded, 'turn');
+};
+sc('BT18-079::등장 시', sc079);
+sc('BT18-079::진화 시', sc079);
+// BT18-079 (어택 종료 시): 퍼플인 Lv.4 이하의 디지몬 1마리를 소멸시키는 것으로, 가장 Lv.이 낮은 상대의 디지몬 전부를 소멸시킨다 (cost = real destroy of an own/any purple Lv.4- Digimon; generic treated it as a manual cost)
+sc('BT18-079::어택 종료 시', async (ctx, R) => {
+  const { state } = ctx;
+  const cands = [];
+  for (const p of ['p1', 'p2']) for (const s of state.players[p].battle) if (isDigimon(s) && (C(s.cardId).colors || []).includes('purple') && (C(s.cardId).level || 9) <= 4) cands.push({ s, p });
+  if (!cands.length) return;
+  const uid = await ctx.choose('pickStackAnySide', { player: ctx.self, entries: cands.map(x => ({ player: x.p, uid: x.s.uid })), prompt: '소멸시킬 퍼플인 Lv.4 이하의 디지몬 선택 (비용, 안 해도 됨)' });
+  if (!uid) return;
+  const pick = typeof uid === 'object' ? uid : cands.map(x => ({ player: x.p, uid: x.s.uid })).find(e => e.uid === uid);
+  if (!pick) return;
+  S.deleteStack(state, pick.player, pick.uid, 'trash', pick.player === ctx.self ? 'ownEffect' : 'effect');
+  await R.runOne({ op: 'destroy', target: 'opponent', mode: 'all', filter: { extreme: { stat: 'level', dir: 'min' } } }, ctx);
+});
+
+// BT18-046 (상대의 턴): 이 디지몬의 DP 이하의 상대의 디지몬 전부는 플레이어에게 어택할 수 없다 (was unimplemented)
+hk('BT18-046', { tag: '상대의 턴', has: '플레이어에게 어택할 수 없다', atkPlayerBlocked: (state, hp, h, ap, attacker) => isDigimon(attacker) && S.effectiveDP(state, ap, attacker) <= S.effectiveDP(state, hp, h) });
+
+// BT17-101 ([트래시]【자신의 턴】): 「펄스몬」이 기술되어 있는 Lv.6의 자신의 디지몬이 등장했을 때, 자신의 디지몬 2마리로 이 카드로 조그레스 진화할 수 있다 (generic compile was empty)
+sc('BT17-101::자신의 턴@조그레스 진화할 수 있다', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  const ti = pl.trash.indexOf('BT17-101');
+  if (ti < 0) return;
+  const digs = pl.battle.filter(isDigimon);
+  const pairs = [];
+  for (let i = 0; i < digs.length; i++) for (let j = i + 1; j < digs.length; j++) if (S.canJogress(digs[i], digs[j], 'BT17-101').ok && S.parseJogress('BT17-101')) pairs.push([digs[i], digs[j]]);
+  if (!pairs.length) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '트래시의 「펜리루가몬: 타케미 카즈치」로 조그레스 진화하시겠습니까?' }))) return;
+  const a = await pickUid(ctx, ctx.self, [...new Set(pairs.map(p => p[0]).concat(pairs.map(p => p[1])))], '조그레스 재료 1 선택');
+  if (!a) return;
+  const b = await pickUid(ctx, ctx.self, pairs.filter(p => p.includes(a)).map(p => (p[0] === a ? p[1] : p[0])), '조그레스 재료 2 선택');
+  if (!b) return;
+  pl.trash.splice(ti, 1); pl.hand.push('BT17-101');
+  if (!S.fuseStacks(state, ctx.self, a.uid, b.uid, 'BT17-101', S.parseJogress('BT17-101').cost || 0, 'hand')) { pl.hand.pop(); pl.trash.splice(ti, 0, 'BT17-101'); }
+});

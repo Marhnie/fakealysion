@@ -373,3 +373,29 @@ SCRIPTS['BT20-033::진화 시'] = SCRIPTS['BT20-033::등장 시'];
 // BT20-005 (inherited, 자신의 턴): 이 디지몬이 앞면의 시큐리티를 체크했을 때, 턴 종료까지 이 디지몬은 《재밍》을 얻는다.
 hk('BT20-005', { tag: '자신의 턴', src: 'inheritedKo', has: '앞면의 시큐리티를 체크했을 때', events: { faceUpChecked: (state, hp, h, info) => info.owner === hp && info.stack === h } });
 sc('BT20-005::자신의 턴', async (ctx) => { const st = me(ctx); if (st) S.grantKeyword(ctx.state, ctx.self, st.uid, '재밍', undefined, 'turn'); });
+
+// ================================================================== more dead effects found by the audit
+// BT20-015 / BT20-074 (inherited, 자신의 턴): 이 디지몬이 체크한 옵션 카드의 【시큐리티】 효과는 발휘하지 않는다. BT20-071: 특징 「SoC」/「시커즈」를 가진 이 디지몬이 체크한 …
+for (const [id, needTrait] of [['BT20-015', null], ['BT20-074', null], ['BT20-071', ['SoC', '시커즈']]]) {
+  hk(id, { tag: '자신의 턴', src: 'inheritedKo', has: '체크한 옵션 카드의 【시큐리티】', suppressSecurity: (state, hp, h, revealedId) => C(revealedId).category === 'option' && (!needTrait || hasType(C(h.cardId), ...needTrait)) });
+}
+// BT20-028 (서로의 턴, 턴에 1회): 진화원에서 자신의 디지몬이 등장했을 때, 상대의 디지몬 1마리를 《퇴화 2》.
+hk('BT20-028', { tag: '서로의 턴', has: '진화원에서 자신의 디지몬이 등장했을 때', limit: 1, events: { play: (state, hp, h, info) => info.owner === hp && !!info.stack && !!info.stack.playedFromSources } });
+sc('BT20-028::서로의 턴', async (ctx, R) => { await R.runScript([{ op: 'retreat', target: 'opponent', n: 2 }], ctx); });
+// BT21-005 / BT21-009 / BT21-059: 이 디지몬이 링크했을 때 (event 'linked')
+const onSelfLinked = (state, hp, h, info) => info.owner === hp && info.stack === h;
+hk('BT21-005', { tag: '자신의 턴', src: 'inheritedKo', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+sc('BT21-005::자신의 턴', async (ctx, R) => { await R.runScript([{ op: 'draw', who: 'self', n: 1 }], ctx); });
+hk('BT21-009', { tag: '자신의 턴', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+sc('BT21-009::자신의 턴', async (ctx, R) => {
+  if (tams(ctx.state, ctx.self).length > 1) return;
+  await R.runScript([{ op: 'playFree', who: 'self', zone: 'hand', filter: { exactAny: ['한바다'] }, rested: false, noTriggers: false, optional: true }], ctx);
+});
+hk('BT21-059', { tag: '자신의 턴', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+sc('BT21-059::자신의 턴', async (ctx, R) => { await R.runScript([{ op: 'retreat', target: 'opponent', n: 1 }], ctx); });
+// BT21-025 (자신의 턴, 턴 1회): 특징 「파충류형」/「용인형」을 가진 자신의 디지몬의 어택의 대상이 변경되었을 때, 상대의 시큐리티를 위에서부터 1장 파기한다. (event 'redirect' = attack target changed; owner/stack = the attacker)
+hk('BT21-025', { tag: '자신의 턴', has: '어택의 대상이 변경되었을 때', limit: 1, events: { redirect: (state, hp, h, info) => info.owner === hp && !!info.stack && hasType(C(info.stack.cardId), '파충류형', '용인형') } });
+sc('BT21-025::자신의 턴', async (ctx, R) => { await R.runScript([{ op: 'removeSecurity', who: 'opponent', position: 'top' }], ctx); });
+// BT21-035 (자신의 턴, 턴 1회): 이 디지몬의 어택의 대상이 변경되었을 때, 이 디지몬을 액티브로 한다.
+hk('BT21-035', { tag: '자신의 턴', has: '어택의 대상이 변경되었을 때', limit: 1, events: { redirect: (state, hp, h, info) => info.owner === hp && info.stack === h } });
+sc('BT21-035::자신의 턴', async (ctx) => { const st = me(ctx); if (st) S.unsuspendStack(ctx.state, ctx.self, st.uid); });

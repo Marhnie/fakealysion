@@ -316,3 +316,54 @@ sc('BT11-112::서로의 턴', async (ctx, R) => {
   if (script && script.length) await R.runScript(script, { ...ctx, sourceCardId: dg.cardId, sourceStackUid: dg.uid });
   else S.log(ctx.state, `${C(dg.cardId).nameKo} 【진화 시】 효과를 자동 처리할 수 없음: ${seg.body}`);
 });
+
+// ================= BT12 =================
+// BT12-005 코제니몬 (진화원) 【자신의 턴】〔턴에 1회〕 《세이브》가 기술되어 있는 자신의 디지몬이 등장했을 때, 《1 드로우》 — the generic watcher has no 《》 keyword-mention subject
+hk('BT12-005', { tag: '자신의 턴', src: 'inheritedKo', has: '등장했을 때', limit: 1, events: { play: (state, hp, h, i) => i.owner === hp && !!i.stack && isDig(i.stack) && `${C(i.stack.cardId).effectKo || ''}\n${C(i.stack.cardId).inheritedKo || ''}`.includes('《세이브》') } });
+// BT12-026 왕개굴몬 【서로의 턴】〔턴에 1회〕 상대의 디지몬의 진화원이 파기되었을 때, 메모리+1
+hk('BT12-026', { tag: '서로의 턴', has: '진화원이 파기', limit: 1, events: { sourcesTrashed: (state, hp, h, i) => i.owner !== hp && !!i.stack && isDig(i.stack) } });
+// BT12-031 황제드라몬: 파이터 모드 【서로의 턴】 이 디지몬의 진화원의 색 1색마다 DP+1000. 진화원이 2색 이상 있는 이 디지몬은 《S 어택 +1》과 《블로커》를 얻는다
+const srcColors = (h) => new Set(h.sources.slice(fd(h)).flatMap(id => C(id).colors || []));
+hk('BT12-031', { tag: '서로의 턴', has: '진화원의 색', dp: (state, hp, h, t) => (t === h ? srcColors(h).size * 1000 : 0), kwNum: (state, hp, h) => (srcColors(h).size >= 2 ? 1 : 0), grantKw: (state, hp, h, t) => (t === h && srcColors(h).size >= 2 ? ['블로커'] : []) });
+// BT12-044 램프몬 【자신의 턴】 《S 어택》을 가진 상대의 디지몬 1마리마다 이 디지몬은 《S 어택 +1》을 얻는다
+hk('BT12-044', { tag: '자신의 턴', has: '상대의 디지몬 1마리마다', kwNum: (state, hp, h) => digsOf(state, opp(hp)).filter(s => S.securityAttackBonus(s) !== 0).length });
+// BT12-039 손오공몬 / BT12-040 사고몬 (패의 이 카드) 등장할 때, 《S 어택 +1》을 가진 상대의 디지몬이 있다면 지불하는 등장 코스트 -3 — printed without a tag; never applied
+for (const id of ['BT12-039', 'BT12-040']) hk(id, { selfPlayDiscount: (state, p) => (digsOf(state, opp(p)).some(s => S.securityAttackBonus(s) > 0) ? -3 : 0) });
+// BT12-068 메탈그레이몬 【서로의 턴】〔턴에 1회〕 「어태의」(오탈자) 대상이 변경되었을 때 — the printed typo "어태의" defeats the generic watcher; any attack redirect (either side) triggers it
+hk('BT12-068', { tag: '서로의 턴', has: '대상이 변경되었을 때', limit: 1, events: { redirect: () => true } });
+
+// BT12-081 아스타몬 【진화 시】 자신의 테이머 아래에서 《세이브》가 기술되어 있는 Lv.4 이하의 디지몬 카드 1장을 코스트 없이 등장시킬 수 있다. 이 디지몬의 진화원이 4장 이상 있다면, 대신 이 디지몬을 자신의 패 또는 테이머 아래의 「쿼츠몬」으로 지불하는 진화 코스트 -3 하여 진화시킬 수 있다.
+// (compiled: the "대신 …쿼츠몬으로 진화" branch was empty)
+sc('BT12-081::진화 시', async (ctx, R) => {
+  const st = me(ctx); if (!st) return;
+  const { state } = ctx, pl = state.players[ctx.self];
+  if (st.sources.length < 4) {
+    await R.runOne({ op: 'playFreeTamerUnder', who: 'self', zones: [], filter: { category: 'digimon', keywordText: '세이브', levelMax: 4 }, n: 1, rested: false, noTriggers: false, optional: true }, ctx);
+    return;
+  }
+  const restr = S.evolveTargetRestriction(state, ctx.self, st);
+  if (restr && restr.cannotEvolve) return;
+  const okEvo = (id) => C(id).category === 'digimon' && nameIs(id, '쿼츠몬') && ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(state, ctx.self, st), restr).ok;
+  const opts = [];
+  pl.hand.forEach((id, i) => { if (okEvo(id)) opts.push({ zone: 'hand', i, id }); });
+  for (const t of pl.battle) if (C(t.cardId).category === 'tamer') t.sources.forEach((id, i) => { if (i >= fd(t) && okEvo(id)) opts.push({ zone: 'tamer', i, id, t }); });
+  if (!opts.length) return;
+  const k = await ctx.choose('multipleChoice', { prompt: '「쿼츠몬」으로 진화 (지불하는 진화 코스트 -3) — 진화하지 않음 가능', options: [...opts.map(o => `${C(o.id).nameKo} (${o.zone === 'hand' ? '패' : '테이머 아래'})`), '진화하지 않음'] });
+  if (k == null || k >= opts.length) return;
+  const o = opts[k];
+  const base = ctx.E.canEvolveAny(st.cardId, o.id, S.evoExtraArg(state, ctx.self, st), restr).cost;
+  const cost = Math.max(0, base - 3);
+  if (o.zone === 'hand') S.digivolve(state, ctx.self, st.uid, o.id, cost, 'hand');
+  else { o.t.sources.splice(o.i, 1); S.recomputeStackGrants(o.t); S.digivolve(state, ctx.self, st.uid, o.id, cost, 'tamer'); }
+});
+
+// BT12-111 다크네스바그라몬 【상대의 턴】 상대의 디지몬이 진화했을 때, 또는 어택했을 때, 이 디지몬의 진화원을 선택하여 5장 파기하는 것으로 테이머 전부(양쪽)를 패로 되돌린다.
+// (compiled: the tamer bounce was left as a manual note, and the "어택했을 때" half was not a trigger)
+hk('BT12-111', { tag: '상대의 턴', has: '진화했을 때', events: {
+  digivolve: (state, hp, h, i) => i.owner !== hp && !!i.stack && isDig(i.stack),
+  attack: (state, hp, h, i) => i.owner !== hp && !!i.stack && isDig(i.stack),
+} });
+SCRIPTS['BT12-111::상대의 턴'] = [{ op: 's2_costSource', pred: () => true, n: 5, prompt: '파기할 이 디지몬의 진화원 5장 선택', optional: true, confirm: '진화원 5장을 파기하고 테이머 전부를 패로 되돌릴까요?', then: [
+  { op: 'returnToHandStripSources', target: 'self', all: true, filter: { category: 'tamer' }, requireSuspended: null, dest: 'hand' },
+  { op: 'returnToHandStripSources', target: 'opponent', all: true, filter: { category: 'tamer' }, requireSuspended: null, dest: 'hand' },
+] }];

@@ -3,7 +3,10 @@ import * as E from './engine.js';
 import * as Effects from './effects.js';
 import * as DB from './deckbuilder.js';
 import * as DBS from './dbsearch.js'; // deck-builder search/filter (pure)
+import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup / sample hand / deck management (logic: decktools.js)
+import * as DT from './decktools.js';
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
+import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
@@ -113,6 +116,9 @@ let dbPanelOpen = false;   // filter accordion
 let dbEls = null;          // live DOM refs of the current builder screen
 let dbSyncers = [];        // functions that re-sync chip/input state from dbFilter
 let dbTimer = null;
+let dbIdFilter = null;     // { ids:Set, label } — checkup warning → show only the related cards in the grid
+let dbDA = null;           // deck-analysis panels (decktools-ui.js) of the current builder screen
+let dbDeckSort = 'none';   // right-hand deck list sort mode (decktools SORT_MODES)
 let dbKeyBound = false;
 const dbLP = { timer: null, fired: false };
 let dbLastTap = { id: '', t: 0 };
@@ -326,9 +332,19 @@ function renderDeckBuilderScreen() {
   const nameInput = h('input', { placeholder: '덱 이름', value: dbSavedName });
   nameInput.addEventListener('input', (e) => { dbSavedName = e.target.value; });
   els.name = nameInput;
+  dbDA = createDeckAnalysis({
+    h, S, E, DB, cardChip, showToast,
+    getDraft: () => dbDraft, getSavedName: () => dbSavedName, refreshDeck: () => dbRefreshDeck(),
+    openPreview: (id) => dbOpenPreview(id), artUrl: (id) => dbArtUrl(id),
+    loadDeck: (name, def) => { dbDraft = { name, main: { ...def.main }, digitama: { ...def.digitama }, art: { ...(def.art || {}) } }; dbSavedName = name; dbLastError = ''; dbRefreshDeck(); },
+    setIdFilter: (ids, label) => { dbIdFilter = ids && ids.length ? { ids: new Set(ids), label: label || '' } : null; dbRefreshResults(); if (dbIdFilter) els.board.querySelector('.db-left')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  });
+  const sortSelDeck = h('select', { className: 'db-scope', title: '내 덱 정렬' }, DT.SORT_MODES.map(([v, l]) => h('option', { value: v }, '덱 정렬: ' + l)));
+  sortSelDeck.value = dbDeckSort;
+  sortSelDeck.addEventListener('change', () => { dbDeckSort = sortSelDeck.value; dbRefreshDeck(); });
   const rightCol = h('div', { className: 'player-panel', id: 'db-deck', style: 'min-width:260px;' }, [
-    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 미리보기 · － 버튼으로 1장 제거)'),
-    els.deckErrors, els.mainLbl, els.mainList, els.digLbl, els.digList,
+    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 미리보기 · ＋/－ 수량 · ✕ 전부 제거)'),
+    els.deckErrors, sortSelDeck, els.mainLbl, els.mainList, els.digLbl, els.digList,
     h('div', { className: 'actions-row' }, [nameInput, h('button', { className: 'primary', onClick: () => {
       if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; dbRefreshDeck(); return; }
       // 1-4-1: an illegal deck (not exactly 50 / >5 digitama / over the copy limit) cannot be saved.
@@ -346,6 +362,7 @@ function renderDeckBuilderScreen() {
       h('button', { onClick: () => { const t = deckToText(dbDraft, S); if (!t) { dbLastError = '내보낼 카드가 없습니다'; dbRefreshDeck(); return; } (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => { dbLastError = ''; showToast('덱 리스트를 복사했습니다'); }).catch(() => { openDeckImport(t); }); } }, '덱 복사(내보내기)'),
       h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; dbLastError = ''; dbRefreshDeck(); } }, '새로 만들기(초기화)'),
     ]),
+    dbDA.el,
   ]);
 
   els.board = h('div', { className: 'board' }, [
@@ -381,6 +398,7 @@ function dbUpdateBar() {
 function dbTile(id) {
   const have = DB.copiesInDeck(dbDraft, id);
   const chip = cardChip(id, {
+    showId: true,
     selected: have > 0,
     deckCount: have || undefined,
     art: dbArtUrl(id), parBadge: !!dbArtKey(id), parCount: (S.PARALLELS[id] || []).length || undefined,
@@ -403,8 +421,9 @@ function dbRefreshResults() {
   if (!dbEls) return;
   const r = DBS.runSearch(dbFilter, S.CARDS, dbIndex, dbCtx());
   dbMatched = r.ids; dbTerms = r.terms;
+  if (dbIdFilter) dbMatched = Object.keys(S.CARDS).filter(id => dbIdFilter.ids.has(id)); // checkup warning: only the related cards (other filters ignored)
   const shown = dbMatched.slice(0, dbFilter.pageSize);
-  dbEls.grid.replaceChildren(...shown.map(dbTile));
+  dbEls.grid.replaceChildren(...(dbIdFilter ? [h('div', { className: 'dt-idfilter' }, [`🩺 점검 항목 「${dbIdFilter.label}」 관련 카드만 표시 중 (${dbMatched.length}장) `, h('button', { onClick: () => { dbIdFilter = null; dbRefreshResults(); } }, '해제 ✕')])] : []), ...shown.map(dbTile));
   dbEls.more.replaceChildren(dbMatched.length > shown.length
     ? h('button', { onClick: () => { dbFilter.pageSize += 60; dbRefreshResults(); } }, `더 보기 (${dbMatched.length - shown.length}장 더 있음)`)
     : h('span', { className: 'meta' }, dbMatched.length ? `총 ${dbMatched.length}장 검색됨` : '검색 결과가 없습니다'));
@@ -422,27 +441,24 @@ function dbRefreshDeck() {
   els.deckErrors.replaceChildren(v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'));
   els.mainLbl.textContent = `메인덱 (${v.mainN}/50)`;
   els.digLbl.textContent = `디지타마덱 (${v.digitamaN}/5)`;
-  els.mainList.replaceChildren(...Object.entries(dbDraft.main).map(([id, n]) => deckLineItem(id, n)));
-  els.digList.replaceChildren(...Object.entries(dbDraft.digitama).map(([id, n]) => deckLineItem(id, n)));
+  els.mainList.replaceChildren(...DT.sortEntries(Object.entries(dbDraft.main), dbDeckSort, S.card).map(([id, n]) => deckLineItem(id, n)));
+  els.digList.replaceChildren(...DT.sortEntries(Object.entries(dbDraft.digitama), dbDeckSort, S.card).map(([id, n]) => deckLineItem(id, n)));
   els.err.textContent = dbLastError;
   if (document.activeElement !== els.name) els.name.value = dbSavedName;
-  const saved = DB.loadSavedDecks();
-  els.saved.replaceChildren(...(Object.keys(saved).length ? [
-    h('div', { className: 'zone-label' }, '저장된 덱'),
-    ...Object.keys(saved).map(name => h('div', { className: 'actions-row' }, [
-      h('span', {}, name),
-      h('button', { onClick: () => { dbDraft = { name, main: { ...saved[name].main }, digitama: { ...saved[name].digitama }, art: { ...(saved[name].art || {}) } }; dbSavedName = name; dbLastError = ''; dbRefreshDeck(); } }, '불러오기'),
-      h('button', { className: 'danger', onClick: () => { delete saved[name]; DB.saveSavedDecks(saved); dbRefreshDeck(); } }, '삭제'),
-    ])),
-  ] : []));
+  if (dbDA) { dbDA.renderSaved(els.saved); dbDA.refresh(); } // saved-deck manager + live stats/checkup panels
   dbRefreshResults(); // tile copy counts, in-deck / at-limit filters
 }
 
 function deckLineItem(id, n) {
-  const chip = cardChip(id, { deckCount: n, art: dbArtUrl(id), parBadge: !!dbArtKey(id), onClick: () => dbOpenPreview(id) });
+  const chip = cardChip(id, { showId: true, deckCount: n, art: dbArtUrl(id), parBadge: !!dbArtKey(id), onClick: () => dbOpenPreview(id) });
   chip.style.position = 'relative';
   chip.appendChild(h('button', { className: 'db-quick db-minus', title: '덱에서 1장 빼기', onClick: (e) => { e.stopPropagation(); dbRemove(id); } }, '－'));
-  return chip;
+  const ctl = h('div', { className: 'dt-line-ctl' }, [
+    h('button', { title: '1장 추가', onClick: () => dbAdd(id) }, '＋'),
+    h('button', { title: '1장 빼기', onClick: () => dbRemove(id) }, '－'),
+    h('button', { className: 'danger', title: '이 카드 전부 제거', onClick: () => { DT.setCount(dbDraft, id, 0, dbDA.env); dbLastError = ''; dbRefreshDeck(); } }, '✕'),
+  ]);
+  return h('div', { className: 'dt-line' }, [chip, ctl]);
 }
 
 // ---- preview panel (right side on desktop, bottom sheet on phones) ----
@@ -665,6 +681,7 @@ function render() {
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
   app.appendChild(renderFxLayer());
+  try { fxFieldRender(state); } catch (e) { console.warn('fxField', e); } // on-field annotations: re-anchor to the rebuilt tiles
   fxEmit('render', { state }); // VFX overlay: snapshot tile geometry, watch battle log lines, play queued effect animations
 }
 
@@ -779,7 +796,7 @@ function cardChip(cardId, opts = {}) {
     ? h('span', { className: dpModified ? (opts.effectiveDp > c.dp ? 'dp-buffed' : 'dp-debuffed') : '' },
         dpModified ? `DP${c.dp}→${opts.effectiveDp}` : `DP${c.dp}`)
     : null;
-  const metaParts = [c.level ? `Lv.${c.level}` : c.category, dpNode, c.cost != null ? `C${c.cost}` : null].filter(x => x != null);
+  const metaParts = [c.level ? `Lv.${c.level}` : c.category, dpNode, opts.showId ? cardId : (c.cost != null ? `C${c.cost}` : null)].filter(x => x != null); // 덱 빌더: 'C7' 대신 카드 번호
   const metaChildren = metaParts.flatMap((part, i) => i === 0 ? [part] : [' · ', part]);
   const attrs = { className: cls.join(' '), onClick: opts.onClick };
   if (opts.draggable) {
@@ -1728,7 +1745,8 @@ function renderUiChoice() {
   const uc = state.uiChoice;
   if (!uc) return null;
   const { kind, payload, resolve } = uc;
-  const rows = [h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')];
+  const fxr = state._fxRec; // which card is asking (shown inline at the top of every choice modal)
+  const rows = [fxFieldOn() && fxr && fxr.src && fxr.src.kind === 'effect' ? h('div', { className: 'fxf-modal-src fxf-' + fxr.src.owner }, '📌 ' + fxSrcLabel(fxr)) : null, h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')].filter(Boolean);
 
   if (kind === 'pickPendingOrder') {
     payload.items.forEach((it, i) => rows.push(h('div', { className: 'actions-row' }, [
@@ -1958,7 +1976,7 @@ function describeSelectedEffects() {
   const parts = [];
   const showCard = (id) => {
     const c = S.card(id);
-    const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} C${c.cost ?? '-'} DP${c.dp ?? '-'}`];
+    const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} 코스트${c.cost ?? "-"} DP${c.dp ?? '-'}`];
     if (c.evoNormal) bits.push(`진화: ${(c.evoNormal.colors||[]).join('/')} Lv.${c.evoNormal.level}→코스트${c.evoNormal.cost}`);
     if (c.effectKo) bits.push(c.effectKo);
     if (c.inheritedKo) bits.push('[진화원효과] ' + c.inheritedKo);
@@ -2537,7 +2555,7 @@ const fxHeld = () => !!state && (!!state.uiChoice || fxBusyMs() > 0);
 function fxSync() {
   if (!state) return;
   const hist = state.fxHistory || [];
-  if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
+  if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.fieldBase = fxUI.seen; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
   for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
   if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
   // Presentation order: activation VFX -> choice modal -> results. While a choice modal is open (or held) or the fx timeline is busy,
@@ -2547,6 +2565,12 @@ function fxSync() {
     fxUI.hits = { p1: new Set(), p2: new Set() };
     clearTimeout(fxUI.holdTimer);
     if (!state.uiChoice) fxUI.holdTimer = setTimeout(() => { if (state) render(); }, Math.max(unbooked ? 150 : 0, fxBusyMs() + 60));
+    return;
+  }
+  if (fxFieldOn()) { // 필드 표기: results are drawn ON the field (src/fxfield.js) — no collected panel / pager / ghost tiles / 🎯 markers
+    fxFieldSync(state, hist, fxUI.fieldBase || 0, fxDelayFor);
+    if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
+    fxUI.queue = []; fxUI.open = false; fxUI.ghosts = []; fxUI.markRec = null; fxUI.hits = { p1: new Set(), p2: new Set() };
     return;
   }
   for (const rec of hist.slice(0, 6)) { // ghost tiles for freshly vanished stacks (a rec can gain vanishes after being seen)
@@ -2616,6 +2640,10 @@ function readSpeedSelect() {
   return h('label', { className: 'meta fx-cfg' }, ['읽기 속도 ', h('select', { onchange: (e) => { READ.speed = e.target.value; try { localStorage.setItem('digimon_read_speed', READ.speed); } catch (err) { /* ignore */ } } },
     [['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === READ.speed) o.selected = true; return o; }))]);
 }
+function fxFieldSelect() { // 필드 표기: annotate effects on the field (default on)
+  return h('label', { className: 'meta fx-cfg' }, ['필드 표기 ', h('select', { onchange: (e) => { fxFieldSetOn(e.target.value === '1'); if (state) render(); } },
+    FIELD_LABELS.map(([v, l]) => { const o = h('option', { value: v }, l); if ((v === '1') === fxFieldOn()) o.selected = true; return o; }))]);
+}
 function fxDelaySelect() {
   return h('label', { className: 'meta fx-cfg' }, ['효과 표시 ', h('select', { onchange: (e) => { fxUI.cfg = e.target.value; try { localStorage.setItem('digimon_fx_delay', fxUI.cfg); } catch (err) { /* ignore */ } } },
     [['auto', '읽는 시간 자동'], ['2', '짧게 2초'], ['5', '보통 5초'], ['10', '길게 10초'], ['manual', '수동 확인']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxUI.cfg) o.selected = true; return o; }))]);
@@ -2651,7 +2679,7 @@ function renderFxLayer() {
 function renderFxHistory() {
   const hist = (state.fxHistory || []).filter(r => !fxTrivial(r));
   return [
-    fxDelaySelect(), readSpeedSelect(), fxVfxSelect(),
+    fxFieldSelect(), fxDelaySelect(), readSpeedSelect(), fxVfxSelect(),
     ...(hist.length ? hist.map(r => h('div', { className: 'fx-hist-item', onClick: () => { fxUI.expanded.has(r.id) ? fxUI.expanded.delete(r.id) : fxUI.expanded.add(r.id); render(); } }, [
       h('div', { className: 'fx-hist-title' }, `${fxUI.expanded.has(r.id) ? '▼' : '▶'} ${fxSrcLabel(r)}`),
       fxRecView(r, false),
