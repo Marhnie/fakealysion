@@ -21,6 +21,8 @@ export function registerFxDefs(def) {
   def('FXX-battle', '15-1', '[부작용] 배틀 에어리어의 스택 수는 텍스트가 등장/소멸/되돌림 등을 말할 때만 바뀜');
   def('FXX-dp', '15-1', '[부작용] 텍스트에 DP 언급이 없는데 임시 DP 증감이 생기지 않음');
   def('FXX-rest', '15-1', '[부작용] 텍스트에 레스트/액티브/어택 언급이 없는데 레스트 상태가 바뀌지 않음');
+  def('FXX-deck', '15-1', '[부작용] 텍스트에 덱/드로우/오픈/파기 언급이 없는데 덱 장수가 바뀌지 않음');
+  def('FXX-trash', '15-1', '[부작용] 텍스트에 트래시/파기/소멸 등 언급이 없는데 트래시 장수가 바뀌지 않음');
   def('FX-kw', '15-1', '"이 턴 동안 이 디지몬은 《X》를 얻는다": 효과 해결 직후 그 키워드 보유');
 }
 
@@ -33,18 +35,19 @@ export function makeFxChecker(O, H) {
   const { ck, state } = O; const { S, snap, dpOf, C, opp, clamp, own, boardText } = H;
   let cur = null, gen = null;
   const genSnap = (t) => { const pl = { p1: state.players.p1, p2: state.players.p2 }; const g = { t, npend: state.pending.length, head: state.log[0] || null, mem: state.memory, z: {}, dp: {}, susp: {}, cnt: {}, kw: {} };
-    for (const q of ['p1', 'p2']) { g.z[q] = { hand: pl[q].hand.length, sec: pl[q].security.length, bat: pl[q].battle.length }; for (const st of pl[q].battle) { g.dp[st.uid] = st.tempDP || 0; g.susp[st.uid] = !!st.suspended; g.kw[st.uid] = Object.keys(st.keywords || {}).length; } }
+    for (const q of ['p1', 'p2']) { g.z[q] = { deck: pl[q].deck.length, trash: pl[q].trash.length, hand: pl[q].hand.length, sec: pl[q].security.length, bat: pl[q].battle.length }; for (const st of pl[q].battle) { g.dp[st.uid] = st.tempDP || 0; g.susp[st.uid] = !!st.suspended; g.kw[st.uid] = Object.keys(st.keywords || {}).length; } }
     return g; };
   const genCheck = () => {
     const g = gen; if (!g) return; const T = String(g.t.text || ''); if (!T.trim()) return;
     const newLines = []; for (const e of state.log) { if (e === g.head) break; newLines.push(e); }
     if (newLines.some((e) => /자동 처리|룰체크|스택 소멸|패배|승리/.test(e.msg))) return; // nested auto-resolved effects / rule deletions add unrelated changes
     if (state.winner || state.pending.length > g.npend) return; // triggers queued meanwhile can pay their costs (rest a Tamer, …) at queue time
-    if (/^이 카드의 【메인】 효과를 발(?:휘|동)한다/.test(T.trim()) || /^[《≪]/.test(T.trim()) || !S.CARDS[g.t.cardId]) return; // indirection / bare-keyword text / synthetic granted effects (S2-GRANT) // pure indirection to the printed 【메인】 text
+    if (/^이 카드의 【메인】 효과를 발(?:휘|동)한다/.test(T.trim()) || /^[《≪]/.test(T.trim()) || !S.CARDS[g.t.cardId] || /GRANT|~/.test(String(g.t.cardId))) return; // indirection / bare-keyword text / synthetic granted effects (S2-GRANT) // pure indirection to the printed 【메인】 text
     if (newLines.some((e) => /오버플로우|회피|생존 능력|아머 퍼지|방벽|스케이프고트/.test(e.msg))) return;
     const p = g.t.player, o = opp(p);
     if (state.memory !== g.mem) ck('FXX-mem', /메모리|코스트|지불|패스|게이지|진화|등장|사용|링크|합체/.test(T), () => `${g.t.cardId} 【${(g.t.tags || []).join('】【')}】 "${T.slice(0, 90)}" changed memory ${g.mem}->${state.memory}`); else ck('FXX-mem', true);
     for (const q of [p, o]) { const nh = state.players[q].hand.length; if (nh !== g.z[q].hand) ck('FXX-hand', /드로우|패|핸드|오픈|파기|등장|사용|진화|놓|덱|시큐리티|되돌|공개|테이머|링크|합체|어셈블|디지크로스|버스트|교환|가져|섞|회수|선택|[Xx]항체|카운터|블래스트/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} hand ${g.z[q].hand}->${nh}`); }
+    for (const q of [p, o]) { const nd = state.players[q].deck.length; if (nd !== g.z[q].deck) ck('FXX-deck', /덱|드로우|오픈|확인|파기|뽑|드로|섞|시큐리티|패|되돌|놓|추가|등장|사용|진화/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} deck ${g.z[q].deck}->${nd}`); const nt = state.players[q].trash.length; if (nt !== g.z[q].trash) ck('FXX-trash', /트래시|파기|소멸|체크|되돌|놓|덱|시큐리티|패|등장|사용|진화|링크|이동|합체|카운터|어셈블|복귀|불굴|지불|오픈|퇴화/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} trash ${g.z[q].trash}->${nt}`); }
     for (const q of [p, o]) { const ns = state.players[q].security.length; if (ns !== g.z[q].sec) ck('FXX-sec', /시큐리티|체크|어택|소멸|파기|등장|덱|패|트래시|되돌|놓|오픈|가져|회수|버스트|합체/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} security ${g.z[q].sec}->${ns}`); }
     for (const q of [p, o]) { const nb = state.players[q].battle.length; if (nb !== g.z[q].bat) ck('FXX-battle', /소멸|등장|패로|덱|트래시|파기|되돌|놓|이동|링크|합체|진화|디지크로스|재등장|어셈블|버스트|교환|분리|퇴화|시큐리티|제외|사용|선택|어택|배틀|카운터|블래스트|효과/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} battle ${g.z[q].bat}->${nh0(q)}`); }
     for (const q of [p, o]) for (const st of state.players[q].battle) { if (st.uid in g.dp && (st.tempDP || 0) !== g.dp[st.uid]) ck('FXX-dp', /DP|배틀|진화|소멸|디지크로스|재등장|합체|효과|색|복사|같은|퇴화/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" DP mod ${g.dp[st.uid]}->${st.tempDP}`); if (st.uid in g.susp && !!st.suspended !== g.susp[st.uid]) ck('FXX-rest', /레스트|액티브|어택|블록|블로커|회피|재기동|리커버리|아머|효과|소멸|진화|디지크로스|재등장|합체|등장|링크|퇴화/.test(T), () => `${g.t.cardId} "${T.slice(0, 90)}" ${q} ${g.susp[st.uid] ? 'unrested' : 'rested'} a stack`); }
@@ -107,7 +110,7 @@ export function makeFxChecker(O, H) {
         }
         case 'destroy': {
           const cands = digimonOf(sn, o).filter((s) => s.dp <= c.n); const gone = digimonOf(sn, o).filter((b) => !after.p[o].battle.some((s) => s.uid === b.uid));
-          const ok = blocked || (cands.length === 0 ? gone.length === 0 : gone.length === 1 && gone[0].dp <= c.n) || gone.length === 0; // (gone.length===0 with candidates: prevented by keyword/immunity/optional — not flagged)
+          const ok = blocked || state.log.slice(0, 10).some((e) => /디코이|소멸하지 않|생존|길동무|대신/.test(e.msg)) || (cands.length === 0 ? gone.length === 0 : gone.length === 1 && gone[0].dp <= c.n) || gone.length === 0; // (gone.length===0 with candidates: prevented by keyword/immunity/optional — not flagged)
           ck('FX-destroy-dp', ok, () => `${where()}: candidates ${cands.length} gone ${gone.map((g) => g.dp).join(',')}`);
           break;
         }

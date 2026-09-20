@@ -283,8 +283,8 @@ export function checkOption(O, act, pre, post, lines) {
   if (!used) return;
   // 4-22 color condition (pre-state)
   const need = c.colors || [];
-  const have = new Set(); for (const s of [A.raising, ...A.battle].filter(Boolean)) if (['digimon', 'tamer'].includes(s.cat)) for (const col of (C(s.id).colors || [])) have.add(col);
-  for (const st of stacksOf(state.players[p])) if (['digimon', 'tamer'].includes(C(st.cardId).category)) for (const col of S.stackColors(st)) have.add(col); // colors granted by effects count too (4-22)
+  const have = new Set(); for (const s of [A.raising, ...A.battle].filter(Boolean)) if (s === A.raising || ['digimon', 'tamer'].includes(s.cat)) for (const col of (C(s.id).colors || [])) have.add(col); // (4-22-2: the hatched egg in the breeding area counts)
+  for (const st of stacksOf(state.players[p])) if (st === state.players[p].raising || ['digimon', 'tamer'].includes(C(st.cardId).category)) for (const col of S.stackColors(st)) have.add(col); // colors granted by effects count too (4-22)
   const txt = (c.effectKo || '') + (c.inheritedKo || '');
   const ignores = /색\s*조건/.test(txt) || /사용\s*조건/.test(txt);
   ck('O-color', need.every((col) => have.has(col)) || ignores, () => `${c.nameKo} needs ${need} have ${[...have]}`);
@@ -388,7 +388,7 @@ export function makeHooks(O) {
       ck('A-attacker', pl.battle.includes(st) && C(st.cardId).category === 'digimon' && st.suspended === true || !!(pl.battle.includes(st) && C(st.cardId).category === 'digimon' && /레스트하지 않/.test(state.log[0].msg)), () => `attacker suspended=${st.suspended}`);
       ck('A-rest', st.suspended === true || /레스트하지 않/.test(state.log[0].msg));
       ck('A-nomem', state.memory === O.preActionMem, () => `memory ${O.preActionMem}->${state.memory} at attack declaration`);
-      const enteredThisTurn = entered === state.turnNumber && !O.jogressUids.has(uid);
+      const enteredThisTurn = entered === state.turnNumber && st.placedTurn === state.turnNumber && !O.jogressUids.has(uid); // (first seen this turn AND placed this turn: a 《불굴》-style re-entry during the OPPONENT's turn is fine)
       ck('P-noattack', !enteredThisTurn || st.viaFusion || kwEvidence(state, p, st, '속공') || kwEvidence(state, p, st, '볼텍스'), () => `${C(st.cardId).nameKo} entered turn ${entered} attacked on turn ${state.turnNumber} without 속공`);
       if (target !== 'PLAYER') {
         const d = state.players[op].battle.find((s) => s.uid === target);
@@ -528,9 +528,22 @@ function buildDecks() {
     if (!total(eggs)) return random(name);
     return { name: st, main, digitama: eggs };
   }
-  return (name, kind) => (kind === 'coherent' ? coherent(name) : kind === 'starter' ? starter(name) : random(name)) || random(name);
+  // jogress-heavy deck: a few jogress targets + every card that can serve as a material side (engine parser used only to BUILD the deck), same-color filler
+  const JOG = cards.filter((c) => c.category === 'digimon' && (c.effectKo || '').includes('〔조그레스〕'));
+  function jogress(name) {
+    const main = {}, dig = {};
+    const targets = []; for (let i = 0; i < 4 && JOG.length; i++) targets.push(pick(JOG));
+    const cols = new Set();
+    for (const t of targets) { add(main, t, 3); for (const c of t.colors || []) cols.add(c); let j = null; try { j = S.parseJogress(t.id); } catch { j = null; } if (!j) continue; for (const c of cards) if (c.category === 'digimon' && (j.left(c) || j.right(c))) { if (Math.random() < 0.35) add(main, c, 3); } }
+    const inCol = (c) => (c.colors || []).some((x) => cols.has(x));
+    const fill = cards.filter((c) => ['digimon', 'tamer', 'option'].includes(c.category) && inCol(c) && c.level !== 2 && !c.isParallel);
+    let g = 0; while (total(main) < 50 && fill.length && g++ < 3000) add(main, pick(fill), 4);
+    const eggs = eggPool.filter((c) => (c.colors || []).some((x) => cols.has(x))); for (let i = 0; i < 5; i++) add(dig, pick(eggs.length ? eggs : eggPool), 4);
+    return total(main) === 50 ? { name, main, digitama: dig } : null;
+  }
+  return (name, kind) => (kind === 'coherent' ? coherent(name) : kind === 'starter' ? starter(name) : kind === 'jogress' ? jogress(name) : random(name)) || random(name);
 }
-const drawKind = (g) => ['coherent', 'coherent', 'starter', 'random'][g % 4];
+const drawKind = (g) => ['coherent', 'coherent', 'starter', 'random', 'coherent', 'jogress', 'coherent', 'starter'][g % 8];
 
 export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGoing }) {
   Math.random = seededRandom(seed); Cpu.setRng(Math.random);
@@ -696,6 +709,28 @@ export function pairDiff(sample = 0) {
   return out;
 }
 
+// ---- exhaustive differential #2: jogress legality (8-2-1). For every jogress target whose 〔조그레스〕 line uses only color / Lv. / exact name / name-contains sides,
+// compare S.canJogress with the independent side predicates over (all cards that satisfy either side) x (same set + random extras).
+export function jogressDiff() {
+  def('EV-jogress', '8-2-1', '[전수조사] 조그레스 재료 쌍의 허용 여부가 인쇄된 조건(색/Lv./명칭)과 일치');
+  const cards = Object.values(S.CARDS).filter((c) => !c.isToken && c.category === 'digimon');
+  const out = { targets: 0, pairs: 0, missed: [], extra: [] };
+  for (const t of cards.filter((c) => (c.effectKo || '').includes('〔조그레스〕'))) {
+    const j = printedJogress(t.id); if (!j) continue; out.targets++;
+    const pool = cards.filter((c) => j.left(c) || j.right(c)); const extra = []; for (let i = 0; i < 120; i++) extra.push(cards[Math.floor(Math.random() * cards.length)]);
+    const cand = [...new Set([...pool, ...extra])];
+    for (const a of cand) for (const b of cand) {
+      if (a === b && !((j.left(a) && j.right(a)))) { /* same card twice is allowed only when both sides accept it */ }
+      const exp = (j.left(a) && j.right(b)) || (j.left(b) && j.right(a));
+      const r = S.canJogress({ cardId: a.id, sources: [] }, { cardId: b.id, sources: [] }, t.id);
+      out.pairs++; CAT['EV-jogress'].evals++;
+      if (exp && !r.ok) { CAT['EV-jogress'].viol++; if (out.missed.length < 12) out.missed.push(`${a.id} ${a.nameKo} + ${b.id} ${b.nameKo} -> ${t.id} ${t.nameKo}: ${r.reason}`); }
+      else if (!exp && r.ok) { CAT['EV-jogress'].viol++; if (out.extra.length < 12) out.extra.push(`${a.id} ${a.nameKo} + ${b.id} ${b.nameKo} -> ${t.id} ${t.nameKo} (engine allows)`); }
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ CLI
 const isMain = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('rule-oracle.mjs');
 if (isMain) {
@@ -710,6 +745,7 @@ if (isMain) {
   const JSON_OUT = flag('json', null);
   const VERBOSE = !!flag('verbose', false);
   for (const id of String(flag('only', '')).split(',').filter(Boolean)) ONLY.add(id);
+  if (flag('jpairs', false)) { const r = jogressDiff(); console.log('JOGRESS PAIR DIFF: targets', r.targets, 'pairs', r.pairs, 'missed', r.missed.length, 'extra', r.extra.length); for (const x of r.missed) console.log('  MISSED', x); for (const x of r.extra) console.log('  EXTRA ', x); process.exit(0); }
   if (flag('pairs', false)) { const r = pairDiff(Number(flag('sample', 0)) || 0); console.log('EVOLUTION PAIR DIFF: pairs', r.pairs); for (const k of ['missed', 'extra', 'cost']) { console.log(k, CAT[{ missed: 'EV-normal-missed', extra: 'EV-extra-allowed', cost: 'EV-cost' }[k]].viol); for (const x of r[k]) console.log('  ', x); } process.exit(0); }
   const MIX = [['easy', 'easy'], ['normal', 'normal'], ['hard', 'normal'], ['normal', 'easy'], ['hard', 'hard'], ['easy', 'normal']];
   const agg = {}; const errs = {}; let done = 0, turns = 0, wins = 0, stalls = 0;

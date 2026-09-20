@@ -70,3 +70,11 @@
   .actions { max-height: 45vh; }
 }
 @media (max-width: 900px), (pointer: coarse) { .lbl-mob-hide { display: none; } }
+@media (max-width: 950px) and (max-height: 500px) {
+  .topbar-row { height: 38px; }
+  .mb-menu-btn, .topbar-row > button { min-height: 32px !important; }
+  .cpu-bar { height: 22px; font-size: 11px; }
+  .panel-tab { padding: 6px 12px; }
+  .mb-drawer button { min-height: 40px; }
+}
+.mb-drawer .pr-group .pr-btn { min-height: 48px; }
