@@ -47,10 +47,24 @@ sc('BT18-019::등장 시', async (ctx, R) => {
   for (const lv of levels) {
     const idxs = pl.trash.map((id, i) => (C(id).category === 'digimon' && C(id).level === lv ? i : -1)).filter((i) => i >= 0);
     if (!idxs.length) continue;
-    const k = idxs.length === 1 ? idxs[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', owner: op, eligibleIdxs: idxs, prompt: `상대 트래시의 Lv.${lv} 디지몬 카드 1장 선택 (덱 위로)` });
-    if (k == null || !idxs.includes(k)) continue;
+    let k = idxs[0];
+    if (idxs.length > 1) { const pk = await ctx.choose('pickFromRevealed', { player: ctx.self, revealed: idxs.map((i) => pl.trash[i]), eligible: idxs.map((_, j) => ({ id: pl.trash[idxs[j]], i: j })), min: 1, max: 1, dest: 'none', prompt: `상대 트래시의 Lv.${lv} 디지몬 카드 1장 선택 (덱 위로)` }); const j = Array.isArray(pk) ? pk[0] : pk; k = idxs[Number.isInteger(j) && j >= 0 && j < idxs.length ? j : 0]; }
     const [id] = pl.trash.splice(k, 1); pl.deck.unshift(id); n++;
     S.log(state, `${ctx.self} 상대 트래시의 ${C(id).nameKo}을(를) 덱 위로`);
   }
   if (n) S.grantMemory(state, ctx.self, n, ctx.sourceCardId);
 });
+
+// BT18-021/043/057/075 【자신의 턴】[턴에 1회] 이 디지몬 또는 자신의 테이머가 X/Y를 포함하는 다색의 디지몬 카드로 진화할 때, 지불하는 진화 코스트 -1.
+// (state.continuousEvoCostDiscount scans only the evolving stack, so the "own Tamer evolves" half never applied; the digimon's own evolution is still handled there.)
+for (const [id, cols] of [['BT18-021', ['blue', 'red']], ['BT18-043', ['green', 'red']], ['BT18-057', ['black', 'yellow']], ['BT18-075', ['purple', 'yellow']]]) {
+  hk(id, { tag: '자신의 턴', has: '진화할 때', evoDiscount: (state, hp, holder, ev, tgtId) => {
+    if (!ev || ev === holder || C(ev.cardId).category !== 'tamer' || C(tgtId).category !== 'digimon') return 0;
+    const tc = C(tgtId).colors || [];
+    if (tc.length < 2 || !tc.some((c) => cols.includes(c))) return 0;
+    const key = S.onceLimitKey(id, ['자신의 턴']);
+    if (S.turnUsesRemaining(holder, key, 1) <= 0) return 0;
+    S.markTurnEffectUsed(holder, key);
+    return -1;
+  } });
+}

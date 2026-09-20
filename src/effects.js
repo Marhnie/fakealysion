@@ -1484,6 +1484,7 @@ async function runOneCore(instr, ctx) {
       }
       const st = state.players[ctx.self].battle.find(x => x.uid === ctx.sourceStackUid) || (state.players[ctx.self].raising?.uid === ctx.sourceStackUid ? state.players[ctx.self].raising : null);
       const canPay = costGroupPayable(ctx, instr);
+      if (instr.else && (!canPay || !(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '비용을 지불하고 대신 다른 효과를 처리하시겠습니까? (아니오 = 원래 효과)' })))) { await runScript(instr.else, ctx); break; } // pass2-b2: replacement-style cost ("…것으로, 대신 …")
       if (!canPay) { S.log(state, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); ctx._costUnpaid = true; break; }
       // 15-7-2/15-7-3: an optional-processing-condition ("~ことで") cost must be performed IN FULL; if the player
       // picked fewer cards than required (or a step was blocked), nothing after the cost may run.
@@ -3449,6 +3450,14 @@ function compileWithCost(text) {
     const sents = splitSentences(t);
     const k = sents.findIndex(x => /것으로,?\s*\S/.test(x));
     if (k > 0 && !/오픈|공개|〈룰〉/.test(sents.slice(0, k).join(' ')) && !inner.some(x => x.op === 'costGroup' || x.op === 'condition')) {
+      { // pass2-b2: "<효과 A>. <비용>하는 것으로, 대신 <효과 B>" (BT12-031, EX3-072): paying the cost REPLACES the previous sentence (A) with B — costGroup{then:B, else:A}
+        const rm = /^(.*?)\s*것으로,?\s*대신에?,?\s*(.+)$/s.exec(sents[k]);
+        if (rm && k >= 1 && sents.slice(k + 1).length === 0) {
+          const costOps2 = compileCostClause(rm[1].trim().replace(/^(?:그\s*후,?\s*)/, ''));
+          const thenOps2 = compileToScript(rm[2]), elseOps2 = compileToScript(sents[k - 1].replace(/^(?:그\s*후,?\s*)/, ''));
+          if (costOps2.length && costOps2.every(x => x.op !== 'manualCost') && thenOps2.length && elseOps2.length) return [...(k > 1 ? compileToScript(sents.slice(0, k - 1).join(' ')) : []), { op: 'costGroup', cost: costOps2, then: thenOps2, else: elseOps2 }];
+        }
+      }
       const rest = compileWithCost(sents.slice(k).join(' '));
       if (rest.length && rest.some(x => x.op === 'costGroup')) return [...compileToScript(sents.slice(0, k).join(' ')), ...rest];
     }

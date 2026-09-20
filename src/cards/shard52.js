@@ -13,3 +13,24 @@ const hasTrait = (id, t) => { const c = C(id); return [...(c.types || []), c.for
 SCRIPTS['BT25-073::등장 시'] = [{ op: 'costGroup', cost: [{ op: 'trashLink', n: 1, target: 'own' }],
   then: [{ op: 's8_playOrUse', zones: ['hand'], kinds: ['digimon', 'tamer', 'option'], free: true, pred: (id) => hasTrait(id, 'TS') && (C(id).cost || 0) <= 5 }] }];
 SCRIPTS['BT25-073::진화 시'] = SCRIPTS['BT25-073::등장 시'];
+
+const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
+const hk = (id, d) => { (HOOKS[id] ||= []).push(d); };
+const digs = (state, p) => state.players[p].battle.filter((s) => C(s.cardId).category === 'digimon');
+
+// ---- BT25-075 이 카드가 등장할 때, 자신의 디지몬 수가 상대보다 적다면, 등장 코스트 -5. (no printed hook existed → full cost was always charged)
+hk('BT25-075', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (digs(state, hp).length < digs(state, opp(hp)).length ? -5 : 0) });
+
+// ---- BT25-076 이 카드가 등장할 때, 진화원에 「네가몬」을 가진 등장 코스트 11 이하의 「네가몬」이 기술되어 있는 자신의 디지몬 1마리를 소멸시키는 것으로, 소멸시킨 디지몬의 등장 코스트만큼 등장 코스트를 감소시킬 수 있다.
+hk('BT25-076', { tag: '__handPlay', handPlayOption: (state, p, cardId) => {
+  const cands = () => digs(state, p).filter((s) => S.effectiveCost(state, s) <= 11 && (s.sources || []).some((id) => C(id).nameKo === '네가몬') && S.cardMentions(s.cardId, '네가몬'));
+  if (!cands().length) return null;
+  return { label: `${C(cardId).nameKo}: 진화원에 「네가몬」을 가진 자신의 디지몬 1마리를 소멸시켜 그 등장 코스트만큼 등장 코스트 감소?`, async apply(choose) {
+    const cs = cands();
+    const uid = cs.length === 1 ? cs[0].uid : await choose('pickStack', { player: p, uids: cs.map((s) => s.uid), prompt: '소멸시킬 자신의 디지몬 선택' });
+    const v = cs.find((s) => s.uid === uid); if (!v) return 0;
+    const cost = S.effectiveCost(state, v);
+    S.deleteStack(state, p, v.uid, 'trash', 'ownEffect');
+    return -cost;
+  } };
+} });

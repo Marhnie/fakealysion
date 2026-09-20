@@ -1477,6 +1477,7 @@ export function hasContinuousKeyword(state, p, stack, keyword) {
       if (!m) continue;
       const desc = m[1].trim();
       if (!desc) return true;
+      if (/진화원/.test(desc)) continue; // pass2-b1 (BT10-078): "이 디지몬의 진화원에 …가 있는 동안" is a SOURCES condition — evoTargetPredicate would misread it as a top-card name test; the cached conditional grants (hasKeyword) evaluate it
       const pred = evoTargetPredicate(desc);
       if (pred && pred(card(stack.cardId))) return true;
     }
@@ -2997,7 +2998,6 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   // 디지크로스: materials go under the new card (7-2-2-3/7-2-2-7) — hand cards by id,
   // battle-area Digimon leave the area and bring their own sources with them.
   const s2mat = state._s2PlayMat || []; state._s2PlayMat = null; // shard2: play-discount materials chosen via a hook (BT10-093)
-  if ((opts.assembly || []).length) placeXrosMaterials(state, p, stack, [...opts.assembly].reverse()); // 7-3-2-6: the card written leftmost ends up on top
   if ((opts.assembly || []).length) placeXrosMaterials(state, p, stack, [...opts.assembly].reverse()); // 7-3-2-6: the card written leftmost ends up on top
   const xrosPlaced = placeXrosMaterials(state, p, stack, [...[...(opts.materials || [])].reverse(), ...s2mat]); // 7-2-2-8: the material written LEFTMOST in the condition ends up on top (sources[] is oldest-first, so push it last)
   stack.xrosCount = xrosPlaced; // 7-2-2-9/10: number of cards placed under by DigiXros (0 = did not DigiXros); usable by "디지크로스하고 있었다면" conditions

@@ -26,6 +26,7 @@ const VERBOSE = !!flag('verbose', false);
 const MAX_TURNS = Number(flag('maxTurns', 60));
 const MAX_MIN = Number(flag('minutes', 0));
 const JSON_OUT = flag('json', null);
+const LOGN = Number(flag('logn', 8));
 const SELFTEST = !!flag('selftest', false);
 const T0 = Date.now();
 
@@ -128,7 +129,7 @@ function report(cls, key, detail) {
   const k = cls + ': ' + key;
   if (!found[k]) found[k] = { n: 0, cls, ex: null };
   found[k].n++;
-  if (!found[k].ex) found[k].ex = { seed: CURG && CURG.seed, gen: CURG && CURG.kind, decks: CURG && CURG.decks, turn: CURG && CURG.state.turnNumber, action: LASTACT, trace: (CURG && CURG.trace || []).slice(-8), ran: RAN.slice(-6), detail, logTail: CURG ? CURG.state.log.slice(0, Math.max(0, CURG.state.log.length - LOGMARK)).slice(0, 8).map(e => e.msg).reverse() : [] };
+  if (!found[k].ex) found[k].ex = { seed: CURG && CURG.seed, gen: CURG && CURG.kind, decks: CURG && CURG.decks, turn: CURG && CURG.state.turnNumber, action: LASTACT, trace: (CURG && CURG.trace || []).slice(-8), ran: RAN.slice(-6), detail, logTail: CURG ? CURG.state.log.slice(0, Math.max(0, CURG.state.log.length - LOGMARK)).slice(0, LOGN).map(e => e.msg).reverse() : [] };
 }
 function noteErr(where, e) {
   const top = String(e && e.stack).split('\n').slice(1, 3).map(s => s.trim().replace(/^at /, '').replace(/\(?file:\/\/\/.*[\\/]([^\\/]+:\d+):\d+\)?/, '$1')).join(' < ');
@@ -590,9 +591,9 @@ async function playGame(gi) {
 }
 function winnerCheck(g) {
   const st = g.state; const w = st.winner, l = S.opponentOf(w);
-  const recent = st.log.slice(0, 12).map(e => e.msg).join(' | ');
+  const recent = st.log.slice(0, Math.max(12, LOGN)).map(e => e.msg).join(' | ');
   const ok = /승리|패배|투항|덱아웃/.test(recent);
-  if (!ok) report('WINNER', 'winner set without a logged win/lose reason', recent.slice(0, 160));
+  if (!ok) report('WINNER', 'winner set without a logged win/lose reason', recent.slice(0, LOGN > 12 ? 5000 : 160));
   const sec0 = st.players[l].security.length === 0, deck0 = st.players[l].deck.length === 0;
   if (!sec0 && !deck0 && !/투항|승리!/.test(recent)) report('WINNER', 'winner set but loser has security and deck', recent.slice(0, 160));
 }
@@ -619,7 +620,7 @@ console.log('distinct findings:', keys.length, `(${((Date.now() - T0) / 1000).to
 for (const k of keys.slice(0, 60)) {
   const f = found[k], e = f.ex;
   console.log(`\n[${f.n}x] ${k}\n   seed=${e.seed} gen=${e.gen} decks=${(e.decks || []).join(' vs ')} turn=${e.turn} action="${e.action}" ran=${e.ran.join(',')}\n   ${String(e.detail).slice(0, 400)}\n   trace: ${(e.trace||[]).join(" > ")}
-   log: ${e.logTail.slice(-5).join(' / ').slice(0, 400)}`);
+   log: ${e.logTail.slice(-(LOGN > 8 ? LOGN : 5)).join(' / ').slice(0, LOGN > 8 ? 6000 : 400)}`);
 }
 if (JSON_OUT) fs.writeFileSync(String(JSON_OUT), JSON.stringify({ gstat, found }, null, 1));
 process.exit(keys.length ? 1 : 0);
