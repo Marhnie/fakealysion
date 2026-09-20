@@ -24,6 +24,12 @@ const R = { rng: Math.random };
 // tunable knobs (scripts/test-cpu.mjs --tune=key:value,… used them to calibrate the levels)
 export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 1.0, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1 };
 export function setRng(fn) { R.rng = fn || Math.random; }
+export function getRng() { return R.rng; }
+// lookahead search plug-in (src/cpusearch.js registers itself here; cpu.js never imports it -> no import cycle).
+// search(state, p, cfg, opts) -> Promise<action | null>; null = "no opinion" (the heuristic planMain decides)
+export const HOOKS = { search: null };
+// heuristics shared with the search (src/cpusearch.js)
+export const HX = { stackValue: (...a) => stackValue(...a), handCardValue: (...a) => handCardValue(...a), lethalPlan: (...a) => lethalPlan(...a), canDeclareAttack: (...a) => canDeclareAttack(...a), isBlockerNow: (...a) => isBlockerNow(...a), hasKw: (...a) => hasKw(...a), dpOf: (...a) => dpOf(...a), isDigi: (...a) => isDigi(...a) };
 const rnd = () => R.rng();
 const pickRand = (a) => a[Math.floor(rnd() * a.length)];
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
@@ -34,15 +40,24 @@ const memOf = (state, p) => (p === 'p1' ? state.memory : -state.memory);
 
 // ---------- state helpers ----------
 const ownStacks = (pl) => [pl.raising, ...pl.battle].filter(Boolean);
-const dpOf = (state, p, st) => safe(() => S.effectiveDP(state, p, st), card(st.cardId).dp || 0);
-const hasKw = (state, p, st, k) => safe(() => !!(S.hasKeyword(st, k) || S.hasContinuousKeyword(state, p, st, k) || S.hookGrantedKeywords(state, p, st).includes(k)), false);
-const checksOf = (state, p, st) => safe(() => 1 + S.hookSecurityAttackBonus(state, p, st), 1);
-function isBlockerNow(state, p, st, colliding = false) {
+// Per-decision memo: while one decision function (planMain / enumerateActions / attackCandidates / decideBlock …) runs, the game state is constant, so the
+// (expensive, hook-scanning) DP / keyword / value lookups are cached by stack uid.  Entered only through memoized() below; cleared on entry and exit.
+const MEMO = { d: 0, m: new Map() };
+const memoized = (fn) => function (...a) { if (MEMO.d++ === 0) MEMO.m.clear(); try { return fn.apply(this, a); } finally { if (--MEMO.d === 0) MEMO.m.clear(); } };
+const memo = (k, f) => { let v = MEMO.m.get(k); if (v === undefined) { v = f(); MEMO.m.set(k, v); } return v; };
+const dpOf = (state, p, st) => (MEMO.d ? memo('d' + p + st.uid, () => dpOf0(state, p, st)) : dpOf0(state, p, st));
+const dpOf0 = (state, p, st) => safe(() => S.effectiveDP(state, p, st), card(st.cardId).dp || 0);
+const hasKw = (state, p, st, k) => (MEMO.d ? memo('k' + p + st.uid + k, () => hasKw0(state, p, st, k)) : hasKw0(state, p, st, k));
+const hasKw0 = (state, p, st, k) => safe(() => !!(S.hasKeyword(st, k) || S.hasContinuousKeyword(state, p, st, k) || S.hookGrantedKeywords(state, p, st).includes(k)), false);
+const checksOf = (state, p, st) => (MEMO.d ? memo('c' + p + st.uid, () => safe(() => 1 + S.hookSecurityAttackBonus(state, p, st), 1)) : safe(() => 1 + S.hookSecurityAttackBonus(state, p, st), 1));
+function isBlockerNow(state, p, st, colliding = false) { return MEMO.d ? memo('b' + p + st.uid + (colliding ? 1 : 0), () => isBlockerNow0(state, p, st, colliding)) : isBlockerNow0(state, p, st, colliding); }
+function isBlockerNow0(state, p, st, colliding = false) {
   if (!isDigi(st) || st.suspended) return false;
   if (!colliding && !hasKw(state, p, st, '블로커')) return false;
   return safe(() => S.canRestByRule(state, p, st) && !S.s3Flag(state, st, 'noBlock') && !S.hookNoBlock(state, p, st), false);
 }
-function stackValue(state, p, st) {
+function stackValue(state, p, st) { return MEMO.d ? memo('s' + p + st.uid, () => stackValue0(state, p, st)) : stackValue0(state, p, st); }
+function stackValue0(state, p, st) {
   const c = card(st.cardId);
   if (c.category === 'tamer') return 3.5;
   if (c.category !== 'digimon' && c.category !== 'digitama') return 1;
@@ -177,7 +192,7 @@ function canDeclareAttack(state, p, st) {
 }
 
 // -> [{ type:'evolve'|'play'|'option'|'jogress'|'train'|'main', cost, score, key, ... }]
-export function enumerateActions(state, p) {
+function enumerateActions_(state, p) {
   const pl = state.players[p];
   const acts = [];
   const seenHand = new Set();
@@ -283,7 +298,7 @@ function battleOutcome(aDP, bDP, valA, valB) { // value delta for the attacker w
   return -valA;
 }
 
-export function attackCandidates(state, p, cfg) {
+function attackCandidates_(state, p, cfg) {
   const level = cfg.level;
   const pl = state.players[p], op = opp(p), opl = state.players[op];
   const lp = level !== 'easy' ? lethalPlan(state, p) : { lethal: false, uids: [] };
@@ -344,7 +359,7 @@ export function attackCandidates(state, p, cfg) {
 
 // ---------- the next main-phase action ----------
 // -> { type:'pass' } | an action from enumerateActions / attackCandidates.  cfg = { level, banned:Set, giftLimit? }
-export function planMain(state, p, cfg) {
+function planMain_(state, p, cfg) {
   const level = cfg.level;
   const banned = cfg.banned || new Set();
   const mem = memOf(state, p);
@@ -396,7 +411,7 @@ export function planMain(state, p, cfg) {
   return { type: 'pass' };
 }
 
-export function chooseAttackTarget(state, pa, cfg) {
+function chooseAttackTarget_(state, pa, cfg) {
   const p = pa.attacker;
   const st = findAny(state, p, pa.uid);
   if (!st) return pa.canHitPlayer ? 'PLAYER' : (pa.digimonTargets[0] || null);
@@ -408,7 +423,7 @@ export function chooseAttackTarget(state, pa, cfg) {
 
 // ---------- defence ----------
 // c = { attackerP, attackerUid, targetKind:'player'|'digimon', targetUid, blockers:[stack], mandatory }
-export function decideBlock(state, c, cfg) {
+function decideBlock_(state, c, cfg) {
   const level = cfg.level;
   const p = opp(c.attackerP);
   const pl = state.players[p];
@@ -450,7 +465,7 @@ export function decideBlock(state, c, cfg) {
 }
 
 // options = S.findCounterOptions(...); returns the option to fire or null
-export function decideCounter(state, c, options, cfg) {
+function decideCounter_(state, c, options, cfg) {
   if (!options || !options.length) return null;
   const level = cfg.level;
   const p = opp(c.attackerP);
@@ -634,6 +649,8 @@ export function fallbackAnswer(kind, pay) {
   }
 }
 
+export const enumerateActions = memoized(enumerateActions_), attackCandidates = memoized(attackCandidates_), planMain = memoized(planMain_), chooseAttackTarget = memoized(chooseAttackTarget_), decideBlock = memoized(decideBlock_), decideCounter = memoized(decideCounter_);
+
 // ---------- UI driver ----------
 const SPEED_MULT = { fast: 0.55, normal: 1, slow: 1.8 };
 const BASE_PACE = 800;
@@ -641,7 +658,7 @@ export function createUiDriver(api) {
   const D = {
     enabled: false, cpu: 'p2', level: 'normal', paused: false, speed: 'normal',
     busyTick: false, acting: false, lastStep: 0, lastProgress: Date.now(), lastSig: '', banned: new Set(), turnKey: '', actionsThisTurn: 0,
-    hb: null, watchdogFires: 0, stats: { actions: 0, choices: 0, fallbacks: 0, banned: 0 },
+    hb: null, searchOn: true, searchBudget: 900, searchCap: 2500, searching: false, thinkInfo: null, lastSearch: null, showLine: false, watchdogFires: 0, stats: { actions: 0, choices: 0, fallbacks: 0, banned: 0 },
   };
   const cfg = () => ({ level: D.level, banned: D.banned });
   const paceMs = () => Math.round(BASE_PACE * (SPEED_MULT[D.speed] || 1) * (0.85 + rnd() * 0.3));
@@ -741,16 +758,16 @@ export function createUiDriver(api) {
     try {
       switch (act.type) {
         case 'skipBreeding': api.skipBreeding(); break;
-        case 'hatch': api.hatch(p); break;
-        case 'move': api.move(p); break;
+        case 'hatch': note('디지타마 부화'); api.hatch(p); break;
+        case 'move': note('육성 에어리어 → 배틀 에어리어 이동'); api.move(p); break;
         case 'pass': note('패스'); api.pass(); break;
         case 'play': { const idx = pl.hand.indexOf(act.cardId); if (idx < 0) { D.banned.add(act.key); break; } note(`${card(act.cardId).nameKo} ${card(act.cardId).category === 'option' ? '사용' : '등장'}`); await api.play(p, idx); break; }
         case 'option': { const idx = pl.hand.indexOf(act.cardId); if (idx < 0) { D.banned.add(act.key); break; } note(`옵션 ${card(act.cardId).nameKo} 사용`); await api.play(p, idx); break; }
         case 'evolve': { const idx = pl.hand.indexOf(act.cardId); if (idx < 0) { D.banned.add(act.key); break; } const stk = findAny(st, p, act.uid); note(`${stk ? card(stk.cardId).nameKo : '?'} → ${card(act.cardId).nameKo} 진화`); await api.evolve(p, act.uid, idx); break; }
         case 'jogress': note(`${card(act.cardId).nameKo} 조그레스 진화`); await api.jogress(p, act.a, act.b, act.cardId); break;
         case 'attack': { const stk = findAny(st, p, act.uid); note(`${stk ? card(stk.cardId).nameKo : '?'} 어택`); api.attack(p, act.uid, act.target); break; }
-        case 'train': api.train(p, act.uid); break;
-        case 'main': api.useMain(p, act.uid, act.idx); break;
+        case 'train': note('【트레이닝】 사용'); api.train(p, act.uid); break;
+        case 'main': note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break;
         default: break;
       }
     } catch (e) {
@@ -777,7 +794,20 @@ export function createUiDriver(api) {
     }
     if (st.phase !== 'main') return false;
     if (D.actionsThisTurn >= 45) { await execute(st, { type: 'pass' }); return true; } // hard cap: a turn never runs forever
-    const act = planMain(st, p, cfg());
+    let act = null;
+    if (D.level === 'hard' && D.searchOn && HOOKS.search) { // 어려움: 4-ply lookahead (src/cpusearch.js); null = no opinion -> heuristic below
+      D.searching = true; D.thinkInfo = { depth: 0, nodes: 0, ms: 0 }; safe(() => api.thinkUpdate && api.thinkUpdate(), null);
+      try {
+        act = await HOOKS.search(st, p, cfg(), {
+          budgetMs: D.searchBudget, hardCapMs: Math.max(D.searchBudget, D.searchCap),
+          shouldAbort: () => !D.enabled || D.paused || api.getState() !== st,
+          onProgress: (i) => { D.thinkInfo = i; safe(() => api.thinkUpdate && api.thinkUpdate(), null); },
+        });
+      } catch (e) { act = null; D.stats.fallbacks++; console.warn('[CPU] search error', e); } finally { D.searching = false; safe(() => api.thinkUpdate && api.thinkUpdate(), null); }
+      if (!D.enabled || D.paused || api.getState() !== st) return false; // paused / game changed while thinking: decide again later
+      if (act && act.search) { D.lastSearch = act.search; D.stats.searches = (D.stats.searches || 0) + 1; if (D.showLine) note(!act.search.depth ? `수 읽기 생략 (${act.search.line || '후보 1개'})` : `${act.search.depth}수 읽기 (${act.search.nodes}노드, ${Math.round(act.search.ms)}ms): ${act.search.line}`); }
+    }
+    if (!act) act = planMain(st, p, cfg());
     await execute(st, act);
     return true;
   }
@@ -807,7 +837,20 @@ export function createUiDriver(api) {
     // waiting on the CPU for too long without any visible progress: force the simplest legal move
     const now = Date.now();
     const w = waitingOn(st);
+    // a triggered effect that never resolves by itself (its auto-run was swallowed/parked) would leave the game waiting on 'fx' forever:
+    // after 12 s without any change re-arm the effect runner, after another 12 s close the effect by hand (logged)
+    if (w === 'fx' && !st.uiChoice && api.fxBusyMs() <= 0 && st.pending.some((t) => !t.resolved)) {
+      const sg = sigOf(st);
+      if (D.fxSig !== sg) { D.fxSig = sg; D.fxSince = now; D.fxTries = 0; }
+      else if (now - D.fxSince > 12000) {
+        D.fxSince = now; D.fxTries++; D.stats.fallbacks++;
+        console.warn('[CPU] parked effect', D.fxTries, sg, api.dbgPending ? api.dbgPending() : '', JSON.stringify(st.pending.filter((x) => !x.resolved).map((x) => [x.uid, x.player, x.cardId, x.tags, x.evt])), JSON.stringify((typeof window !== 'undefined' && window.__rt || []).slice(-12)));
+        if (D.fxTries <= 1 && api.retryPending) { note('멈춘 효과 처리 재시도'); try { api.retryPending(); } catch (e) { /* ignore */ } }
+        else { const t = st.pending.find((x) => !x.resolved); if (t) { note('멈춘 효과를 수동 종료'); try { api.closePending(t.uid); } catch (e) { /* ignore */ } } }
+      }
+    } else { D.fxSig = ''; D.fxSince = 0; }
     if (w !== 'cpu') { D.lastProgress = now; return; }
+    if (typeof document !== 'undefined' && document.hidden) { D.lastProgress = now; return; } // background tab: timers/animations are throttled — not a stall
     if (now - D.lastProgress < 22000) return;
     D.lastProgress = now; D.watchdogFires++; D.stats.fallbacks++;
     console.warn('[CPU] watchdog fired', sigOf(st));
@@ -851,6 +894,7 @@ export function createUiDriver(api) {
   D.setLevel = (l) => { if (LEVEL_LABEL[l]) D.level = l; };
   D.setSpeed = (s) => { if (SPEED_MULT[s]) D.speed = s; };
   D.setPaused = (b) => { D.paused = !!b; };
+  D.setSearch = (o) => { o = o || {}; if (o.enabled != null) D.searchOn = !!o.enabled; if (o.budgetMs) D.searchBudget = o.budgetMs; if (o.hardCapMs) D.searchCap = o.hardCapMs; if (o.showLine != null) D.showLine = !!o.showLine; };
   D.beat = beat;
   return D;
 }

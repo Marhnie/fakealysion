@@ -281,7 +281,13 @@ export function canNormalEvolve(sourceCardId, targetCardId, extraColors = []) {
 // level+color path evoNormal captures) — e.g. "〔진화〕 「페닉스몬」 : 코스트 2"
 // (exact name) or "〔진화〕 특징 「CS」를 가진 Lv.5 : 코스트 3" (trait+level).
 // Scans the card's own raw text for every such line, on top of evoNormal.
+const PEC_CACHE = new Map(); // pure per target card (callers only read the condition list)
 function parseEvoConditions(targetCardId) {
+  let r = PEC_CACHE.get(targetCardId);
+  if (r === undefined) { r = parseEvoConditionsRaw(targetCardId); PEC_CACHE.set(targetCardId, r); }
+  return r;
+}
+function parseEvoConditionsRaw(targetCardId) {
   const tgt = S.card(targetCardId);
   const conditions = [];
   if (tgt.evoNormal) conditions.push({ ...tgt.evoNormal, raw: tgt.evoNormal.conditionText || '' });

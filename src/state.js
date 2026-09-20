@@ -175,7 +175,15 @@ export function deckLegality(deckDef) {
 // Returns [{ tags: ['등장 시','진화 시'], body: '텍스트...' }, ...]. Any text
 // before the first bracket (usually the digivolve condition line, which is
 // already structured in evoNormal) is returned separately as `preamble`.
+// memoized by text (pure; hot in every trigger / hook scan and in the CPU lookahead search) — callers treat the result as read-only
+const PES_CACHE = new Map();
 export function parseEffectSegments(text) {
+  if (!text) return { preamble: '', segments: [] };
+  let r = PES_CACHE.get(text);
+  if (r === undefined) { r = parseEffectSegmentsRaw(text); PES_CACHE.set(text, r); }
+  return r;
+}
+function parseEffectSegmentsRaw(text) {
   if (!text) return { preamble: '', segments: [] };
   // A 【...】 group only starts a NEW segment when it sits at a real clause
   // boundary (start of the text, or right after a line break). Mid-sentence
@@ -1464,9 +1472,14 @@ export function loseKeyword(state, p, uid, keyword, duration = 'turn') {
 // consumer needs to check live (e.g. 충돌, which only matters exactly when
 // Block Timing is being resolved) rather than through the cached
 // keywords/inheritedKeywords used by hasKeyword.
+const HCK_RE = new Map(); // compiled once per keyword
 export function hasContinuousKeyword(state, p, stack, keyword) {
-  const kwRe = keyword.split(/\s+/).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
-  const re = new RegExp(`^(.*?)\\s*이\\s*디지몬(?:은|이)\\s*[≪《]\\s*${kwRe}\\s*[≫》](?:\\s*\\([^()]*\\))?\\s*(?:을|를)?\\s*얻는다\\.?$`, 's');
+  let re = HCK_RE.get(keyword);
+  if (!re) {
+    const kwRe = keyword.split(/\s+/).map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+    re = new RegExp(`^(.*?)\\s*이\\s*디지몬(?:은|이)\\s*[≪《]\\s*${kwRe}\\s*[≫》](?:\\s*\\([^()]*\\))?\\s*(?:을|를)?\\s*얻는다\\.?$`, 's');
+    HCK_RE.set(keyword, re);
+  }
   for (const { id, own } of stackContributors(stack)) {
     const text = own ? card(id).effectKo : card(id).inheritedKo;
     if (!text) continue;
@@ -1623,7 +1636,22 @@ function gainedEffectsId(id, tag) {
   return CARDS[sid].effectKo ? sid : null;
 }
 const INH_FULL_CACHE = new Map();
+// stackContributors is a pure function of (top card, sources, face-down count, links, tamer-as-digimon flag) and is called from every hook scan
+// (DP / keywords / restrictions ...): memoized (the CPU lookahead search calls the scanners hundreds of thousands of times).
 function stackContributors(stack) {
+  // per-stack memo (non-enumerable, so clones / saves never see it), validated against everything the result depends on
+  const c = stack._cc, src = stack.sources, lk = stack.linkCards;
+  if (c && c.id === stack.cardId && c.fd === (stack.s5fd || 0) && c.as === !!stack.s2AsDigimon && c.n === src.length && (lk ? lk.length : 0) === c.ln) {
+    let ok = true;
+    for (let k = 0; k < c.n; k++) if (c.src[k] !== src[k]) { ok = false; break; }
+    if (ok && c.ln) for (let k = 0; k < c.ln; k++) if (c.lk[k] !== lk[k].cardId) { ok = false; break; }
+    if (ok) return c.r;
+  }
+  const r = stackContributorsRaw(stack);
+  try { Object.defineProperty(stack, '_cc', { value: { id: stack.cardId, fd: stack.s5fd || 0, as: !!stack.s2AsDigimon, n: src.length, src: src.slice(), ln: lk ? lk.length : 0, lk: lk ? lk.map(l => l.cardId) : [], r }, writable: true, configurable: true, enumerable: false }); } catch (e) { /* frozen stack */ }
+  return r;
+}
+function stackContributorsRaw(stack) {
   // "이 디지몬은 ... 명칭에 「X」을 포함하는 카드의 효과 전부를 얻는다." — a
   // matching-name source contributes its OWN effectKo (own:true) instead of
   // just its normal 4-3-3 inheritedKo, for every continuous-grant system
@@ -2377,7 +2405,15 @@ const COLOR_WORD = '레드|블루|옐로(?:우)?|그린|블랙|퍼플|화이트'
 // etc.) into a predicate over the target card, or null if any part isn't
 // understood (so an unparsed ability just doesn't apply, never misapplies).
 // OR-alternatives split on 거나/또는; constraints within one alternative AND.
+// memoized by the description text (pure; the returned predicate closes over nothing but the parsed clauses)
+const ETP_CACHE = new Map();
 function evoTargetPredicate(desc) {
+  if (ETP_CACHE.has(desc)) return ETP_CACHE.get(desc);
+  const r = evoTargetPredicateRaw(desc);
+  ETP_CACHE.set(desc, r);
+  return r;
+}
+function evoTargetPredicateRaw(desc) {
   desc = desc.trim();
   if (!desc) return () => true;
   if (/트래시의|뒷면|이\s*턴|다음에/.test(desc)) return null;
@@ -4728,32 +4764,52 @@ function hookRaisingOk(id, d) {
   }
   return v;
 }
+let ZONE_HOOK_IDS = null; // ids whose descriptors act from the trash / security zone (the registry is static after load)
 export function* activeHooks(state) {
+  if (!ZONE_HOOK_IDS) { ZONE_HOOK_IDS = new Set(); for (const [zid, zl] of Object.entries(CARD_HOOKS)) if (zl.some(zd => zd.zone === 'trash' || zd.zone === 'security')) ZONE_HOOK_IDS.add(zid); }
   for (const hp of ['p1', 'p2']) {
     const pl = state.players[hp];
     // cards that act from the TRASH ("[트래시]【서로의 턴】…") — descriptor.zone === 'trash', holder is null.
-    for (const tid of new Set(pl.trash)) {
+    const trashIds = []; for (const tid of pl.trash) if (ZONE_HOOK_IDS.has(tid) && !trashIds.includes(tid)) trashIds.push(tid);
+    for (const tid of trashIds) {
       for (const d of CARD_HOOKS[tid] || []) if (d.zone === 'trash' && hookActiveNow(state, hp, d)) yield { hp, holder: null, id: tid, d };
     }
     // s7: face-up security cards acting from the security zone (descriptor.zone === 'security'), holder is null.
-    for (const sid of new Set(pl.security)) {
+    const secIds = []; if (pl.secUp) for (const sid of pl.security) if (ZONE_HOOK_IDS.has(sid) && !secIds.includes(sid)) secIds.push(sid);
+    for (const sid of secIds) {
       if (!((pl.secUp && pl.secUp[sid]) > 0)) continue;
       for (const d of CARD_HOOKS[sid] || []) if (d.zone === 'security' && hookActiveNow(state, hp, d)) yield { hp, holder: null, id: sid, d };
     }
-    for (const holder of [pl.raising, ...pl.battle].filter(Boolean)) {
-      for (const { id, own } of stackContributors(holder)) {
-        const list = CARD_HOOKS[id];
-        if (!list) continue;
-        for (const d of list) {
-          if (d.zone === 'trash' || d.zone === 'security') continue;
-          if (((d.src || 'effectKo') === 'effectKo') !== own) continue;
-          if (!hookActiveNow(state, hp, d)) continue;
-          if (holder === pl.raising && !hookRaisingOk(id, d)) continue; // 3-4-7-4/3-4-7-7: raising-area cards act only through [육성] effects
-          yield { hp, holder, id, d };
-        }
+    for (const holder of pl.raising ? [pl.raising, ...pl.battle] : pl.battle) {
+      for (const { id, d } of holderHookList(holder, holder === pl.raising)) {
+        if (!hookActiveNow(state, hp, d)) continue;
+        yield { hp, holder, id, d };
       }
     }
   }
+}
+// The static part of activeHooks for one stack (which descriptors of its contributing cards can ever apply: zone / own-vs-inherited / raising-area rule),
+// memoized per stackContributors() result (a new array whenever the stack changes, so the WeakMap entry can never go stale).
+const HOLDER_HOOKS = new WeakMap();
+function holderHookList(holder, inRaising) {
+  const contribs = stackContributors(holder);
+  let e = HOLDER_HOOKS.get(contribs);
+  if (!e) { e = [null, null]; HOLDER_HOOKS.set(contribs, e); }
+  const k = inRaising ? 1 : 0;
+  if (e[k]) return e[k];
+  const out = [];
+  for (const { id, own } of contribs) {
+    const list = CARD_HOOKS[id];
+    if (!list) continue;
+    for (const d of list) {
+      if (d.zone === 'trash' || d.zone === 'security') continue;
+      if (((d.src || 'effectKo') === 'effectKo') !== own) continue;
+      if (inRaising && !hookRaisingOk(id, d)) continue; // 3-4-7-4/3-4-7-7: raising-area cards act only through [육성] effects
+      out.push({ id, d });
+    }
+  }
+  e[k] = out;
+  return out;
 }
 export function hookDP(state, tp, target) {
   let sum = 0;
