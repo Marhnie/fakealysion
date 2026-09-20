@@ -1,6 +1,6 @@
 // Phone-friendly chrome: compact top bar (one line + drawer), slim CPU strip, minimizing bottom breeding sheet.
 // Pure DOM helpers + a matchMedia switch (#app.mob-compact). Styles: mobilebar.css. Nothing here touches game logic.
-const MQ = '(max-width: 900px), (pointer: coarse)';
+const MQ = 'all'; // compact chrome on every device (PC too)
 export const MB = { compact: false, cpuOpen: false, breedMin: false, breedKey: '' };
 let mql = null;
 

@@ -5,7 +5,7 @@
 .cpu-bar.cpu-min .cpu-pop { display: none; }
 .cpu-bar.cpu-min .cpu-strip-last { display: inline; }
 
-@media (max-width: 900px), (pointer: coarse) {
+@media all {
   #app.mob-compact { display: flex; flex-direction: column; }
   #app.mob-compact > .board { flex: 1 1 0; min-height: 0; }
   #app.mob-compact > .topbar, #app.mob-compact > .cpu-bar, #app.mob-compact > .actions { flex: 0 0 auto; }
