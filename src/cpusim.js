@@ -28,7 +28,7 @@ export function createSim(state, opts = {}) {
       try {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
         if (t.manualOnly) { if (CX) CX.manual(state, t, 'manualOnly'); S.resolvePending(state, t.uid); continue; }
-        const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text);
+        const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
         let script = specific;
         if (!script && /^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(t.text.trim())) {
           const seg = S.parseEffectSegments(S.card(t.cardId).effectKo || '').segments.find((s) => s.tags.includes('메인'));
@@ -55,7 +55,9 @@ export function createSim(state, opts = {}) {
         const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, attack: () => state.attackCtx, endAttack() {},
           choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
         if (CX) cxs = CX.before(state, t, script);
+        H.effectBegin && H.effectBegin(t, script);
         await Fx.runScript(script, ctx);
+        H.effectEnd && H.effectEnd(t, script, ctx);
         if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
         if (CX) CX.after(state, t, script, cxs);
       } catch (e) { if (CX) CX.error(state, t, e); onError('pending', e); }
@@ -143,15 +145,16 @@ export function createSim(state, opts = {}) {
   async function exec(p, act) {
     const pl = state.players[p];
     const sigBefore = sig(p);
+    let rejected = false; // the rule function refused the action (log lines from the refusal must not count as progress)
     stats.actions++;
     switch (act.type) {
       case 'play': { const i = pl.hand.indexOf(act.cardId); if (i < 0) break; if (!S.canPayCost(state, act.cost)) break; if (act.cost > 0) S.spendMemory(state, act.cost); S.playDigimonFresh(state, p, i); break; }
       case 'option': { const i = pl.hand.indexOf(act.cardId); if (i < 0) break; S.useOptionCard(state, p, i); break; }
-      case 'evolve': S.digivolve(state, p, act.uid, act.cardId, act.cost, 'hand'); break;
-      case 'jogress': S.fuseStacks(state, p, act.a, act.b, act.cardId, act.cost, 'hand'); break;
-      case 'train': S.useTraining(state, p, act.uid); break;
+      case 'evolve': if (!S.digivolve(state, p, act.uid, act.cardId, act.cost, 'hand')) rejected = true; break;
+      case 'jogress': if (!S.fuseStacks(state, p, act.a, act.b, act.cardId, act.cost, 'hand')) rejected = true; break;
+      case 'train': if (!S.useTraining(state, p, act.uid)) rejected = true; break;
       case 'main': { const st = find(p, act.uid); if (!st) break; const zone = pl.raising && pl.raising.uid === st.uid ? 'raising' : 'battle'; const ab = S.activatableMainAbilities(state, p, st, zone)[act.idx]; if (ab) state.pending.push({ uid: 'main' + rid(), player: p, cardId: ab.cardId, stackUid: st.uid, tags: ab.tags, text: ab.text, resolved: false }); break; }
-      case 'attack': await attack(p, act.uid, act.target); break;
+      case 'attack': if (!(await attack(p, act.uid, act.target))) { const c0 = cfgOf(p); if (c0 && c0.banned && act.key) c0.banned.add(act.key); await drain(); return false; } break; // declaration rejected: never retry it this turn
       default: break;
     }
     await drain(); await drainRepl();
@@ -159,7 +162,7 @@ export function createSim(state, opts = {}) {
       const mu = state._cpuMainUse && state._cpuMainUse.turn === state.turnNumber ? state._cpuMainUse : (state._cpuMainUse = { turn: state.turnNumber, n: {} });
       if ((mu.n[act.key] = (mu.n[act.key] || 0) + 1) >= 3) { const c = cfgOf(p); if (c && c.banned) c.banned.add(act.key); }
     }
-    if (act.key && sigBefore === sig(p)) { const c = cfgOf(p); if (c && c.banned) c.banned.add(act.key); return false; }
+    if (act.key && (rejected || sigBefore === sig(p))) { const c = cfgOf(p); if (c && c.banned) c.banned.add(act.key); return false; }
     return true;
   }
   // exec + the automatic turn end (memory crossed to the other side) / a Pass declaration.  -> true when the turn ended

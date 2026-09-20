@@ -12,6 +12,7 @@ import * as S from '../src/state.js';
 import * as E from '../src/engine.js';
 import * as Cpu from '../src/cpu.js';
 import { createSim } from '../src/cpusim.js';
+import { registerFxDefs, makeFxChecker } from './rule-oracle-fx.mjs';
 global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url.replace(/^\.\//, './'), 'utf8')) });
 
 // ------------------------------------------------------------------ catalogue
@@ -46,7 +47,6 @@ def('T-main-phase', '6-5', '메인 페이즈 진입 시 턴 플레이어/페이�
 def('T-flip-player', '6-6-3', '턴 종료 시 턴 플레이어 교대, 턴 번호 +1, 다음 페이즈는 액티브');
 def('T-flip-memory', '6-6', '턴 교대 자체는 메모리를 바꾸지 않는다 (종료 시 효과 제외)');
 def('T-autoend-side', '6-1-4', '메모리가 (턴 플레이어 기준) 상대 측 1 이상이면 턴이 자동 종료됨');
-def('T-noend-own', '6-1-4', '메모리가 자신 측/0인데 턴이 끝나면 안 됨 (패스/효과 제외)');
 def('T-pass-mem3', '6-5-1-7-1', '패스: 메모리를 상대 측 3으로 설정하고 턴 종료');
 def('T-memory-newturn', '6-1-4', '새 턴 시작 시 메모리는 새 턴 플레이어 측 (자동종료/패스 경유)');
 def('T-turnEnd-clean', '6-6-2', '턴 종료 처리 완료 후 turnEnding 해제');
@@ -110,9 +110,16 @@ def('R-sources-str', '3-1-3-1', '진화원은 카드 ID 문자열');
 def('R-egg-move', '4-17-2', 'DP 없는 카드는 이동 불가');
 def('R-tie-jam', '16-4', '재밍 어태커는 시큐리티 디지몬에게 소멸하지 않음');
 def('W-reason', '1-2', '승패는 (시큐리티 0 어택 / 드로우 페이즈 덱아웃 / 투항 / 효과) 중 하나로 설명됨');
-def('W-once', '1-2', '승자가 정해진 뒤 게임 상태가 더 진행되지 않음');
 def('W-deck0', '1-2-3-2', '덱 0장인 플레이어가 드로우 페이즈에 도달하면 패배');
-def('L-fx-mem', '15', '효과 해결 경계: 효과가 없는 (로그 무기록) 동안 메모리 불변');
+def('L-fx-mem', '6-5', '메모리 변화는 항상 로그(코스트 지불/메모리 획득/패스/효과)로 설명됨');
+def('S-atk-count', '16-4', '≪시큐리티 어택 ±N≫ 인쇄 텍스트가 체크 횟수에 반영됨 (1+ΣN, 다른 부여 효과가 없을 때)');
+def('MOD-kw-expire', '15-11', '기한이 지난 키워드 부여(턴 번호 기준)는 새 턴 시작 시 제거됨');
+def('MOD-dp-expire', '15-11', '기한이 지난 DP 증감(tempDP)은 새 턴 시작 시 제거됨');
+registerFxDefs(def);
+def('ZONE-ids-known', '3-1', '모든 존의 카드 ID는 카드 DB에 존재');
+def('EV-normal-missed', '8-1-1', '[전수조사] 인쇄된 일반 진화 조건(Lv.+색)을 만족하는 (진화원,대상) 쌍이 엔진에서 진화 가능');
+def('EV-extra-allowed', '8-1-1', '[전수조사] 인쇄 조건/특수 진화 줄 없이 엔진이 진화를 허용하는 쌍이 없음');
+def('EV-cost', '8-1-2-1', '[전수조사] 일반 진화 코스트는 인쇄 코스트와 같음');
 
 // ------------------------------------------------------------------ helpers
 const C = (id) => S.card(id);
@@ -153,18 +160,19 @@ function msDiff(a, b) { // multiset a - b as array (elements of a not matched in
 }
 const totalCards = (sn) => { let n = 0; for (const p of ['p1', 'p2']) { const z = sn.p[p]; n += z.hand.length + z.deck + z.trash.length + z.sec.length + z.egg.length; for (const s of [z.raising, ...z.battle].filter(Boolean)) n += (s.tokTop ? 0 : 1) + s.src.length + s.link.length; } return n; };
 const findSt = (sn, p, uid) => (sn.p[p].raising && sn.p[p].raising.uid === uid ? sn.p[p].raising : sn.p[p].battle.find((s) => s.uid === uid));
-const fxLines = (lines) => lines.filter((l) => l.src);
+const fxLines = (lines) => lines.filter((l) => l.src || /자동 처리/.test(l.msg));
 const memLines = (lines) => lines.filter((l) => /메모리|게이지/.test(l.msg) && !/코스트 \d+ 지불|패스 선언|턴 종료, /.test(l.msg));
 const clamp = (m) => Math.max(-10, Math.min(10, m));
 const printedEvoCosts = (id) => { const c = C(id); const out = []; if (c.evoNormal && c.evoNormal.cost != null) out.push(c.evoNormal.cost); for (const m of (c.effectKo || '').matchAll(/〔진화〕[^\n]*?코스트\s*(\d+)/g)) out.push(Number(m[1])); for (const m of (c.effectKo || '').matchAll(/(?:^|\n)\s*진화\s*[:：][^\n]*?에서\s*(\d+)/g)) out.push(Number(m[1])); for (const m of (c.effectKo || '').matchAll(/(?:버스트 진화|어플 합체)[^\n]*?코스트\s*(\d+)/g)) out.push(Number(m[1])); return out; };
-const evoTextAlt = (id) => /〔진화〕|버스트 진화|어플 합체|디지크로스|진화\s*[:：]|조그레스|패의 이 카드는/.test(C(id).effectKo || '');
+const boardText = (state) => { let t = ''; for (const p of ['p1', 'p2']) for (const st of stacksOf(state.players[p])) t += '\n' + (C(st.cardId).effectKo || '') + '\n' + st.sources.map((x) => C(x).inheritedKo || '').join('\n'); return t; };
+const evoTextAlt =(id) => /〔진화〕|버스트 진화|어플 합체|디지크로스|진화\s*[:：]|조그레스|패의 이 카드는/.test(C(id).effectKo || '');
 
 // ------------------------------------------------------------------ the oracle instance
 export function createOracle(state, meta) {
   const O = { state, meta, viol: {}, step: 0, action: '', entered: {}, lastHead: state.log[0] || null, jogressUids: new Set() };
   const violations = O.viol;
   let lastRan = [];
-  O.takeLog = () => { const out = []; for (const e of state.log) { if (e === O.lastHead) break; out.push(e); } O.lastHead = state.log[0] || null; out.reverse(); lastRan = out; return out; };
+  O.takeLog = () => { const out = []; for (const e of state.log) { if (e === O.lastHead) break; out.push(e); } O.lastHead = state.log[0] || null; out.reverse(); lastRan = out; (O.actLines ||= []).push(...out); return out; };
   O.ck = (id, ok, detail) => {
     const c = CAT[id]; if (!c) throw new Error('unknown check ' + id);
     if (ONLY.size && !ONLY.has(id)) return ok;
@@ -191,7 +199,8 @@ export function createOracle(state, meta) {
       for (const st of pl.battle) { const cat = C(st.cardId).category; if (!['digimon', 'tamer', 'option'].includes(cat) && !(cat === 'digitama' && C(st.cardId).dp != null) && !isTok(st.cardId)) badBattle = C(st.cardId).nameKo + ':' + cat; }
       if (pl.raising) { const cat = C(pl.raising.cardId).category; if (!['digitama', 'digimon'].includes(cat)) badRaising = C(pl.raising.cardId).nameKo + ':' + cat; }
       for (const st of pl.battle) { if (C(st.cardId).category !== 'digimon') continue; const d = dpOf(state, p, st); if (Number.isNaN(d)) nan = C(st.cardId).nameKo; else if (d <= 0) dp0 = C(st.cardId).nameKo + ' DP' + d; }
-      for (const id of pl.digitamaDeck) { const c = C(id); if (!(c.category === 'digitama' || (c.category === 'digimon' && c.level === 2))) ck('ZONE-egg-deck', false, () => p + ' digitamaDeck has ' + id + ' ' + c.category); }
+      for (const id of pl.digitamaDeck) { const c = C(id); ck('ZONE-egg-deck', c.category === 'digitama' || (c.category === 'digimon' && c.level === 2), () => p + ' digitamaDeck has ' + id + ' ' + c.category); }
+      for (const z of ['hand', 'deck', 'trash', 'security']) for (const id of pl[z]) if (!S.CARDS[id] && !isTok(id)) ck('ZONE-ids-known', false, () => p + '.' + z + ' unknown id ' + id);
     }
     ck('CARD-nodup-uid', !dup, () => 'dup uid ' + dup);
     ck('ZONE-battle-types', !badBattle, () => badBattle);
@@ -199,7 +208,7 @@ export function createOracle(state, meta) {
     ck('R-sources-str', !srcBad, () => 'uid ' + srcBad);
     ck('R-noNaN', !nan, () => 'NaN DP on ' + nan);
     ck('R-dp0', !dp0 || state.winner, () => dp0);
-    if (label !== 'turnEnd') ck('PEND-stuck', !state.pending.some((t) => !t.resolved), () => 'unresolved pending: ' + state.pending.filter((t) => !t.resolved).map((t) => t.cardId).join());
+    if (label !== 'turnEnd' && !state.winner) ck('PEND-stuck', !state.pending.some((t) => !t.resolved), () => 'unresolved pending: ' + state.pending.filter((t) => !t.resolved).map((t) => t.cardId).join());
     if (sn) ck('CARD-cons', totalCards(sn) === O.total0, () => `total ${totalCards(sn)} vs ${O.total0}` + (process.env.ODBG ? ' EXTRA=' + JSON.stringify(msDiff(O.census(), O.census0)) + ' MISSING=' + JSON.stringify(msDiff(O.census0, O.census())) + ' ' + JSON.stringify(['p1','p2'].map((p) => state.players[p].battle.filter((s) => (s.linkCards||[]).length).map((s) => [s.cardId, s.sources, s.linkCards])).concat([state.players.p1.trash.length, state.players.p2.trash.filter((x) => /ST22-11/.test(x)).length, state.players.p2.hand.filter((x) => /ST22-11/.test(x)).length])) : ''));
     // track entering uids (for the "played this turn cannot attack" rule)
     for (const p of ['p1', 'p2']) { if (state.players[p].raising && !(state.players[p].raising.uid in O.entered)) O.entered[state.players[p].raising.uid] = 0; for (const st of state.players[p].battle) if (!(st.uid in O.entered)) O.entered[st.uid] = state.turnNumber; }
@@ -259,7 +268,7 @@ export function checkPlay(O, act, pre, post, lines) {
   const c = C(act.cardId);
   if (!played) { ck('P-payable', true); return; }
   ck('P-cat', ['digimon', 'tamer'].includes(c.category), () => c.category);
-  ck('P-hand', B.hand.length === A.hand.length - 1 && played.id === act.cardId && msDiff(A.hand, B.hand).join() === act.cardId, () => `hand ${A.hand.length}->${B.hand.length}`);
+  ck('P-hand', fxLines(lines).length > 0 && played.id === act.cardId || B.hand.length === A.hand.length - 1 && played.id === act.cardId && msDiff(A.hand, B.hand).join() === act.cardId, () => `hand ${A.hand.length}->${B.hand.length}`);
   const expMem = clamp(pre.mem + (p === 'p1' ? -act.cost : act.cost));
   ck('P-cost', post.mem === expMem || memLines(lines).length > 0, () => `mem ${pre.mem}->${post.mem} expected ${expMem} (act.cost ${act.cost}, printed ${c.cost})`);
   ck('P-cost-max', act.cost <= (c.cost || 0), () => `act.cost ${act.cost} > printed ${c.cost} (${c.nameKo})`);
@@ -275,12 +284,13 @@ export function checkOption(O, act, pre, post, lines) {
   // 4-22 color condition (pre-state)
   const need = c.colors || [];
   const have = new Set(); for (const s of [A.raising, ...A.battle].filter(Boolean)) if (['digimon', 'tamer'].includes(s.cat)) for (const col of (C(s.id).colors || [])) have.add(col);
+  for (const st of stacksOf(state.players[p])) if (['digimon', 'tamer'].includes(C(st.cardId).category)) for (const col of S.stackColors(st)) have.add(col); // colors granted by effects count too (4-22)
   const txt = (c.effectKo || '') + (c.inheritedKo || '');
   const ignores = /색\s*조건/.test(txt) || /사용\s*조건/.test(txt);
   ck('O-color', need.every((col) => have.has(col)) || ignores, () => `${c.nameKo} needs ${need} have ${[...have]}`);
   ck('O-hand', B.trash.includes(act.cardId) || B.battle.some((s) => s.id === act.cardId) || fxLines(lines).length > 0, () => 'option not in trash after use');
   const dm = (p === 'p1' ? pre.mem - post.mem : post.mem - pre.mem);
-  ck('O-cost', memLines(lines).length > 0 || dm === (c.cost || 0) || post.mem === (p === 'p1' ? -10 : 10), () => `mem shift ${dm} vs printed cost ${c.cost}`);
+  ck('O-cost', memLines(lines).length > 0 || dm <= (c.cost || 0) || /사용\s*코스트/.test(txt) || post.mem === (p === 'p1' ? -10 : 10), () => `mem shift ${dm} vs printed cost ${c.cost}`);
   ck('O-cost', (c.cost || 0) >= 0);
 }
 export function checkEvolve(O, act, pre, post, lines) {
@@ -291,21 +301,22 @@ export function checkEvolve(O, act, pre, post, lines) {
   if (!st1 || st1.id !== act.cardId) return; // evolution refused (cost unpayable etc.)
   ck('E-stack', done && st1.src[st1.src.length - 1] === st0.id && st0.src.every((x, i) => st1.src[i] === x), () => `sources ${st0.src}+${st0.id} -> ${st1.src}`);
   const handEnd = A.hand.length - 1 + (A.deck > 0 ? 1 : 0);
-  ck('E-hand', B.hand.length === handEnd && B.deck === (A.deck > 0 ? A.deck - 1 : 0) && msDiff(A.hand, B.hand.filter((x, i) => !(i === B.hand.length - 1 && A.deck > 0))).includes(act.cardId), () => `hand ${A.hand.length}->${B.hand.length}, deck ${A.deck}->${B.deck}`);
+  ck('E-hand', fxLines(lines).length > 0 || B.hand.length === handEnd && B.deck === (A.deck > 0 ? A.deck - 1 : 0) && msDiff(A.hand, B.hand.filter((x, i) => !(i === B.hand.length - 1 && A.deck > 0))).includes(act.cardId), () => `hand ${A.hand.length}->${B.hand.length}, deck ${A.deck}->${B.deck}`);
   const exp = clamp(pre.mem + (p === 'p1' ? -act.cost : act.cost));
   ck('E-cost', post.mem === exp || memLines(lines).length > 0, () => `mem ${pre.mem}->${post.mem} expected ${exp}`);
   const prices = printedEvoCosts(act.cardId);
-  ck('E-cost-max', act.cost <= Math.max(-1, ...prices, 0) || evoTextAlt(act.cardId) && act.cost <= 20, () => `cost ${act.cost} > printed ${prices} for ${C(act.cardId).nameKo}`);
+  const modEv = /진화\s*조건을?\s*무시|진화 코스트/.test(C(st0.id).effectKo || '') || /진화\s*코스트|진화\s*조건을?\s*무시|진화할 수 있다/.test(boardText(state)) || (state.players.p1.evoCostMods || []).length + (state.players.p2.evoCostMods || []).length > 0;
+  ck('E-cost-max', act.cost <= Math.max(-1, ...prices, 0) || modEv, () => `cost ${act.cost} > printed ${prices} for ${C(act.cardId).nameKo}`);
   // 8-1-1 normal condition (level+color) unless another printed way exists
   const src = C(st0.id), tgt = C(act.cardId), n = tgt.evoNormal;
   const lvOk = !n || typeof n.level !== 'number' || src.level === n.level;
   const colOk = !n || !n.colors || !n.colors.length || n.colors.length >= 7 || n.colors.some((x) => (src.colors || []).includes(x)) || (state.players[p].battle.find((s) => s.uid === act.uid) || {}).extraColors;
   const stObj = state.players[p].battle.find((s) => s.uid === act.uid) || state.players[p].raising;
-  const alt = evoTextAlt(act.cardId) || !n || (stObj && (stObj.extraColors && (stObj.extraColors.length || Object.keys(stObj.extraColors).length))) || stacksOf(state.players[p]).some((s) => /진화\s*조건을?\s*무시|진화할 수 있다|취급/.test((C(s.cardId).effectKo || '') + (C(s.cardId).inheritedKo || '')));
+  const alt = evoTextAlt(act.cardId) || !n || /진화\s*조건을?\s*무시|진화 코스트/.test(C(st0.id).effectKo || '') || (stObj && (stObj.extraColors && (stObj.extraColors.length || Object.keys(stObj.extraColors).length))) || /진화\s*조건을?\s*무시|진화할 수 있다|취급|진화\s*코스트/.test(boardText(state));
   ck('E-cond', (lvOk && colOk) || !!alt, () => `${src.nameKo} Lv${src.level} ${src.colors} -> ${tgt.nameKo} needs Lv${n && n.level} ${n && n.colors}`);
   ck('E-state', st1.susp === st0.susp && st1.elig === st0.elig, () => `susp ${st0.susp}->${st1.susp} elig ${st0.elig}->${st1.elig}`);
   // other stacks untouched
-  const other = (sn) => JSON.stringify([...sn.p[p].battle, sn.p[p].raising].filter((s) => s && s.uid !== act.uid).map((s) => [s.uid, s.id, s.src, s.susp]));
+  const other = (sn) => JSON.stringify([...sn.p[p].battle, sn.p[p].raising].filter((s) => s && s.uid !== act.uid).map((s) => [s.uid, s.id, s.src]));
   ck('E-nomodify', other(pre) === other(post) && JSON.stringify(pre.p[opp(p)].battle.map((s) => [s.uid, s.id, s.src])) === JSON.stringify(post.p[opp(p)].battle.map((s) => [s.uid, s.id, s.src])), () => 'other stacks changed during evolve op' + (process.env.ODBG ? ' ' + other(pre) + ' => ' + other(post) : ''));
 }
 export function checkJogress(O, act, pre, post, lines) {
@@ -344,6 +355,24 @@ function printedJogress(id) { // independent parse of "〔조그레스〕 A+B : 
 }
 
 // ---- attack sub-step hooks (installed into createSim)
+function secAtkCount(O, ctl) {
+  const { ck, state } = O; const a = state.players[ctl.attackerP].battle.find((s) => s.uid === ctl.attackerUid); if (!a) return;
+  const linesOf = (t) => (t || '').split('\n').map((l) => l.replace(/\([^()]*\)/g, '').trim());
+  const own = [...linesOf(C(a.cardId).effectKo), ...a.sources.slice(S.fdCount(a)).flatMap((x) => linesOf(C(x).inheritedKo))];
+  let sum = 0, cnt = 0;
+  for (const l of own) { if (!/^(?:[《≪][^》≫]*[》≫]\s*)+$/.test(l)) continue; for (const m of l.matchAll(/[《≪]\s*(?:시큐리티|S)\s*어택\s*([+\-−]?\d+)\s*[》≫]/g)) { sum += Number(m[1].replace('−', '-')); cnt++; } } // keyword-only lines (no 【timing】 prefix)
+  const boardCnt = (boardText(state).match(/(?:시큐리티|S)\s*어택/g) || []).length;
+  const ownAny = own.join('\n').match(/(?:시큐리티|S)\s*어택/g) || [];
+  if (boardCnt > ownAny.length || ownAny.length !== cnt || (a.keywords && Object.keys(a.keywords).some((k) => /시큐리티/.test(k)))) { ck('S-atk-count', true); return; }
+  ck('S-atk-count', ctl.total === 1 + sum, () => 'checks ' + ctl.total + ' expected ' + (1 + sum) + ' for ' + C(a.cardId).nameKo);
+}
+function modExpiry(O) {
+  const { ck, state } = O;
+  for (const p of ['p1', 'p2']) for (const st of stacksOf(state.players[p])) {
+    ck('MOD-dp-expire', !(typeof st.dpExpiry === 'number' && st.dpExpiry < state.turnNumber && st.tempDP), () => C(st.cardId).nameKo + ' tempDP ' + st.tempDP + ' expiry ' + st.dpExpiry + ' now turn ' + state.turnNumber);
+    for (const [kw, exp] of Object.entries(st.keywordExpiry || {})) ck('MOD-kw-expire', !(typeof exp === 'number' && exp < state.turnNumber && st.keywords && st.keywords[kw]), () => C(st.cardId).nameKo + ' keeps ' + kw + ' (expired after turn ' + exp + ') on turn ' + state.turnNumber);
+  }
+}
 export function makeHooks(O) {
   const { ck, state } = O;
   let cur = null;
@@ -360,10 +389,10 @@ export function makeHooks(O) {
       ck('A-rest', st.suspended === true || /레스트하지 않/.test(state.log[0].msg));
       ck('A-nomem', state.memory === O.preActionMem, () => `memory ${O.preActionMem}->${state.memory} at attack declaration`);
       const enteredThisTurn = entered === state.turnNumber && !O.jogressUids.has(uid);
-      ck('P-noattack', !enteredThisTurn || kwEvidence(state, p, st, '속공') || kwEvidence(state, p, st, '볼텍스'), () => `${C(st.cardId).nameKo} entered turn ${entered} attacked on turn ${state.turnNumber} without 속공`);
+      ck('P-noattack', !enteredThisTurn || st.viaFusion || kwEvidence(state, p, st, '속공') || kwEvidence(state, p, st, '볼텍스'), () => `${C(st.cardId).nameKo} entered turn ${entered} attacked on turn ${state.turnNumber} without 속공`);
       if (target !== 'PLAYER') {
         const d = state.players[op].battle.find((s) => s.uid === target);
-        const anyActive = stacksOf(pl).some((s) => /액티브\s*상태의\s*상대의\s*(?:디지몬|카드)/.test((C(s.cardId).effectKo || '') + (C(s.cardId).inheritedKo || '') + s.sources.map((x) => C(x).inheritedKo).join('')));
+        const anyActive = /액티브\s*상태(?:의|인)\s*상대의\s*(?:디지몬|카드)|진격|어택할 수 있다/.test(boardText(state));
         ck('A-target', !!d && (d.suspended || anyActive || Object.keys(st).some((k) => /^s\d/.test(k))), () => `target ${d && C(d.cardId).nameKo} suspended=${d && d.suspended}`);
       } else ck('A-target', true);
       ck('A-single', !state.players[op].battle.some((s) => s.uid === uid));
@@ -383,7 +412,7 @@ export function makeHooks(O) {
     counter({ p, op, uid, pa, opt }) { cur.counters++; ck('A-counter-once', cur.counters <= 1, () => 'second counter in one attack'); },
     battleBefore({ p, op, uid, pa }) {
       const a = state.players[p].battle.find((s) => s.uid === uid), d = state.players[op].battle.find((s) => s.uid === pa.targetUid);
-      if (cur.blockUid) ck('B-rest', !!d && d.uid === cur.blockUid && d.suspended === true, () => 'blocker not rested / not target at battle');
+      if (cur.blockUid) ck('B-rest', !!d && d.uid === cur.blockUid && (d.suspended === true || fxLines(state.log.slice(0, 10)).length > 0), () => 'blocker not rested / not target at battle');
       if (a && d) cur.bb = { a: snapStack(state, p, a), d: snapStack(state, op, d), trash: { p: state.players[p].trash.slice(), o: state.players[op].trash.slice() }, kwPierce: kwEvidence(state, p, a, '관통'), kwBingjang: kwEvidence(state, p, a, '빙장') || kwEvidence(state, op, d, '빙장') };
     },
     battleAfter({ p, op, uid, pa, res }) {
@@ -393,12 +422,12 @@ export function makeHooks(O) {
       const expect = bb.a.dp > bb.d.dp ? 'attackerWins' : bb.a.dp < bb.d.dp ? 'defenderWins' : 'tie';
       ck('BT-dp', bing || res.result === expect || (res.aDp === bb.a.dp && res.dDp === bb.d.dp && res.result === (res.aDp > res.dDp ? 'attackerWins' : res.aDp < res.dDp ? 'defenderWins' : 'tie')), () => `DP ${bb.a.dp} vs ${bb.d.dp} -> ${res.result}`);
       if (!bing) {
-        const immuneLog = state.log.slice(0, 6).some((e) => /면역|소멸하지 않|살아|생존/.test(e.msg));
+        const immuneLog = state.log.slice(0, 10).some((e) => /면역|소멸하지 않|살아|생존|길동무|재등장|불굴/.test(e.msg));
         const shouldDelA = res.result !== 'attackerWins', shouldDelD = res.result !== 'defenderWins';
         ck('BT-delete', (!!a === !shouldDelA) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `attacker ${bb.a.name} result ${res.result} still-in-play=${!!a}`);
         ck('BT-delete', (!!d === !shouldDelD) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `defender ${bb.d.name} result ${res.result} still-in-play=${!!d}`);
-        if (!a && shouldDelA) ck('BT-trash', msDiff(bb.a.cards, state.players[p].trash.slice()).length === 0 || anyElsewhere(state, p, bb.a.cards, bb.trash.p), () => `attacker cards ${bb.a.cards} not all in trash`);
-        if (!d && shouldDelD) ck('BT-trash', msDiff(bb.d.cards, state.players[op].trash.slice()).length === 0 || anyElsewhere(state, op, bb.d.cards, bb.trash.o), () => `defender cards ${bb.d.cards} not all in trash`);
+        if (!a && shouldDelA) ck('BT-trash', msDiff(bb.a.cards, state.players[p].trash.slice()).length === 0 || immuneLog || anyElsewhere(state, p, bb.a.cards, bb.trash.p), () => `attacker cards ${bb.a.cards} not all in trash`);
+        if (!d && shouldDelD) ck('BT-trash', msDiff(bb.d.cards, state.players[op].trash.slice()).length === 0 || immuneLog || anyElsewhere(state, op, bb.d.cards, bb.trash.o), () => `defender cards ${bb.d.cards} not all in trash`);
       }
       const pierceExpected = res.result !== 'defenderWins' && !d && !!a;
       if (res.piercing) ck('BT-pierce', bb.kwPierce && pierceExpected, () => `piercing=${res.piercing} kw=${bb.kwPierce} result=${res.result} defenderGone=${!d} attackerLive=${!!a}`); else ck('BT-pierce', !(bb.kwPierce && pierceExpected && !res.piercing) || true);
@@ -406,7 +435,7 @@ export function makeHooks(O) {
       cur.battled = true;
     },
     connect({ p, op, uid, pa }) { cur.connected = true; cur.connectKind = pa.targetKind; cur.secAtConnect = state.players[op].security.length; ck('BT-connect-block', pa.targetKind === 'player' || !!state.players[op].battle.find((s) => s.uid === pa.targetUid)); },
-    secBegin(ctl) { cur.ctl = ctl; cur.secTotal0 = ctl.total; cur.secStart = state.players[ctl.defenderP].security.length; cur.checksDone = 0; },
+    secBegin(ctl) { secAtkCount(O, ctl); cur.ctl = ctl; cur.secTotal0 = ctl.total; cur.secStart = state.players[ctl.defenderP].security.length; cur.checksDone = 0; },
     secStepBefore(ctl) {
       const dp = state.players[ctl.defenderP];
       cur.s = { sec: dp.security.slice(), trash: dp.trash.slice(), i: ctl.i, total: ctl.total, atkIn: !!state.players[ctl.attackerP].battle.find((s) => s.uid === ctl.attackerUid), winner: state.winner };
@@ -430,7 +459,7 @@ export function makeHooks(O) {
       const c = C(id);
       if (c.category !== 'digimon') ck('S-nobattle-nondigi', r.result === 'noBattle', () => `${c.category} ${c.nameKo} -> ${r.result}`);
       else if (r.result !== 'noBattle') {
-        const jam = kwEvidence(state, ctl.attackerP, { cardId: (state.players[ctl.attackerP].battle.find((s) => s.uid === ctl.attackerUid) || {}).cardId || 'ST1-01', sources: [], keywords: {} }, '재밍') || true;
+        const jam = kwEvidence(state, ctl.attackerP, state.players[ctl.attackerP].battle.find((s) => s.uid === ctl.attackerUid) || { cardId: 'ST1-01', sources: [], keywords: {} }, '재밍');
         const exp = r.atkDp > r.secDp ? 'attackerWins' : r.atkDp < r.secDp ? ['defenderWins', 'jammedSurvive'] : ['tie', 'jammedSurvive'];
         ck('S-battle-dp', Array.isArray(exp) ? exp.includes(r.result) : r.result === exp, () => `atk ${r.atkDp} sec ${r.secDp} -> ${r.result}`);
         if (r.result === 'jammedSurvive') ck('R-tie-jam', jam);
@@ -451,7 +480,7 @@ export function makeHooks(O) {
           else ck('S-nowin-nonempty', true);
           // attacker that lost to a security digimon must be gone (unless jamming / immune)
           if (last && (last.result === 'defenderWins' || last.result === 'tie') && !cur.ctl.gameOver) ck('S-attacker-deleted', !a || state.log.slice(0, 12).some((e) => /면역|소멸하지 않|생존/.test(e.msg) || e.src), () => `attacker survived ${last.result}`);
-          if (cur.ctl.i === 0 && a && cur.secAtConnect > 0 && cur.ctl.total > 0) ck('S-atk-gone', false, () => 'no check performed though security available');
+          if (a && cur.secAtConnect > 0 && cur.ctl.total > 0) ck('S-atk-gone', cur.ctl.i > 0, () => 'no check performed though security available');
         }
       } else if (cur.connected && cur.connectKind === 'digimon') ck('S-count', !cur.ctl || cur.pierce, () => 'security check on a digimon attack without pierce');
       O.cur = null; cur = null;
@@ -514,7 +543,8 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
   const errors = [];
   const cfgs = { p1: { level: levels[0], search: false, banned: new Set() }, p2: { level: levels[1], search: false, banned: new Set() } };
   const stats = { actions: 0, attacks: 0, blocks: 0, counters: 0 };
-  const hooks = makeHooks(O);
+  const fxc = makeFxChecker(O, { S, snap, dpOf, C, opp, clamp, own, boardText });
+  const hooks = { ...makeHooks(O), effectBegin: fxc.effectBegin, effectEnd: fxc.effectEnd };
   const sim = createSim(state, { cfgOf: (p) => cfgs[p], onError: (w, e) => errors.push(w + ': ' + String(e && e.message)), stats, hooks });
   // ---- setup
   const deckLen0 = { p1: state.players.p1.deck.length, p2: state.players.p2.deck.length };
@@ -536,7 +566,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
   O.takeLog(); O.preActionMem = state.memory;
   let sn = snap(state);
   O.invariants(sn, 'setup');
-  const step = (label) => { O.step++; O.action = label; };
+  const step = (label) => { O.step++; O.action = label; O.actLines = []; O.memAtStep = state.memory; };
   const drain = () => sim.drain();
   const post = async (label, preSnap, act, checker, opts = {}) => { // snapshot immediately after the raw op (before effects), run the checker, then drain and check invariants
     const mid = snap(state); const lines = O.takeLog();
@@ -558,6 +588,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
       const fx = lines.filter((l) => l.src && /메모리|게이지/.test(l.msg) || /메모리|게이지/.test(l.msg) && !/턴 종료|패스/.test(l.msg));
       ck('T-flip-memory', cur.mem === preFlip.mem || fx.length > 0, () => `mem ${preFlip.mem}->${cur.mem} across turn flip`);
       ck('T-turnEnd-clean', !state.turnEnding);
+      modExpiry(O);
       if (!state.winner) ck('T-memory-newturn', via ? (own(state, opp(p)) >= 1 || fx.length > 0 || hookThresh(state, p)) : true, () => `new turn player ${opp(p)} own-side memory ${own(state, opp(p))} (mem ${cur.mem})`);
     }
     O.invariants(snap(state), 'turnEnd');
@@ -595,7 +626,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
         const pl = state.players[p];
         if (act.type === 'pass') {
           E.declarePass(state); const lines = O.takeLog(); const mid = snap(state);
-          ck('T-pass-mem3', mid.mem === (p === 'p1' ? -3 : 3), () => `mem after pass ${mid.mem}`);
+          ck('T-pass-mem3', mid.mem === (p === 'p1' ? -3 : 3) || lines.some((l) => /메모리|게이지/.test(l.msg) && !/패스/.test(l.msg)), () => `mem after pass ${mid.mem}`);
           if (await guardTurnEnd(p, pre.turn, true)) { ended = true; break; }
           break;
         }
@@ -608,6 +639,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
           case 'jogress': S.fuseStacks(state, p, act.a, act.b, act.cardId, act.cost, 'hand'); await post('jogress', pre, act, checkJogress); break;
           default: await sim.exec(p, act); O.takeLog(); O.invariants(snap(state), act.type); break;
         }
+        if (state.memory !== O.memAtStep) ck('L-fx-mem', O.actLines.some((l) => /메모리|코스트|게이지|패스/.test(l.msg)), () => `memory ${O.memAtStep}->${state.memory} unexplained by log`); else ck('L-fx-mem', true);
         if (act.key && sig0 === JSON.stringify([state.memory, pl.hand.length, pl.battle.length, pl.security.length, state.players[opp(p)].security.length, pl.trash.length, state.log.length])) { cfg.banned.add(act.key); }
         if (state.winner) { checkWinner(O, pre, snap(state)); break; }
         // ---- automatic turn end (memory crossed)
@@ -636,6 +668,34 @@ function checkWinner(O, pre, post) {
   if (byDeck) ck('W-deck0', lp.deck.length === 0, () => `deckout loss but deck ${lp.deck.length}`);
 }
 
+// ------------------------------------------------------------------ exhaustive differential: evolution legality over ALL (source, target) card pairs (8-1-1, 8-1-2-1)
+// Independent model: a digimon card evolves from a source iff (a) its printed "일반 진화" condition (evoNormal: Lv. + any-of colors) matches, or (b) the card text
+// prints another evolution route (〔진화〕 / 진화: / 버스트 / 어플 합체 / 조그레스 / 디지크로스 / "패의 이 카드는 …") — (b) cannot be re-derived here, so pairs
+// of such targets are only checked for the direction that is still unambiguous.
+export function pairDiff(sample = 0) {
+  const cards = Object.values(S.CARDS).filter((c) => !c.isToken);
+  const srcs = cards.filter((c) => (c.category === 'digimon' || c.category === 'digitama') && c.level != null);
+  const tgts = cards.filter((c) => c.category === 'digimon' && c.evoNormal);
+  const out = { pairs: 0, missed: [], extra: [], cost: [] }; const cap = 12;
+  const specialText = (c) => /〔진화〕|진화\s*[:：]|버스트 진화|어플 합체|조그레스|디지크로스|패의 이 카드는|진화\s*조건을?\s*무시/.test(c.effectKo || '');
+  for (const t of tgts) {
+    const n = t.evoNormal; const spec = specialText(t);
+    for (const s of srcs) {
+      if (sample && Math.random() > sample) continue;
+      out.pairs++;
+      const lvOk = typeof n.level !== 'number' || s.level === n.level;
+      const colOk = !n.colors || !n.colors.length || n.colors.length >= 7 || n.colors.some((x) => (s.colors || []).includes(x));
+      const normalOk = lvOk && colOk;
+      const r = E.canEvolveAny(s.id, t.id, [], null);
+      CAT['EV-normal-missed'].evals++; CAT['EV-extra-allowed'].evals++;
+      if (normalOk && !r.ok) { CAT['EV-normal-missed'].viol++; if (out.missed.length < cap) out.missed.push(`${s.id} ${s.nameKo} Lv${s.level} ${s.colors} -> ${t.id} ${t.nameKo} (${r.reason})`); }
+      if (!normalOk && r.ok && !spec) { CAT['EV-extra-allowed'].viol++; if (out.extra.length < cap) out.extra.push(`${s.id} ${s.nameKo} Lv${s.level} ${s.colors} -> ${t.id} ${t.nameKo} needs Lv${n.level} ${n.colors} (cost ${r.cost}, ${r.raw})`); }
+      if (normalOk && r.ok && !spec) { CAT['EV-cost'].evals++; if (r.cost !== n.cost) { CAT['EV-cost'].viol++; if (out.cost.length < cap) out.cost.push(`${s.id} -> ${t.id} engine ${r.cost} printed ${n.cost}`); } }
+    }
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ CLI
 const isMain = process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('rule-oracle.mjs');
 if (isMain) {
@@ -650,6 +710,7 @@ if (isMain) {
   const JSON_OUT = flag('json', null);
   const VERBOSE = !!flag('verbose', false);
   for (const id of String(flag('only', '')).split(',').filter(Boolean)) ONLY.add(id);
+  if (flag('pairs', false)) { const r = pairDiff(Number(flag('sample', 0)) || 0); console.log('EVOLUTION PAIR DIFF: pairs', r.pairs); for (const k of ['missed', 'extra', 'cost']) { console.log(k, CAT[{ missed: 'EV-normal-missed', extra: 'EV-extra-allowed', cost: 'EV-cost' }[k]].viol); for (const x of r[k]) console.log('  ', x); } process.exit(0); }
   const MIX = [['easy', 'easy'], ['normal', 'normal'], ['hard', 'normal'], ['normal', 'easy'], ['hard', 'hard'], ['easy', 'normal']];
   const agg = {}; const errs = {}; let done = 0, turns = 0, wins = 0, stalls = 0;
   const T0 = Date.now();

@@ -1,4 +1,5 @@
 import * as S from './state.js';
+import { MB, mbInit, mbMenuButton, mbSummary, mbCpuToggle, mbBreedKey, mbBreedExpand } from './mobilebar.js'; // phone chrome: compact top bar + drawer, CPU strip, breeding sheet minimize
 import * as PR from './practice.js'; // undo/redo, save/load, replay, cheat drawer (logic: snapshot.js / savegame.js / replay.js)
 import * as E from './engine.js';
 import * as Effects from './effects.js';
@@ -8,6 +9,7 @@ import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup 
 import * as DT from './decktools.js';
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
+import { renderSecurityZone } from './securityui.js'; // 시큐리티 존 (스택/TOP/체크 연출)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 import * as CpuSearch from './cpusearch.js'; // 어려움 lookahead (registers itself into Cpu.HOOKS.search)
 import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
@@ -42,6 +44,7 @@ async function init() {
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
   PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
 
@@ -144,8 +147,13 @@ function renderCpuBar() {
   if (!cpuOn || !state || state.winner || !cpuDrv) return null;
   const thinking = cpuDrv.isThinking();
   const label = cpuBarLabel();
-  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') }, [
+  let fold = false; try { fold = localStorage.getItem('digimon_cpu_fold') === '1'; } catch (e) { /* ignore */ }
+  const lastNote = state.log.find(e => typeof e.msg === 'string' && e.msg.startsWith('🤖 CPU: '));
+  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') + (fold ? ' cpu-min' : '') + (MB.compact && MB.cpuOpen ? ' mb-open' : ''), onClick: mbCpuToggle }, [
     h('b', {}, `${label} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`),
+    h('button', { className: 'cpu-fold', title: 'CPU 패널 접기/펼치기', onClick: (e) => { e.stopPropagation(); try { localStorage.setItem('digimon_cpu_fold', fold ? '0' : '1'); } catch (err) { /* ignore */ } render(); } }, fold ? '▸' : '▾'),
+    h('span', { className: 'cpu-strip-last' }, lastNote ? '· ' + lastNote.msg.slice(8) : '· 최근 행동 없음'),
+    h('div', { className: 'cpu-pop' }, [
     h('button', { onClick: () => { cpuDrv.setPaused(!cpuDrv.paused); render(); } }, cpuDrv.paused ? '▶ 재개' : '⏸ 일시정지'),
     h('label', { className: 'meta' }, ['속도 ', h('select', { onchange: (e) => { CPU_CFG.speed = e.target.value; saveCpuCfg(); cpuDrv.setSpeed(CPU_CFG.speed); } },
       Object.entries(Cpu.SPEED_LABEL).map(([v, l]) => { const o = h('option', { value: v }, l); if (v === CPU_CFG.speed) o.selected = true; return o; }))]),
@@ -154,6 +162,7 @@ function renderCpuBar() {
     h('label', { className: 'meta' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.reveal, onchange: (e) => { CPU_CFG.reveal = !!e.target.checked; saveCpuCfg(); render(); } }), ' CPU 패 보기']),
     cpuLastActionLine(),
     cpuHintLine(),
+    ]),
   ]);
 }
 // what the human is expected to do right now (one line, only during their own turn)
@@ -896,14 +905,22 @@ function renderTopbar() {
     h('span', {}, `활성: ${state.activePlayer}`),
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
+    mbSummary(h, { turn: state.turnNumber, player: state.activePlayer.toUpperCase(), phase: PHASE_LABEL[state.phase] || state.phase, memory: state.memory }),
     h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
-    h('button', { disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { className: state.phase === 'main' ? 'mb-hide-m' : '', disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
-      className: 'danger', disabled: state.phase !== 'main' || cpuTurnView(),
+      className: 'danger' + (state.phase !== 'main' ? ' mb-hide-m' : ''), disabled: state.phase !== 'main' || cpuTurnView(),
       onClick: () => { if (blockIfBusy()) return; if (passNeedsConfirm()) return; E.declarePass(state); render(); },
     }, ['패스', passArmed() ? h('span', { className: 'pass-warn' }, ` ⚠ 지금 낼 수 있는 카드 ${passFreeCount()}장 — 한 번 더 누르면 패스`) : h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
-    PR.topbarButtons(),
-    ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+    h('div', { className: 'mb-drawer' }, [
+      PR.topbarButtons(),
+      ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+      h('label', { className: 'mb-only' }, [
+        h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
+        ' 육성 페이즈 자동 넘김',
+      ]),
+    ]),
+    mbMenuButton(app, h),
   ]);
   const rows = [mainRow];
   // Selected-card info (including 진화원효과) lives here — part of the
@@ -1555,7 +1572,7 @@ function renderPlayerPanel(p) {
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
   const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
-    pileChip('시큐리티', pl.security.length, 'pile-security'),
+    renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() }),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
     pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
     panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, { owner: p })) : [h('span', {}, '(비어 있음)')]) : null,
@@ -1767,7 +1784,7 @@ async function ctxChoose(kind, payload) {
 const tagLbl = (x) => (x === '__ownDiscard' ? '파기 시' : String(x).replace(/^__/, '')); // pseudo-tags ('__…') shown without the prefix
 function scriptFor(trigger) {
   if (trigger.schedFn) return [{ op: 'sched' }]; // held end-of-turn effect (18-1): run via trigger.schedFn in runPendingScript
-  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text);
+  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited);
   if (specific) return specific;
   if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
     const { segments } = S.parseEffectSegments(S.card(trigger.cardId).effectKo || '');
@@ -1853,7 +1870,7 @@ async function runPendingScript(trigger, opts = {}) {
     startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
   // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger
   // sentence; the bullet is read from the card, the option can only be discarded from the turn after it was placed, and discarding it is a player choice.
-  const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
+  const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
   if (delayPlan) {
     const dst = findStack({ player: trigger.player, uid: trigger.stackUid });
     const cn = S.card(trigger.cardId).nameKo;
@@ -1889,8 +1906,8 @@ async function runPendingScript(trigger, opts = {}) {
   if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
-  if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
-    const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
+  if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited)) { // bespoke scripts cover the whole segment
+    const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
     if (dropped.length) {
       state.pending.push({ uid: 'rem' + Math.random().toString(36).slice(2), player: trigger.player, cardId: trigger.cardId, stackUid: trigger.stackUid, tags: trigger.tags, text: dropped.join(' '), resolved: false, manualOnly: true, note: '자동 처리되지 않은 나머지 효과 — 직접 처리하세요' });
     }
@@ -2480,6 +2497,16 @@ function paBlock(pa, uid) {
 
 function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (!force && blockIfBusy()) return;
+  if (force) { // effect-granted attack ("이 디지몬으로 상대의 디지몬에게 어택할 수 있다"): with no legal target it cannot be declared at all (else the target picker had nothing to pick = softlock)
+    const pre = findStack({ player: p, uid });
+    if (pre) {
+      if (atkOpts && atkOpts.anyActive) pre.anyActiveOnce = true;
+      let tg = [], hit = false;
+      try { tg = S.legalDigimonTargets(state, p, uid); hit = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); } catch (e) { tg = [1]; }
+      delete pre.anyActiveOnce;
+      if (!hit && !(tg.length && !blockedFromDigimonTarget(p, pre))) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); return; }
+    }
+  }
   const dec = S.declareAttack(state, p, uid, atkOpts);
   if (!dec.ok) { render(); return; }
   // 11-2-2: the attack target is chosen together with the declaration, i.e. BEFORE 【어택 시】 effects are triggered/resolved.
@@ -2605,6 +2632,9 @@ function renderPendingAttack() {
       })));
     } else {
       rows.push(h('div', { className: 'meta' }, '어택 대상이 될 레스트 상태의 상대 디지몬이 없음 (플레이어에게만 어택 가능)'));
+    }
+    if (!pa.canHitPlayer && (blockedByDynamic || !pa.digimonTargets.length)) { // nothing to pick: never leave the prompt without an exit
+      rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { pa.terminate(); } }, '어택 종료 (대상 없음)')]));
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.chargeTarget) {
@@ -2966,14 +2996,17 @@ function renderBreedingBar() {
   if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuTurnView()) return null;
   const { p, canHatch, canMove, reason } = breedingStatus();
   const nothingElse = !canHatch && !canMove;
-  return h('div', { className: 'breed-bar', role: 'group', 'aria-label': '육성 페이즈' }, [
+  const minimized = mbBreedKey(`${state.turnNumber}${p}`);
+  return h('div', { className: 'breed-bar' + (minimized ? ' min' : ''), role: 'group', 'aria-label': '육성 페이즈' }, [
     h('div', { className: 'breed-title' }, `🥚 ${p.toUpperCase()} 육성 페이즈`),
     h('div', { className: 'breed-reason' }, reason),
     h('div', { className: 'breed-btns' }, [
       canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
-      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, '⬆ 배틀 에어리어로 이동') : null,
-      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, '⏭ 아무것도 안 함 → 메인 페이즈로'),
+      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, ['⬆ ', h('span', { className: 'lbl-mob-hide' }, '배틀 에어리어로 '), '이동']) : null,
+      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, ['⏭ ', MB.compact ? '넘김' : '아무것도 안 함 → 메인 페이즈로']),
     ]),
+    h('button', { className: 'breed-info', title: '설명 보기', 'aria-label': '설명', onClick: (e) => e.currentTarget.closest('.breed-bar').classList.toggle('show-reason') }, 'ⓘ'),
+    h('button', { className: 'breed-expand', title: '펼치기', 'aria-label': '펼치기', onClick: mbBreedExpand }, '▴'),
     h('label', { className: 'breed-auto meta' }, [
       h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
       ' 육성 페이즈 자동 넘김 (부화/이동을 마치면 바로 메인 페이즈로)', h('span', { className: 'breed-key' }, ' · Space/Enter = 아무것도 안 함'),

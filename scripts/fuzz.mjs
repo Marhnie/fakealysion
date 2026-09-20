@@ -318,7 +318,7 @@ async function drainPending(g, ceiling = 250) {
         const pl = state.players[t.player]; const stNow = pl.raising?.uid === t.stackUid ? pl.raising : pl.battle.find(s => s.uid === t.stackUid);
         if (!stNow || stNow.cardId !== t.topId) { S.resolvePending(state, t.uid); continue; }
       }
-      const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text);
+      const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
       const script = specific || Fx.compileToScript(t.text);
       const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (pp, uid, dt, ao) => { (g.attackQueue ||= []).push({ p: pp, uid, dt, ao }); }, attack: () => state.attackCtx || null, endAttack: () => { if (state.attackCtx && state.attackCtx.terminate) state.attackCtx.terminate(); }, choose: makeChoose(g, t.player) };
       await Fx.runScript(script, ctx);

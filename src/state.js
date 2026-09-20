@@ -2146,16 +2146,18 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
 export function flushRuleChecks(state) {
   flushLeaves(state);
   const list = state._rcPending; state._rcPending = null;
-  if (!list) return;
   beginCause(state); // a rule check is its own cause
   const seen = new Set();
   const known = new Set(state.pending.map(x => x.uid));
-  for (const { p, uid } of list) {
+  for (const { p, uid } of list || []) {
     if (seen.has(p + uid)) continue; seen.add(p + uid);
     const pl = state.players[p];
     const st = pl.battle.find(s => s.uid === uid);
     if (st) ruleCheckDP(state, p, st);
   }
+  // 17-1-3-1 (rule-oracle R-dp0): conditional DP bonuses that depend on the game state (own security count, rest state, …) can lapse when ANY effect changes that state
+  // without a modifyDP call announcing it — sweep every Digimon once the outermost effect has finished.
+  if (state.players.p1.battle.length + state.players.p2.battle.length) ruleSweepDP(state, null);
   // 15-4-3-3: 【소멸 시】 etc. triggered by a rule-check deletion trigger simultaneously with the effects already waiting
   // (they are not "derived" triggers of the effect that just resolved, so they stay in the same resolution tier).
   for (const x of state.pending) if (!known.has(x.uid)) x.rcSim = true;
@@ -4686,6 +4688,7 @@ export function stepSecurityCheck(ctl) {
   const wasFaceUp = secFaceUpTake(pl, id); // s5
   state.secReveal = { p: defenderP, cardId: id, up: wasFaceUp }; // s6: lets 【시큐리티】 effects ask "이 카드가 앞면이었다면"
   emitGameEvent(state, 'securityDecrease', { owner: defenderP, stack: null, cause: 'check' }); // s5
+  ruleSweepDP(state, null); // 17-1-3-1: a "while my security is N or fewer" DP bonus may lapse right now (rule-oracle R-dp0)
   emitGameEvent(state, 'securityDiscard', { owner: defenderP, stack: null, cause: 'check', cardId: id }); // b9: "이 카드가 시큐리티에서 파기되었을 때" (BT25-034/040): a checked security card is trashed from security
   if (wasFaceUp && attackerStack) emitGameEvent(state, 'faceUpChecked', { owner: attackerP, stack: attackerStack, defenderP, cardId: id }); // s5
   if (attackerStack) emitGameEvent(state, 'securityChecked', { owner: attackerP, stack: attackerStack, defenderP, cardId: id }); // s6: "이 디지몬이 상대의 시큐리티를 체크했을 때" (BT22-080)

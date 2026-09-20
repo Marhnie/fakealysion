@@ -37,7 +37,7 @@ LG.game = async (a, b, level = 'hard') => {
   const nb = [...document.querySelectorAll('button')].find(x => /새 게임 \(덱 선택으로\)/.test(x.textContent)); if (nb) { nb.click(); await wait(250); }
   const sels = [...document.querySelectorAll('select')]; const setv = (el, v) => { if (el) { el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); } };
   setv(sels[2], 'cpu'); await wait(150); setv([...document.querySelectorAll('select')][3], level); await wait(150);
-  await bots.newGame(a, b); return snap();
+  await bots.newGame(a, b); const sp = [...document.querySelectorAll('select')].find(x => [...x.options].some(o => o.value === 'fast')); if (sp) setv(sp, 'fast'); return snap();
 };
 LG.stats = () => { const { state: s } = __dbg(); return JSON.stringify({ t: s.turnNumber, p1: ['hand', 'battle', 'trash', 'security', 'deck'].map(k => s.players.p1[k].length), p2: ['hand', 'battle', 'trash', 'security', 'deck'].map(k => s.players.p2[k].length), mem: s.memory, w: s.winner, maxRender: Math.round(LG.maxRender || 0), dom: document.querySelectorAll('*').length, heap: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : 0 }); };
 // Drive with cheat hook per turn: LG.cheat(state) invoked once when P1's main phase begins each turn.
@@ -57,12 +57,13 @@ LG.count = (s) => { let n = 0; const cnt = (st) => { if (!st) return 0; let k = 
 LG.cons = (tag) => { const { state: s } = __dbg(); if (s.pending.some(t => !t.resolved) || document.querySelector('.modal-panel') || s.pendingAttack) return; const n = LG.count(s); if (LG.total == null || LG.stateRef !== s) { LG.total = n; LG.stateRef = s; LG.injected = 0; } if (n !== LG.total + (LG.injected || 0)) { LG.note(tag + ' CONSERVATION ' + LG.total + '+' + (LG.injected || 0) + ' -> ' + n); LG.total = n - (LG.injected || 0); } };
 LG.rnd = (n) => Math.floor(Math.random() * n);
 LG.fmodal = async () => {
+  const ok0 = () => [...(document.querySelector('.modal-panel')?.querySelectorAll('button') || [])].some(b => !b.disabled && /^확인/.test(b.textContent));
   const mod = document.querySelector('.modal-panel'); if (!mod) return null;
   const bs = [...mod.querySelectorAll('button')].filter(b => !b.disabled);
   const txt = mod.textContent;
   if (/CPU가 결정 중/.test(txt) && !bs.length) return 'cpu-wait';
   if (/블로커≫로 막을|충돌/.test(txt) && Math.random() < 0.5) { const bc = mod.querySelector('.stack-list .card-chip'); if (bc) { bc.click(); return 'block'; } }
-  const chips = [...mod.querySelectorAll('.card-chip:not(.selected)')];
+  const allChips = [...mod.querySelectorAll('.card-chip')]; const chips = Math.random() < 0.85 ? allChips.filter(c => !c.classList.contains('selected')) : allChips; if (!ok0() && allChips.length) { if (!chips.length) { allChips[LG.rnd(allChips.length)].click(); return 'unsel'; } }
   const ok = bs.find(b => /^확인/.test(b.textContent));
   if (chips.length && Math.random() < 0.7 && (!ok || Math.random() < 0.6)) { chips[LG.rnd(chips.length)].click(); return 'chip'; }
   if (ok && Math.random() < 0.8) { ok.click(); return 'ok'; }
@@ -85,10 +86,18 @@ LG.fplay = async (max = 400, ms = 40, opts = {}) => {
     if (s.turnNumber !== lastTurn && s.activePlayer === 'p1' && s.phase === 'main' && !hasMod) { lastTurn = s.turnNumber; try { if (LG.cheat) LG.cheat(s); if (opts.injectN) LG.inject(s, opts.injectN); if (opts.stuff && s.turnNumber > 2) { LG.stuff(s, 'p1', opts.stuff); LG.stuff(s, 'p2', opts.stuff); } __dbg().render(); } catch (e) { LG.note('cheat err ' + e.message); } }
     let r;
     if (hasMod) r = await LG.fmodal(); else if (s.activePlayer === 'p2') r = 'cpu'; else r = await bots.step();
-    LG.check('t' + s.turnNumber + ' ' + String(r).slice(0, 30)); LG.cons('t' + s.turnNumber + ' ' + String(r).slice(0, 30));
+    LG.check('t' + s.turnNumber + ' ' + String(r).slice(0, 30));
     const sig = JSON.stringify([s.turnNumber, s.phase, s.memory, s.log.length, hasMod, document.querySelector('.modal-panel')?.textContent.length]);
+    LG.stable = (sig === last) ? (LG.stable || 0) + 1 : 0; if (LG.stable >= 3 && !s.uiChoice && !(s.pendingReplacements || []).length) LG.cons('t' + s.turnNumber + ' ' + String(r).slice(0, 30));
     if (sig === last) { if (Date.now() - sameSince > (opts.stall || 40000)) { const m = document.querySelector('.modal-panel'); LG.note('STALL t' + s.turnNumber + ' ' + snap() + ' modal=' + (m ? m.innerText.replace(/\n/g, ' | ').slice(0, 300) + ' btns=' + [...m.querySelectorAll('button')].map(b => b.textContent + (b.disabled ? '(x)' : '')).join(',') : 'none') + ' last=' + r); return 'STALL'; } } else { sameSince = Date.now(); } last = sig; await wait(ms);
   }
   return 'max ' + snap() + ' ' + LG.stats();
 };
 LG.fbg = (n, o) => { LG.res = null; LG.fplay(n, 40, o).then(r => LG.res = r); };
+// wait until the UI is quiet: a modal is shown, or no uiChoice/pending/attack remains (max ms)
+LG.settle = async (ms = 6000) => { const t0 = Date.now(); await wait(80); while (Date.now() - t0 < ms) { const { state: s } = __dbg(); const mod = document.querySelector('.modal-panel'); if (mod) return 'modal'; if (!s.uiChoice && !s.pending.some(t => !t.resolved)) return 'idle'; await wait(80); } return 'timeout'; };
+// scenario mode: pause the CPU driver (its beat() would otherwise play on my fabricated p2 turn) and let it finish what it is doing
+LG.pauseCpu = async () => { const b = [...document.querySelectorAll('button')].find(x => /일시정지/.test(x.textContent)); if (b) { b.click(); await wait(400); } await wait(1200); };
+LG.scenario = async (a = 'L1', b = 'L2') => { await LG.game(a, b); await wait(300); await LG.pauseCpu(); const { state: s } = __dbg(); s.phase = 'main'; s.activePlayer = 'p1'; s.memory = 10; s.pending.forEach(t => t.resolved = true); s.uiChoice = null; __dbg().render(); await wait(200); return s; };
+// answer/close every open prompt (random answers) until the UI is idle; returns the number of steps or 'STUCK:<modal text>'
+LG.drain = async (max = 60) => { for (let i = 0; i < max; i++) { await LG.settle(2500); let m = document.querySelector('.modal-panel'); if (!m) { await wait(700); m = document.querySelector('.modal-panel'); if (!m) { await LG.settle(1500); m = document.querySelector('.modal-panel'); } if (!m) return i; } const r = await LG.fmodal(); if (r === 'nobtn') return 'STUCK:' + m.innerText.replace(/\n/g, ' | ').slice(0, 300); await wait(120); } return 'STUCK-max:' + (document.querySelector('.modal-panel')?.innerText.replace(/\n/g, ' | ').slice(0, 300) || 'idle'); };

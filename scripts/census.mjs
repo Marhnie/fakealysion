@@ -20,13 +20,13 @@ const flag = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? argv[
 // ---------- merge mode ----------
 if (argv.includes('--merge')) {
   const files = argv.slice(argv.indexOf('--merge') + 1).filter(a => !a.startsWith('--') && a !== flag('out'));
-  const M = { segs: {}, present: {}, presentInh: {}, hand: {}, played: {}, games: 0, gamesByCard: {}, dead: {}, errors: {}, meta: {} };
+  const M = { segs: {}, present: {}, presentInh: {}, hand: {}, played: {}, wopp: {}, games: 0, gamesByCard: {}, dead: {}, errors: {}, meta: {} };
   const addNum = (a, b) => { for (const k of Object.keys(b)) a[k] = (a[k] || 0) + b[k]; };
   for (const f of files) {
     const j = JSON.parse(fs.readFileSync(f, 'utf8'));
     M.games += j.games; addNum(M.gamesByCard, j.gamesByCard || {});
-    for (const k of ['present', 'presentInh', 'hand', 'played']) addNum(M[k], j[k] || {});
-    for (const [k, v] of Object.entries(j.segs)) { const m = (M.segs[k] ||= { card: v.card, tags: v.tags, src: v.src, text: v.text, queued: 0, resolved: 0, manual: 0, silent: 0, err: 0, dbl: 0, perTurnMax: 0, silentEx: null, dblEx: null, errEx: null, manualEx: null }); for (const c of ['queued', 'resolved', 'manual', 'silent', 'err', 'dbl']) m[c] += v[c]; m.perTurnMax = Math.max(m.perTurnMax, v.perTurnMax || 0); for (const x of ['silentEx', 'dblEx', 'errEx', 'manualEx']) m[x] ||= v[x]; }
+    for (const k of ['present', 'presentInh', 'hand', 'played', 'wopp']) addNum(M[k], j[k] || {});
+    for (const [k, v] of Object.entries(j.segs)) { const m = (M.segs[k] ||= { card: v.card, tags: v.tags, src: v.src, text: v.text, queued: 0, resolved: 0, manual: 0, silent: 0, err: 0, dbl: 0, once: 0, perTurnMax: 0, silentEx: null, dblEx: null, errEx: null, manualEx: null, onceEx: null }); for (const c of ['queued', 'resolved', 'manual', 'silent', 'err', 'dbl', 'once']) m[c] += (v[c] || 0); m.perTurnMax = Math.max(m.perTurnMax, v.perTurnMax || 0); for (const x of ['silentEx', 'dblEx', 'errEx', 'manualEx', 'onceEx']) m[x] ||= v[x]; }
     for (const [k, v] of Object.entries(j.dead)) { const m = (M.dead[k] ||= { card: v.card, tag: v.tag, src: v.src, text: v.text, events: 0, missed: 0, ex: null }); m.events += v.events; m.missed += v.missed; m.ex ||= v.ex; }
     for (const [k, v] of Object.entries(j.errors || {})) { const m = (M.errors[k] ||= { n: 0, stack: v.stack }); m.n += v.n; }
   }
@@ -44,13 +44,13 @@ const pick = (a) => a[rnd(a.length)];
 const shuffled = (a) => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = rnd(i + 1); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 
 // ---------- store ----------
-const ST = { segs: {}, present: {}, presentInh: {}, hand: {}, played: {}, games: 0, gamesByCard: {}, dead: {}, errors: {} };
+const ST = { segs: {}, present: {}, presentInh: {}, hand: {}, played: {}, wopp: {}, games: 0, gamesByCard: {}, dead: {}, errors: {} };
 const cardOf = (id) => S.card(id);
 const trunc = (s, n = 70) => String(s || '').replace(/\s+/g, ' ').slice(0, n);
 function segOf(t) {
   const src = t.linked ? 'link' : t.watcher ? (t.inherited ? 'watch-inh' : 'watch') : t.inherited ? 'inherited' : (t.evt || t.tags?.[0]?.startsWith('__')) ? 'own' : 'own';
   const key = `${t.cardId}|${(t.tags || []).join('/')}|${src}|${trunc(t.text, 24)}`;
-  return ST.segs[key] ||= { card: t.cardId, tags: (t.tags || []).join('/'), src, text: trunc(t.text, 90), queued: 0, resolved: 0, manual: 0, silent: 0, err: 0, dbl: 0, perTurnMax: 0, silentEx: null, dblEx: null, errEx: null, manualEx: null };
+  return ST.segs[key] ||= { card: t.cardId, tags: (t.tags || []).join('/'), src, text: trunc(t.text, 90), queued: 0, resolved: 0, manual: 0, silent: 0, err: 0, dbl: 0, once: 0, perTurnMax: 0, silentEx: null, dblEx: null, errEx: null, manualEx: null, onceEx: null };
 }
 const COND_OPP_DIGI = /^([〔\[]턴\s*에?\s*\d+\s*회[〕\]]\s*)?상대의\s*디지몬에게?\s*어택했을\s*때/, COND_PLAYER = /^([〔\[]턴\s*에?\s*\d+\s*회[〕\]]\s*)?플레이어에게\s*어택했을\s*때/, COND_NONBATTLE = /배틀\s*이외로\s*소멸하고\s*있었다면/; // queue-time conditions the engine evaluates itself (resolveBattleCondition)
 const SELF = { play: ['등장 시'], digivolve: ['진화 시'], delete: ['소멸 시'], attack: ['어택 시', '공격 시'] };
@@ -113,7 +113,7 @@ const CX = {
         if (strict) continue;
         const lenient = fresh.some(t => t.cardId === x.cid && t.stackUid === ev.uid);
         const nm = cardOf(x.cid).nameKo;
-        const logged = lines.some(m => m.includes(nm) && /자동 처리|발휘하지 않|무효/.test(m));
+        const nm2 = cardOf(ev.cardId).nameKo; const logged = lines.some(m => (m.includes(nm) || m.includes(nm2)) && /자동 처리|발휘하지 않|무효/.test(m));
         if (lenient || logged) { d.events--; continue; } // handled (auto-applied / suppressed / another segment of same card queued)
         d.missed++; d.ex ||= { turn: ev.turn, kind: ev.kind, inSources: ev.sources.length, gid: G.id, lines: lines.slice(0, 5).reverse() };
       }
@@ -129,6 +129,15 @@ const CX = {
   after(state, t, script, cxs) {
     if (!G || !cxs || cxs.noScript) return;
     const s = segOf(t); s.resolved++;
+    if (t.stackUid && cxs.sig !== sigOf(state)) { // an EFFECTIVE resolution: check the printed [턴에 N회] cap (each COPY of the card in the stack has its own cap)
+      const om = String(t.text || '').match(/^\s*[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
+      if (om) {
+        let copies = 1; for (const q of ['p1', 'p2']) for (const st of [state.players[q].raising, ...state.players[q].battle]) if (st && st.uid === t.stackUid) copies = Math.max(1, (st.cardId === t.cardId ? 1 : 0) + st.sources.filter(x => x === t.cardId).length + (st.linkCards || []).filter(l => l.cardId === t.cardId).length);
+        const k = `${t.cardId}|${t.stackUid}|${(t.tags || []).join('/')}|${t.text}|${state.turnNumber}`;
+        const n = G.onceCnt[k] = (G.onceCnt[k] || 0) + 1; if (n === 1) G.onceLast[k] = { uid: t.uid, evt: t.evt && t.evt.kind };
+        if (n > Number(om[1]) * copies) { s.once = (s.once || 0) + 1; s.onceEx ||= { gid: G.id, turn: state.turnNumber, n, cap: Number(om[1]) * copies, ops: script.map(o => o.op).join(','), uid: t.uid, active: state.activePlayer, owner: t.player, evt: t.evt && t.evt.kind, prev: G.onceLast[k] }; G.onceLast[k] = { uid: t.uid, evt: t.evt && t.evt.kind }; }
+      }
+    }
     if (cxs.sig === sigOf(state) && cxs.head === state.log[0]) { s.silent++; s.silentEx ||= { gid: G.id, turn: state.turnNumber, ops: script.map(o => o.op).join(',') }; }
   },
   error(state, t, e) { if (!G) return; const s = segOf(t); s.err++; s.errEx ||= String(e && e.message).slice(0, 120); const k = t.cardId + ': ' + String(e && e.message).slice(0, 100); (ST.errors[k] ||= { n: 0, stack: String(e && e.stack).split('\n').slice(0, 4).join(' | ') }).n++; },
@@ -143,8 +152,33 @@ function sigOf(state) {
   return s;
 }
 globalThis.__CENSUS = CX;
+const WCACHE = new Map();
+function watchersOf(cardId, inh) { // printed turn-scoped watcher segments of a card + the engine event kinds they listen for (the engine's own parsers)
+  const key = cardId + (inh ? '#i' : '#o'); let r = WCACHE.get(key); if (r) return r; r = [];
+  const c = S.card(cardId), text = inh ? c.inheritedKo : c.effectKo;
+  if (text) for (const seg of S.parseEffectSegments(text).segments) {
+    if (seg.tags.length !== 1 || !['자신의 턴', '상대의 턴', '서로의 턴'].includes(seg.tags[0])) continue;
+    let kinds = null; try { const ab = S.parseWatcherTrigger(seg.body); kinds = ab ? (ab.kinds || [ab.kind]) : null; if (!kinds) { const ew = S.parseEventWatcher(seg.body); kinds = ew ? ew.kinds : null; } } catch (e) { kinds = null; }
+    if (kinds) r.push({ tag: seg.tags[0], kinds, k: `${cardId}|${seg.tags[0]}|${inh ? 'inh' : 'own'}` });
+  }
+  WCACHE.set(key, r); return r;
+}
 S.EVENT_HOOKS.push((state, kind, info) => {
   if (!G || G.state !== state) return;
+  for (const hp of ['p1', 'p2']) { // watcher OPPORTUNITIES: an event of a kind some on-board watcher listens for happened while it was active
+    const hpl = state.players[hp];
+    for (const h of [hpl.raising, ...hpl.battle]) {
+      if (!h) continue;
+      const lists = [[watchersOf(h.cardId, false)]];
+      if (S.card(h.cardId).category !== 'tamer') for (const sid of h.sources.slice(S.fdCount(h))) lists.push([watchersOf(sid, true)]);
+      for (const [l] of lists) for (const w of l) {
+        if (!w.kinds.includes(kind)) continue;
+        if (w.tag === '자신의 턴' && state.activePlayer !== hp) continue;
+        if (w.tag === '상대의 턴' && state.activePlayer === hp) continue;
+        ST.wopp[w.k] = (ST.wopp[w.k] || 0) + 1;
+      }
+    }
+  }
   if (SELF[kind] && info && info.stack) G.events.push({ kind, uid: info.stack.uid, cardId: info.stack.cardId, sources: info.stack.sources.slice(S.fdCount(info.stack)), turn: state.turnNumber, tk: state.attackCtx ? state.attackCtx.targetKind : null, cause: info.cause });
   if (kind === 'play' && info && info.stack) ST.played[info.stack.cardId] = (ST.played[info.stack.cardId] || 0) + 1;
   if (kind === 'optionUsed' && info) { const id = info.cardId || (info.stack && info.stack.cardId); if (id) ST.played[id] = (ST.played[id] || 0) + 1; }
@@ -215,12 +249,28 @@ function scanPresence(state, seenBoard, seenInh, seenHand) {
     for (const st of [pl.raising, ...pl.battle]) if (st) { seenBoard.add(st.cardId); for (const s of st.sources) seenInh.add(s); }
   }
 }
-async function playGame(dA, dB, tag) {
+// FOCUS driver: the plain CPU never uses expensive / low-value options (134 option cards were held 90+ times and never cast), so their effects were never exercised.
+// With probability FORCE the focus card is played / cast / evolved into whenever a legal action for it exists (the rest of the turn is the normal CPU).
+const FORCE = Number(flag('force', 0.6));
+function chooseAct(state, p, cfg, focus) {
+  if (focus && Math.random() < FORCE) {
+    try {
+      const banned = cfg.banned || new Set();
+      const acts = Cpu.enumerateActions(state, p).filter(a => !banned.has(a.key));
+      const f = acts.filter(a => a.cardId === focus && ['play', 'option', 'evolve', 'jogress'].includes(a.type));
+      if (f.length) return pick(f);
+      const m = acts.filter(a => a.type === 'main' && (() => { const st = [state.players[p].raising, ...state.players[p].battle].find(x => x && x.uid === a.uid); return st && st.cardId === focus; })());
+      if (m.length) return pick(m);
+    } catch (e) { /* fall through to the normal CPU */ }
+  }
+  return Cpu.planMain(state, p, cfg);
+}
+async function playGame(dA, dB, tag, focus) {
   const state = S.newGame(dA, dB);
   const lv = (LEVEL === 'mixed' ? pick(['normal', 'hard']) : LEVEL);
   const cfgs = { p1: { level: lv, search: false, banned: new Set() }, p2: { level: LEVEL === 'mixed' ? pick(['normal', 'hard']) : LEVEL, search: false, banned: new Set() } };
   const stats = { actions: 0, attacks: 0, blocks: 0, counters: 0 };
-  G = { id: tag + '#' + (++gidSeq) + '@' + SEED, state, seen: new Set(), perTurn: {}, events: [], logHead: null };
+  G = { id: tag + '#' + (++gidSeq) + '@' + SEED, state, seen: new Set(), perTurn: {}, onceCnt: {}, onceLast: {}, events: [], logHead: null };
   const seenBoard = new Set(), seenInh = new Set(), seenHand = new Set();
   const sim = createSim(state, { cfgOf: (p) => cfgs[p], onError: (w, e) => { const k = w + ': ' + String(e && e.message).slice(0, 100); (ST.errors[k] ||= { n: 0, stack: String(e && e.stack).split('\n').slice(0, 4).join(' | ') }).n++; }, stats });
   const t0 = Date.now();
@@ -235,7 +285,7 @@ async function playGame(dA, dB, tag) {
       await sim.beginTurn(p);
       if (state.winner) break;
       scanPresence(state, seenBoard, seenInh, seenHand);
-      await sim.mainLoop(p, async () => Cpu.planMain(state, p, cfgs[p]));
+      await sim.mainLoop(p, async () => chooseAct(state, p, cfgs[p], focus));
       scanPresence(state, seenBoard, seenInh, seenHand);
     }
   } catch (e) { const k = 'game: ' + String(e && e.message).slice(0, 100); (ST.errors[k] ||= { n: 0, stack: String(e && e.stack).split('\n').slice(0, 4).join(' | ') }).n++; }
@@ -261,7 +311,7 @@ outer: for (let round = 0; round < Number(flag('rounds', 1)); round++) {
       if (Date.now() > deadline) break outer;
       let dA, dB;
       try { dA = deckAround(X); dB = Math.random() < MIRROR ? deckAround(X) : randomOpp(); } catch (e) { const kk = 'deck ' + id + ': ' + String(e && e.message).slice(0, 80); (ST.errors[kk] ||= { n: 0, stack: '' }).n++; continue; }
-      await playGame(dA, dB, id);
+      await playGame(dA, dB, id, id);
       ST.gamesByCard[id] = (ST.gamesByCard[id] || 0) + 1;
     }
     done++;

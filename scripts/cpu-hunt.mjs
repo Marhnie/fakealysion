@@ -160,7 +160,10 @@ function makeDeck(kindSpec) {
   if (k === 'mech') return genMech();
   return genRandom();
 }
-function randOppKind() { return pick(['theme', 'theme', 'mech', 'random', 'starter=' + pick(STARTERS), 'focus=' + pick(mainPool).id]); }
+let GS = (BASE_SEED * 2654435761) >>> 0;
+const grnd = () => { GS = (GS + 0x6D2B79F5) >>> 0; let t = GS; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const gpick = (a) => a[Math.floor(grnd() * a.length)]; // spec generation uses its own rng so shards / reruns see identical specs
+function randOppKind() { return gpick(['theme', 'theme', 'mech', 'random', 'starter=' + gpick(STARTERS), 'focus=' + gpick(mainPool).id]); }
 function* specs() {
   const lv = (i) => { const a = LEVELS[i % LEVELS.length], b = LEVELS[(Math.floor(i / LEVELS.length) + i) % LEVELS.length]; return [a, b]; };
   let idx = 0;
@@ -168,8 +171,8 @@ function* specs() {
   const ids = all.map((c) => c.id);
   const starterSpec = (n) => { const x = n % STARTERS.length, y = Math.floor(n / STARTERS.length) % STARTERS.length; return mk('starter=' + STARTERS[x], 'starter=' + STARTERS[y], n + Math.floor(n / (STARTERS.length ** 2))); };
   if (MODE === 'starters') { for (let n = 0; ; n++) { idx = n; yield starterSpec(n); } }
-  if (MODE === 'focus') { for (let r = 0; r < PER; r++) for (let i = 0; i < ids.length; i++) { idx++; yield mk('focus=' + ids[i], r === 0 ? randOppKind() : 'focus=' + pick(ids), i + r); } return; }
-  if (MODE === 'mix') { for (let n = 0; ; n++) { idx = n; const k = n % 8; if (k < 2) yield starterSpec(Math.floor(Math.random() * STARTERS.length * STARTERS.length)); else if (k < 4) yield mk('focus=' + pick(ids), randOppKind(), n); else if (k < 6) yield mk('theme', 'theme', n); else if (k === 6) yield mk('mech', 'mech', n); else yield mk('random', 'theme', n); } }
+  if (MODE === 'focus') { for (let r = 0; r < PER; r++) for (let i = 0; i < ids.length; i++) { idx++; yield mk('focus=' + ids[i], r === 0 ? randOppKind() : 'focus=' + gpick(ids), i + r); } return; }
+  if (MODE === 'mix') { for (let n = 0; ; n++) { idx = n; const k = n % 8; if (k < 2) yield starterSpec(Math.floor(grnd() * STARTERS.length * STARTERS.length)); else if (k < 4) yield mk('focus=' + gpick(ids), randOppKind(), n); else if (k < 6) yield mk('theme', 'theme', n); else if (k === 6) yield mk('mech', 'mech', n); else yield mk('random', 'theme', n); } }
   for (let n = 0; ; n++) { idx = n; yield mk(MODE, MODE, n); }
 }
 
@@ -200,7 +203,7 @@ function census(state) {
   for (const p of ['p1', 'p2']) {
     const pl = state.players[p], m = res[p];
     for (const z of ['hand', 'deck', 'trash', 'security', 'digitamaDeck']) for (const id of pl[z]) add(m, id);
-    for (const st of [pl.raising, ...pl.battle].filter(Boolean)) { add(m, st.cardId); for (const id of st.sources || []) if (typeof id === 'string') add(m, id); for (const l of st.linkCards || []) if (l) add(m, l.cardId); }
+    for (const st of [pl.raising, ...pl.battle].filter(Boolean)) { if (st.foreignCardId === st.cardId && st.foreignTop && res[st.foreignTop]) add(res[st.foreignTop], st.cardId); else add(m, st.cardId); for (const id of st.sources || []) if (typeof id === 'string') add(m, id); for (const l of st.linkCards || []) if (l) add(m, l.cardId); }
   }
   return res;
 }
@@ -234,7 +237,7 @@ function checkState(g, phaseTag) {
       if (typeof st.suspended !== 'boolean') report('STRUCT', 'suspended not boolean', st.cardId);
       let dp = NaN; try { dp = S.effectiveDP(state, p, st); } catch (e) { noteErr('effectiveDP ' + st.cardId, e); }
       if (!Number.isFinite(dp)) report('NAN', 'effectiveDP', st.cardId + '=' + dp);
-      else if (dp <= 0 && st !== pl.raising && cd.category === 'digimon' && cd.dp != null && !state.turnEnding && !state.pending.some((t) => !t.resolved) && state.phase === 'main') report('DP0', 'digimon DP<=0 alive ' + st.cardId, st.cardId + ' dp=' + dp);
+      else if (dp <= 0 && st !== pl.raising && cd.category === 'digimon' && cd.dp != null && !state.turnEnding && !state.pending.some((t) => !t.resolved) && state.phase === 'main') report('DP0', 'digimon DP<=0 alive ' + st.cardId, st.cardId + ' dp=' + dp + ' carddp=' + cd.dp + ' temp=' + st.tempDP + ' src=' + (st.sources || []).length + ' placed=' + st.placedTurn + ' turn=' + state.turnNumber + ' trig=' + g.recentTrig.slice(-5).join(',') + ' rc=' + state._rcDepth + '/' + (state._rcPending || []).length + ' log=' + state.log.slice(0, 6).map((e) => e.msg).join(' / '));
       const e = ex(st.cardId); if (!st._seenTop) { st._seenTop = 1; e.top++; for (const s of st.sources || []) if (typeof s === 'string') ex(s).src++; }
     }
     for (const id of pl.hand) { const k = 'h' + id; if (!g.seenHand.has(p + k)) { g.seenHand.add(p + k); ex(id).hand++; } }

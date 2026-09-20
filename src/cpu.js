@@ -160,7 +160,7 @@ function optionValue(state, p, id) {
   return { score: sc, why };
 }
 function canUseOptionNow(state, p, id) {
-  return safe(() => S.optionColorOk(state, p, id) && !S.timedLocked(state, p, 'option'), false);
+  return safe(() => S.optionColorOk(state, p, id) && !S.timedLocked(state, p, 'option') && !S.s1HookAny(state, 's1cannotUseOption', { p }), false);
 }
 
 function jogressOptions(state, p, cardId) {
@@ -188,6 +188,7 @@ function canDeclareAttack(state, p, st) {
   if (st.cannotAttackUntil === 'permanent' || (typeof st.cannotAttackUntil === 'number' && state.turnNumber <= st.cannotAttackUntil)) return false;
   if (!safe(() => S.canRestByRule(state, p, st), true)) return false;
   if (safe(() => S.hookNoAttack(state, p, st) || S.s1CannotAttack(state, p, st), false)) return false;
+  if (safe(() => S.cannotAttackNoOppDigimon(state, p, st), false)) return false; // Guardromon: no attacks while the opponent has no Digimon (the CPU used to retry the rejected declaration 40x per turn)
   return true;
 }
 
@@ -261,7 +262,7 @@ function enumerateActions_(state, p) {
   // 트레이닝 / 【메인】 abilities
   board.forEach((st) => {
     const zone = pl.raising && st.uid === pl.raising.uid ? 'raising' : 'battle';
-    if (hasKw(state, p, st, '트레이닝') && !st.suspended && pl.deck.length > 3 && !canDeclareAttack(state, p, st)) acts.push({ type: 'train', uid: st.uid, cost: 0, score: 2.2, key: 'tr:' + st.uid });
+    if (hasKw(state, p, st, '트레이닝') && !st.suspended && pl.deck.length > 3 && !canDeclareAttack(state, p, st) && safe(() => S.canRestByRule(state, p, st), true)) acts.push({ type: 'train', uid: st.uid, cost: 0, score: 2.2, key: 'tr:' + st.uid });
     const abs = safe(() => S.activatableMainAbilities(state, p, st, zone), []);
     abs.forEach((ab, idx) => {
       const ok = safe(() => Fx.mainAbilityPayable(state, S, p, st.uid, ab.cardId, ab.tags, ab.text), false);
@@ -768,7 +769,7 @@ export function createUiDriver(api) {
         case 'jogress': note(`${card(act.cardId).nameKo} 조그레스 진화`); await api.jogress(p, act.a, act.b, act.cardId); break;
         case 'attack': { const stk = findAny(st, p, act.uid); note(`${stk ? card(stk.cardId).nameKo : '?'} 어택`); api.attack(p, act.uid, act.target); break; }
         case 'train': note('【트레이닝】 사용'); api.train(p, act.uid); break;
-        case 'main': note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break;
+        case 'main': { const mk = act.key; const cnt = (D.mainUses ||= {}); cnt[D.turnKey + '|' + mk] = (cnt[D.turnKey + '|' + mk] || 0) + 1; if (cnt[D.turnKey + '|' + mk] >= 2) D.banned.add(mk); /* a 【메인】 whose script does nothing (e.g. ST17-10 with no 테리어몬 / 세인트가르고몬) changes no state but the pending row, so the before/after ban never fired: 22 no-op uses per turn — cap at 2 per turn */ note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break; }
         default: break;
       }
     } catch (e) {
@@ -786,7 +787,7 @@ export function createUiDriver(api) {
   async function stepMain(st) {
     const p = D.cpu;
     const key = st.turnNumber + ':' + st.activePlayer;
-    if (D.turnKey !== key) { D.turnKey = key; D.banned = new Set(); D.actionsThisTurn = 0; }
+    if (D.turnKey !== key) { D.turnKey = key; D.banned = new Set(); D.mainUses = {}; D.actionsThisTurn = 0; }
     if (st.phase === 'breeding') {
       const act = planBreeding(st, p, cfg());
       if (!act.key && act.type !== 'skipBreeding') return false;
