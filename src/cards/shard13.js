@@ -425,7 +425,7 @@ sc('BT21-096::메인', async (ctx) => {
   const st = await pickStack(ctx, p, tams(state, p).filter(s => C(s.cardId).nameKo === '최건우'), '디지몬으로 취급할 「최건우」 선택');
   if (!st) return;
   st.s2AsDigimon = true; st.s2NoEvolve = true;
-  S.modifyDP(state, p, st.uid, 12000, 'turn');
+  (st.baseOv ||= []).push({ ts: S.stamp(), until: state.turnNumber, dp: 12000 }); S.refreshBaseInfo(state, st); // (a Tamer has no DP: modifyDP would be refused by 2-5-3)
   S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; }, { expire: true });
   S.grantKeyword(state, p, st.uid, '속공', undefined, 'turn');
   S.grantKeyword(state, p, st.uid, '액티브공격', undefined, 'turn');

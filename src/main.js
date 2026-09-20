@@ -4,7 +4,7 @@ import * as Effects from './effects.js';
 import * as DB from './deckbuilder.js';
 import * as DBS from './dbsearch.js'; // deck-builder search/filter (pure)
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
-import { fxEmit, fxGetMode, fxSetMode, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
+import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
@@ -622,6 +622,7 @@ function render() {
   if (!state) return renderSetup();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();
+  if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
   E.autoAdvance(state);
   autoRunMandatoryPending();
   // 6-1-4: once memory sits on the opponent's side and there's genuinely
@@ -651,6 +652,9 @@ function render() {
   app.appendChild(renderTopbar());
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
+  const breedBar = renderBreedingBar();
+  app.classList.toggle('breeding-bar-on', !!breedBar);
+  if (breedBar) app.appendChild(breedBar);
   app.appendChild(renderLog());
   const modal = renderModal();
   if (modal) app.appendChild(modal);
@@ -849,7 +853,7 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
     let canNormal = false;
     try {
       const r0 = S.evolveTargetRestriction(state, p, stack), x0 = S.evoExtraArg(state, p, stack);
-      canNormal = S.card(stack.cardId).category === 'digimon' && (E.evolutionMethods(stack.cardId, drag.cardId, x0, r0, { state, p, stack }).length > 0 || E.canEvolveAny(stack.cardId, drag.cardId, x0, r0).ok);
+      canNormal = ['digimon', 'tamer'].includes(S.card(stack.cardId).category) && (E.evolutionMethods(stack.cardId, drag.cardId, x0, r0, { state, p, stack }).length > 0 || E.canEvolveAny(stack.cardId, drag.cardId, x0, r0).ok);
     } catch (e) { canNormal = false; }
     if (withStack) {
       if (canNormal) {
@@ -867,7 +871,7 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
   // line on the target — a failure here means NO printed condition
   // justifies this evolution, so the drop must be rejected outright
   // rather than silently let through for cost 0.
-  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
+  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category) && !(S.card(stack.cardId).category === 'tamer' && E.evolutionMethods(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack), { state, p, stack }).length)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
   // 8-1-2-1 / 8-1-3-1: the PLAYER picks which way to evolve (every satisfied printed condition, 버스트 진화, 어플 합체, effect-granted alternatives).
   const evoRestr = S.evolveTargetRestriction(state, p, stack);
   const methods = E.evolutionMethods(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), evoRestr, { state, p, stack });
@@ -917,6 +921,21 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
     evoModDelta += absorb.delta;
   }
   const cost = Math.max(0, check.cost + evoModDelta);
+  if (method && method.id === 'tamer10') { // BT7-112: pay "패 또는 트래시에서 테이머/하이브리드체 카드 N장을 (원하는 순서대로) 덱 아래로 되돌린다" before digivolving
+    if (!S.canPayCost(state, cost)) { S.log(state, `${p} ${S.card(drag.cardId).nameKo} 진화 불가: 코스트 ${cost}를 지불할 수 없음`); S.restoreEvoCostMods(evoSnap); dragData = null; render(); return; }
+    const plR = state.players[p], okR = (id) => S.card(id).category === 'tamer' || (S.card(id).types || []).includes(method.returnTrait);
+    const elig = (z) => plR[z].map((id, i) => i).filter(i => okR(plR[z][i]) && !(z === 'hand' && plR.hand[i] === drag.cardId && i === plR.hand.indexOf(drag.cardId)));
+    for (let k = 0; k < method.returnN; k++) {
+      const zs = ['hand', 'trash'].filter(z => elig(z).length);
+      if (!zs.length) break;
+      let z = zs[0];
+      if (zs.length > 1) { const kz = await ctxChoose('multipleChoice', { player: p, prompt: `덱 아래로 되돌릴 카드 (${k + 1}/${method.returnN}) — 영역`, options: zs.map(x => (x === 'hand' ? '패' : '트래시')) }); z = zs[kz] || zs[0]; }
+      const ix = await ctxChoose('pickFromZoneIndex', { player: p, zone: z, eligibleIdxs: elig(z), prompt: `덱 아래로 되돌릴 테이머/하이브리드체 카드 (${k + 1}/${method.returnN}, 놓는 순서)` });
+      const [rid] = plR[z].splice(ix ?? elig(z)[0], 1);
+      plR.deck.push(rid);
+      S.log(state, `${p} ${S.card(rid).nameKo}을(를) 덱 아래로 되돌림 (${S.card(drag.cardId).nameKo} 진화 코스트)`);
+    }
+  }
   if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);
   dragData = null; render();
@@ -1117,7 +1136,7 @@ function handTargetKind(p, stack, zoneKind) {
   if (zoneKind !== 'battle' && zoneKind !== 'raising') return null;
   const hc = state.players[p].hand[sel.hand.idx];
   if (hc == null || S.card(hc).category !== 'digimon') return null;
-  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) return null;
+  if (!['digimon', 'digitama', 'tamer'].includes(S.card(stack.cardId).category)) return null; // (tamer: 「테이머를 Lv.N 디지몬으로서 취급하여 진화」 cards)
   try {
     const restr = S.evolveTargetRestriction(state, p, stack);
     const extra = S.evoExtraArg(state, p, stack);
@@ -1242,6 +1261,7 @@ async function playFreshFromDrag(drag, p) {
     }
     // Card-specific "…등장할 때, <비용>하는 것으로 지불하는 등장 코스트 -N" abilities (HOOKS.playDiscount) — confirmed one by one.
     for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += await o.apply(ctxChoose) || 0; }
+    { const hl = state.players[drag.player].hand; if (hl[drag.idx] !== drag.cardId) { const hi = hl.indexOf(drag.cardId); if (hi >= 0) drag.idx = hi; } } // a cost option that discards from the hand (EX9-018/043/064) shifts the played card's index
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     if (category === 'digimon') discount += S.handSelfPlayDiscount(state, drag.player, drag.cardId); // shard7: printed "이 카드가 등장할 때, …등장 코스트 -N"
     if (category === 'digimon' && discount < 0 && S.isPlayCostLocked(state)) { S.log(state, `${drag.player} 등장 코스트 감소 무효 (서로는 지불하는 등장 코스트를 마이너스할 수 없다)`); discount = 0; } // ST13-08/EX7-015: covers every reduction source (hand self-discount, Xros, assembly, hook options)
@@ -1483,7 +1503,21 @@ async function ctxChoose(kind, payload) {
   // nothing to pick from: skip the "대상 없음 / 취소"-only prompt (same result as cancelling it)
   if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && !payload.uids.length && !payload.required) return null;
   return new Promise(resolve => {
-    state.uiChoice = { kind, payload, resolve: (val) => { state.uiChoice = null; resolve(val); render(); } };
+    // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
+    // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
+    const st = state;
+    const uc = { kind, payload, hold: false, resolve: (val) => { if (st.uiChoice === uc) st.uiChoice = null; resolve(val); if (state) render(); } };
+    st.uiChoice = uc;
+    try {
+      const rec = st._fxRec;
+      if (rec && rec.src && rec.src.kind === 'effect') fxEmit('effect', { rec, state: st }); // make sure this effect's banner is booked before we wait
+      uc.hold = fxGetMode() !== 'off';
+      if (uc.hold) {
+        const release = () => { if (uc.hold) { uc.hold = false; if (state === st && st.uiChoice === uc) render(); } };
+        fxWhenIdle().then(release, release);
+        setTimeout(release, 3500); // last-resort fallback: the choice must always become answerable
+      }
+    } catch (e) { uc.hold = false; }
     render();
   });
 }
@@ -1611,6 +1645,7 @@ async function runPendingScript(trigger, opts = {}) {
   if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
+  if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
     const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
@@ -1815,6 +1850,7 @@ function renderUiChoice() {
 // regular actions panel; whichever of these exists takes over the screen.
 function renderModal() {
   if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
+  if (state.uiChoice && state.uiChoice.hold) return null; // waiting for the activation VFX to finish (ctxChoose) — nothing may pile on top of it
   const choiceUi = renderUiChoice();
   if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
   const jogressUi = busy() ? null : renderJogressModal();
@@ -2176,7 +2212,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (atkOpts && atkOpts.anyActive) dec.stack.anyActiveOnce = true; // BT4-090: 「이 효과로는 액티브 상태의 상대 디지몬에게도 어택할 수 있다」 = this attack only
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
   if (dec.stack.anyActiveOnce) delete dec.stack.anyActiveOnce;
-  const canHitPlayer = S.canAttackPlayer(state, p, uid);
+  const canHitPlayer = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); // b9: digimonOnly = "상대의 디지몬에게 어택할 수 있다" (RB1-025)
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
   pa.fireDeclare = fireDeclare;
   sel.pendingAttack = pa;
@@ -2497,18 +2533,28 @@ function fxResults(rec) {
 function fxCardLink(cardId, label) {
   return h('span', { className: 'fx-cardlink', title: '카드 정보 보기', onClick: (e) => { e.stopPropagation(); fxUI.info = cardId; render(); } }, label);
 }
+const fxHeld = () => !!state && (!!state.uiChoice || fxBusyMs() > 0);
 function fxSync() {
   if (!state) return;
   const hist = state.fxHistory || [];
   if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
+  for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
+  if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
+  // Presentation order: activation VFX -> choice modal -> results. While a choice modal is open (or held) or the fx timeline is busy,
+  // the resolution card, board markers and ghost tiles wait; they show up right after (modal close re-renders; a timer covers the VFX case).
+  const unbooked = [...hist.filter(r => r.id > fxUI.seen), state._fxRec].some(fxUnbooked);
+  if (unbooked || fxHeld()) {
+    fxUI.hits = { p1: new Set(), p2: new Set() };
+    clearTimeout(fxUI.holdTimer);
+    if (!state.uiChoice) fxUI.holdTimer = setTimeout(() => { if (state) render(); }, Math.max(unbooked ? 150 : 0, fxBusyMs() + 60));
+    return;
+  }
   for (const rec of hist.slice(0, 6)) { // ghost tiles for freshly vanished stacks (a rec can gain vanishes after being seen)
     const from = rec._vs || 0;
     for (const v of rec.vanished.slice(from)) fxUI.ghosts.push({ ...v, by: fxSrcLabel(rec), gid: rec.id + ':' + fxUI.ghosts.length + ':' + Math.random().toString(36).slice(2, 6) });
     rec._vs = rec.vanished.length;
   }
   if (fxUI.ghosts.length > 8) fxUI.ghosts.splice(0, fxUI.ghosts.length - 8);
-  for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
-  if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
   const fresh = hist.filter(r => r.id > fxUI.seen && !fxTrivial(r)).reverse();
   if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
   if (fresh.length) {
@@ -2583,7 +2629,7 @@ function renderFxLayer() {
       h('div', {}, [h('b', {}, c.nameKo), h('div', { className: 'fx-text' }, c.effectKo || ''), h('div', { className: 'meta' }, '(눌러서 닫기)')]),
     ]));
   }
-  if (!fxUI.queue.length) return root;
+  if (!fxUI.queue.length || fxHeld()) return root; // resolution card never covers an open/pending choice modal or the activation VFX
   if (!fxUI.open) { root.appendChild(h('div', { className: 'fx-chip', onClick: () => { fxUI.open = true; render(); } }, `⚡ 효과 ${fxUI.queue.length}건 ▲`)); return root; }
   fxUI.idx = Math.min(Math.max(0, fxUI.idx), fxUI.queue.length - 1);
   const rec = fxUI.queue[fxUI.idx], n = fxUI.queue.length;
@@ -2612,6 +2658,49 @@ function renderFxHistory() {
     ])) : [h('div', { className: 'meta' }, '아직 처리된 효과가 없습니다.')]),
   ];
 }
+
+// ================= breeding phase bar (육성 페이즈): big, always-visible choices incl. "do nothing" =================
+const BREED = { auto: false };
+try { BREED.auto = localStorage.getItem('digimon_breed_auto') === '1'; } catch (e) { /* ignore */ }
+function breedingStatus() {
+  const p = state.activePlayer, pl = state.players[p];
+  const taken = !!state.breedingActionTaken;
+  const canHatch = !taken && !pl.raising && pl.digitamaDeck.length > 0;
+  const canMove = !taken && !!pl.raising && S.canMoveFromRaising(pl.raising);
+  let reason = '';
+  if (taken) reason = '이번 육성 페이즈에는 이미 부화/이동 중 하나를 했습니다 (룰 6-4).';
+  else if (!canHatch && !canMove) reason = pl.raising ? '육성 에어리어의 카드가 아직 배틀 에어리어로 이동할 수 없습니다 (Lv.3 이상만 이동 가능).' : '부화할 디지타마가 없습니다.';
+  else if (canHatch) reason = '육성 에어리어가 비어 있어 디지타마를 부화할 수 있습니다. 부화/이동은 선택사항입니다.';
+  else reason = '육성 에어리어의 카드를 배틀 에어리어로 이동할 수 있습니다. 부화/이동은 선택사항입니다.';
+  return { p, canHatch, canMove, reason };
+}
+function breedingSkip() { if (!state || state.phase !== 'breeding' || busy()) return; E.nextPhase(state); render(); }
+function renderBreedingBar() {
+  if (!state || state.winner || state.phase !== 'breeding' || busy()) return null;
+  const { p, canHatch, canMove, reason } = breedingStatus();
+  const nothingElse = !canHatch && !canMove;
+  return h('div', { className: 'breed-bar', role: 'group', 'aria-label': '육성 페이즈' }, [
+    h('div', { className: 'breed-title' }, `🥚 ${p.toUpperCase()} 육성 페이즈`),
+    h('div', { className: 'breed-reason' }, reason),
+    h('div', { className: 'breed-btns' }, [
+      canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
+      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, '⬆ 배틀 에어리어로 이동') : null,
+      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, '⏭ 아무것도 안 함 → 메인 페이즈로'),
+    ]),
+    h('label', { className: 'breed-auto meta' }, [
+      h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
+      ' 육성 페이즈 자동 넘김 (부화/이동을 마치면 바로 메인 페이즈로)', h('span', { className: 'breed-key' }, ' · Space/Enter = 아무것도 안 함'),
+    ]),
+  ]);
+}
+document.addEventListener('keydown', (e) => {
+  if (!state || state.phase !== 'breeding' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key !== ' ' && e.key !== 'Enter') return;
+  const t = e.target && e.target.tagName;
+  if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'BUTTON') return;
+  if (!document.querySelector('.breed-bar') || document.querySelector('.modal-backdrop')) return;
+  e.preventDefault(); breedingSkip();
+});
 
 window.__dbg = () => ({ dragData, sel, state, S, E, Effects, render, attackFlow, fxUI });
 init();

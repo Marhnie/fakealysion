@@ -293,6 +293,7 @@ OPS.s4_trashToHand = async (instr, ctx) => {
     pl.hand.push(id);
     V(ctx).returned++;
     log(ctx, `${p} 트래시의 ${C(id).nameKo}을(를) 패로`);
+    S.emitGameEvent(st, 'trashToHand', { owner: p, stack: null, cardId: id, cause: 'effect' }); // b6: "트래시에서 …카드가 패로 되돌아갔을 때" watchers (BT16-011 / BT15-082)
   }
 };
 
@@ -451,7 +452,7 @@ SCRIPTS['EX7-019::등장 시'] = [cond((ctx) => !digimonOf(ctx.state, ctx.opp).s
 SCRIPTS['EX7-049::진화 시'] = [{ op: 's4_evolveLockOpp', levelMax: 4 }];
 SCRIPTS['EX7-014::진화 시'] = [{ op: 's4_playRestrictOpp', dpMax: 6000 }];
 SCRIPTS['BT17-005::소멸 시'] = [cond((ctx) => { const d = delInfo(ctx); return d && hasTrait(d.cardId, '종족불명'); }, [{ op: 'gainMemory', who: 'self', n: 1 }])];
-SCRIPTS['P-145::소멸 시'] = [cond((ctx) => { const d = delInfo(ctx); return d && d.sources.some(id => isNamedAny(id, ['묘티스몬', 'X항체'])); }, [
+SCRIPTS['P-145::소멸 시'] = [cond((ctx) => { const d = delInfo(ctx); return d && d.sources.some(id => (isNamed(id, '묘티스몬') || hasTrait(id, 'X항체'))); }, [
   { op: 's4_play', zone: 'trash', pred: (id) => nameHas(id, '묘티스몬') && lvOf(id) === 6 && isDigimonCard(id) }])];
 SCRIPTS['P-142::소멸 시'] = [{ op: 's4_oppDiscard', n: 1 }];
 SCRIPTS['BT17-048::소멸 시'] = [cond((ctx) => ctx.state.players[ctx.self].trash.filter(id => isNamed(id, '아르고몬')).length >= 4, [
@@ -700,7 +701,7 @@ SCRIPTS['BT18-048::어택 시'] = hybridEvo('hand', ['green', 'red'], 1);
 SCRIPTS['BT18-063::어택 시'] = hybridEvo('hand', ['black', 'yellow'], 1);
 SCRIPTS['BT18-076::어택 시'] = hybridEvo('trash', ['purple', 'yellow'], 0);
 SCRIPTS['BT18-078::어택 시'] = hybridEvo('trash', null, 1, (id) => lvOf(id) === 4);
-SCRIPTS['P-160::어택 시'] = [cond((ctx) => { const s = thisStack(ctx); return s && s.sources.some(id => nameHas(id, '티라노몬') || isNamed(id, 'X항체')); }, [
+SCRIPTS['P-160::어택 시'] = [cond((ctx) => { const s = thisStack(ctx); return s && s.sources.some(id => nameHas(id, '티라노몬') || isNamed(id, 'X항체') || hasTrait(id, 'X항체')); }, [ // 「X항체」 = the trait (same card prints "특징 「X항체」를 갖지 않은")
   { op: 's4_evolve', subject: { this: true }, zone: 'hand', pred: (id) => nameHas(id, '티라노몬') || hasTrait(id, '공룡형'), cost: { mode: 'discount', n: 1 }, optional: true }])];
 SCRIPTS['BT17-090::상대의 턴 종료 시'] = [cond((ctx) => { const s = thisStack(ctx); return s && s.suspended; }, [
   { op: 's4_evolve', subject: { pred: (s) => C(s.cardId).category === 'digimon' && s.sources.some(isTamerCard) }, zone: 'trash', pred: (id) => nameHas(id, '데크스'), cost: { mode: 'free' }, optional: true }])];
@@ -818,7 +819,7 @@ OPS.s4_playTokenOptional = async (instr, ctx) => { if (await confirm(ctx, ctx.se
 SCRIPTS['BT19-043::자신의 턴 종료 시'] = [{ op: 's4_oppMayTrashSec' }, cond((ctx) => !V(ctx).oppTrashed, [{ op: 'recoverTop', who: 'self' }, { op: 's4_destroy', kinds: ['digimon', 'tamer'], n: 1 }])];
 // ---- batch 6: hooks — continuous abilities, immunity, auras, event watchers ----
 const effMemory = (st, p) => (p === 'p1' ? st.memory : -st.memory);
-H('P-144', { tag: '자신의 턴', has: '어택할 수 없다', noAttack: (st, hp, h) => !h.sources.some(id => isNamedAny(id, ['울퉁몬', 'X항체'])) });
+H('P-144', { tag: '자신의 턴', has: '어택할 수 없다', noAttack: (st, hp, h) => !h.sources.some(id => (isNamed(id, '울퉁몬') || hasTrait(id, 'X항체'))) });
 H('BT17-016', { tag: '자신의 턴', has: '상대의 효과를 받지 않는다', effectImmune: (st, hp, h, target) => target === h && effMemory(st, hp) <= 0 });
 const restedImmune = { tag: '서로의 턴', has: '상대의 디지몬의 효과를 받지 않는다', effectImmune: (st, hp, h, target, tp, fx) => target === h && h.suspended && fx.src && (fx.src.isDigimon || fx.src.category === 'digimon') };
 H('P-140', restedImmune);
@@ -886,7 +887,7 @@ H('BT17-039', d39);
 const d61 = { tag: '서로의 턴', has: '리리스몬」/「X항체」가 있다면', preventLeaveOptions: (st, hp, h, target, tp, cause, mode) => {
   // "다른 디지몬 1마리를 소멸시키는 것으로" — ANY other digimon (either side); each candidate is its own option for the player.
   if (target !== h || cause === 'battle' || !leaveMode(mode)) return [];
-  if (!h.sources.some(id => isNamedAny(id, ['리리스몬', 'X항체']))) return [];
+  if (!h.sources.some(id => (isNamed(id, '리리스몬') || hasTrait(id, 'X항체')))) return [];
   if (S.turnUsesRemaining(h, S.onceLimitKey('EX7-061', [d61.tag, d61.has || '']), 1) <= 0) return [];
   const out = [];
   for (const pp of [oppOf(hp), hp]) for (const s of st.players[pp].battle) {

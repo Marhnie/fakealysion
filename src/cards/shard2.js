@@ -583,7 +583,7 @@ OPS.s2_asDigimon = async (instr, ctx) => { // BT12-092 / BT13-008: treated as a 
   const st = instr.thisStack ? thisStackOf(ctx) : await pickStackOf(ctx, ctx.self, cands, '디지몬으로 취급할 테이머 선택');
   if (!st) return;
   st.s2AsDigimon = true; st.s2NoEvolve = true;
-  S.modifyDP(state, ctx.self, st.uid, instr.dp || 3000, 'turn');
+  (st.baseOv ||= []).push({ ts: S.stamp(), until: state.turnNumber, dp: instr.dp || 3000 }); S.refreshBaseInfo(state, st); // 원래 DP를 N으로 취급 (a Tamer has no DP: modifyDP would be refused by 2-5-3)
   S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; }, { expire: true }); // duration end, not a trigger
   S.log(state, `${C(st.cardId).nameKo}: 턴 종료까지 디지몬·DP ${instr.dp || 3000}으로도 취급, 진화할 수 없음`);
 };

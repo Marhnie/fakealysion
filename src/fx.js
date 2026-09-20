@@ -70,6 +70,8 @@ function seqLater(fn, ms) {
 }
 export const fxBusyMs = () => (mode === 'off' ? 0 : Math.max(0, seqEnd - Date.now()));
 // manual skip (click on the banner) / hard-timeout fallback: drop everything not yet started and remove the blocking nodes
+// true while an effect rec has been emitted but its activation banner has not been booked on the timeline yet (flush pending)
+export const fxUnbooked = (rec) => mode !== 'off' && !!rec && rec.src && rec.src.kind === 'effect' && !(doneRec.get(rec) || {}).b;
 export function fxSkip() {
   for (const t of seqTimers) { clearTimeout(t); timers.delete(t); }
   seqTimers.clear(); seqEnd = 0; bannerPending = 0;
@@ -323,7 +325,7 @@ function playRec(rec) {
   doneRec.set(rec, prog);
   const src = rec.src, pal = src.kind === 'effect' ? paletteOf(src) : null;
   let d = 0;
-  if (src.kind === 'effect' && !prog.b) { prog.b = true; const w = reserve(mode === 'full' ? 1100 : 800); banner(rec, pal, w); d = w + 500; } // the banner takes its slot on the shared timeline (choice modals wait for it)
+  if (src.kind === 'effect' && !prog.b) { prog.b = true; const w = reserve(mode === 'full' ? 1230 : 930); banner(rec, pal, w); d = w + 500; } // the banner takes its slot on the shared timeline (choice modals wait for it)
   else if (src.kind === 'effect') d = 0;
   const seenName = new Set();
   // destroyed stacks

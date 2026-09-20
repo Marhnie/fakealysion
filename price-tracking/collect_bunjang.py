@@ -16,7 +16,9 @@ EXCLUDE = ["일판", "일본", "jp판", "영판", "영문", "중국", "중판", 
            "psa", "brg", "등급", "구디지몬", "구 디지몬", "교환만", "카톤", "슬리브", "플레이매트", "디덱", "덱케이스"]
 MULTI_BOX = re.compile(r"([2-9]|\d{2,})\s*(박스|box|bx)", re.I)
 PARALLEL = ["페레", "페러렐", "패러렐", "패레렐", "parallel", "-p ", "sec-p", "sr-p"]
-CARD_EXCLUDE = ["세트", "뭉치", "오르골", "에칭", "킹레어", "/", ",", "장 ", "등"]
+CARD_EXCLUDE = ["세트", "뭉치", "오르골", "에칭", "킹레어", "/", ",", "장 "]
+# '등'은 "등글몬" 같은 이름에 오탐되므로 "~ 등/등등"(그 외 여러 장) 형태일 때만 제외
+ETC = re.compile(r"등등|등\s*$|등\s*(?:판매|팝|팔아|일괄|다수|외)")
 CODE = re.compile(r"\b(?:bt|ex|st|lm|rb|ad|p)\d*-\d+\b", re.I)
 
 
@@ -65,7 +67,7 @@ def keep(it, x):
     if any(c.lower() not in targets for c in CODE.findall(name)):
         return False
     return ("박스" not in n and not any(p in low + " " for p in PARALLEL)
-            and not any(e in low for e in CARD_EXCLUDE))
+            and not any(e in low for e in CARD_EXCLUDE) and not ETC.search(low))
 
 
 def collect(items):
