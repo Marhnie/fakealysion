@@ -113,3 +113,4 @@
   .sec-stack { height: calc(var(--n, 1) * 4px + 34px); }
   .sec-card { top: calc(var(--i) * 4px); }
 }
+.sec-zone.sec-attackable, .sec-zone.drop-hover { border-color: #ff5555; box-shadow: 0 0 12px 2px rgba(255,85,85,0.75); animation: sec-ring calc(0.9s * var(--sd)) ease-in-out infinite alternate; }

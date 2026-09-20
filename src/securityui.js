@@ -148,9 +148,13 @@ export function renderSecurityZone(o) {
   }
 
   const zone = h('div', {
-    className: cls, 'data-pile': 'security', 'data-count': String(cnt), role: 'button', tabindex: '0',
-    title: `${SECURITY_HELP}\n(탭하면 정보)`,
-    onClick: () => { secToggle(p); onChange && onChange(); },
+    className: cls + (o.onAttack ? ' sec-attackable' : ''), 'data-pile': 'security', 'data-count': String(cnt), role: 'button', tabindex: '0',
+    title: o.onAttack ? '시큐리티를 눌러 이 플레이어를 공격 (드래그해서 놓아도 됩니다)' : `${SECURITY_HELP}
+(탭하면 정보)`,
+    onClick: () => { if (o.onAttack) { o.onAttack(); return; } secToggle(p); onChange && onChange(); },
+    ondragover: o.onDropAttack ? (e) => { if (o.onDropAttack(e, true)) { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } } : undefined,
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
+    ondrop: o.onDropAttack ? (e) => { e.currentTarget.classList.remove('drop-hover'); if (o.onDropAttack(e, false)) e.preventDefault(); } : undefined,
   }, [head, stack, h('div', { className: 'sec-tags' }, tags), ...status, reveal, pop]);
   return zone;
 }

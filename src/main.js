@@ -1573,7 +1573,14 @@ function renderPlayerPanel(p) {
   // 6-4: hatch OR move, not both, per breeding phase visit
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
   // 실제 대전 배치: 시큐리티는 각 플레이어 기준 왼쪽(아래쪽 P1=화면 왼쪽, 맞은편 P2=화면 오른쪽), 카드는 옆으로 눕혀 쌓인다
-  const secZone = renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() });
+  const secZone = renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render(),
+    // 시큐리티를 눌러도(또는 드래그해 놓아도) 플레이어 어택 대상으로 선택된다
+    onAttack: canAttackThisPlayerByClick ? () => { attackFlow(sel.stack.player, sel.stack.uid, 'PLAYER'); sel.stack = null; render(); } : null,
+    onDropAttack: (e, over) => {
+      if (!(dragData && dragData.kind === 'stack' && dragData.zone === 'battle' && dragData.player !== p && S.canAttackPlayer(state, dragData.player, dragData.uid))) return false;
+      if (!over) { attackFlow(dragData.player, dragData.uid, 'PLAYER'); dragData = null; }
+      return true;
+    } });
   const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
@@ -2128,8 +2135,31 @@ function renderUiChoice() {
 // centered modal instead of buried in the bottom actions bar, which could
 // be scrolled/collapsed out of view. Checked in render() before the
 // regular actions panel; whichever of these exists takes over the screen.
+let gameOverSeen = null; // the state object whose result popup the player already closed
+function renderGameOverModal() {
+  if (gameOverSeen === state || sel.pendingAttack) return null; // 어택 결과(시큐리티 체크 연출)가 끝난 뒤에 띄운다
+  const w = state.winner;
+  const why = ((state.log.find(e => /승리|패배|투항|무승부/.test(String(e.msg))) || {}).msg || '').replace(/^🤖 CPU: /, '');
+  const mine = cpuOn ? (w === 'p1' ? 'win' : w === 'draw' ? 'draw' : 'lose') : (w === 'draw' ? 'draw' : 'win');
+  const title = w === 'draw' ? '🤝 무승부' : cpuOn ? (w === 'p1' ? '🎉 승리!' : '💀 패배…') : `🏆 ${w.toUpperCase()} 승리!`;
+  const sub = w === 'draw' ? '영구 순환 (18-3-2)' : cpuOn ? (w === 'p1' ? '당신(P1)이 이겼습니다' : 'CPU(P2)가 이겼습니다') : `승자: ${w}`;
+  const close = () => { gameOverSeen = state; render(); };
+  return h('div', { className: 'modal-backdrop go-backdrop', onClick: (e) => { if (e.target === e.currentTarget) close(); } }, [
+    h('div', { className: `modal-panel go-panel go-${mine}`, role: 'dialog', 'aria-label': '게임 결과' }, [
+      h('div', { className: 'go-title' }, title),
+      h('div', { className: 'go-sub' }, sub),
+      why ? h('div', { className: 'go-why' }, `사유: ${why}`) : null,
+      h('div', { className: 'go-btns' }, [
+        (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
+        h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+        h('button', { onClick: close }, '필드 확인 (닫기)'),
+      ]),
+    ]),
+  ]);
+}
+
 function renderModal() {
-  if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
+  if (state.winner) return renderGameOverModal(); // 승패가 갈리면 결과 팝업 (닫으면 최종 필드를 읽기 전용으로 볼 수 있음; 상단 바에도 결과가 남는다)
   if (state.uiChoice && state.uiChoice.hold) return null; // waiting for the activation VFX to finish (ctxChoose) — nothing may pile on top of it
   if (state.uiChoice && uiChoiceByCpu(state.uiChoice)) { // a prompt that belongs to the CPU: read-only note (the CPU driver answers it)
     const pr = state.uiChoice.payload && state.uiChoice.payload.prompt;
