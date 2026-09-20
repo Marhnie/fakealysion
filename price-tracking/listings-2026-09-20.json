@@ -1,0 +1,84 @@
+{
+ "BT-23 해커스 슬럼버": {
+  "error": null,
+  "raw": 0,
+  "kept": []
+ },
+ "EX-10 시니스터 오더": {
+  "error": null,
+  "raw": 0,
+  "kept": []
+ },
+ "BTK-22 사이버 에덴": {
+  "error": null,
+  "raw": 13,
+  "kept": []
+ },
+ "EXK-09 버서스 몬스터즈": {
+  "error": null,
+  "raw": 4,
+  "kept": []
+ },
+ "BTK-21 월드 컨버전스": {
+  "error": null,
+  "raw": 4,
+  "kept": []
+ },
+ "BT23-101 후디에몬 SEC": {
+  "error": null,
+  "raw": 4,
+  "kept": []
+ },
+ "BT23-102 마스테몬 SEC": {
+  "error": null,
+  "raw": 17,
+  "kept": []
+ },
+ "EX10-073 데우스몬 SEC": {
+  "error": null,
+  "raw": 2,
+  "kept": []
+ },
+ "EX10-074 베르제브몬 ACE SEC": {
+  "error": null,
+  "raw": 3,
+  "kept": []
+ },
+ "EX10-060 루체몬: 사탄 모드 SR": {
+  "error": null,
+  "raw": 26,
+  "kept": []
+ },
+ "BT22-101 쿠레미 쿄코 SEC": {
+  "error": null,
+  "raw": 8,
+  "kept": [
+   [
+    9000,
+    "디지몬 쿠레미 쿄코",
+    "423520105"
+   ],
+   [
+    65000,
+    "디지몬카드 쿠레미 쿄코 SEC 카드 BT22 사이버 에덴",
+    "356516375"
+   ]
+  ]
+ },
+ "BT22-102 사요 SEC": {
+  "error": null,
+  "raw": 9,
+  "kept": [
+   [
+    8000,
+    "디지몬 카드 사이버 에덴 사요 sec",
+    "424095516"
+   ]
+  ]
+ },
+ "BT22-015 오메가몬 SR": {
+  "error": null,
+  "raw": 1,
+  "kept": []
+ }
+}

@@ -1609,7 +1609,7 @@ function stackContributors(stack) {
 // holds, so unlike parseStaticGrants it can't be cached once and forgotten;
 // effectiveDP re-evaluates it against the current state.activePlayer every
 // call. Confirmed extremely common (140+ cards) via a full-card-DB audit.
-function parseTurnConditionalDP(text) {
+export function parseTurnConditionalDP(text) {
   const out = [];
   if (!text) return out;
   const { segments } = parseEffectSegments(text);
@@ -4348,7 +4348,8 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
 export function declareAttack(state, attackerP, stackUid, opts = {}) {
   const pl = state.players[attackerP];
   const stack = pl.battle.find(s => s.uid === stackUid);
-  if (!stack || (stack.suspended && !opts.allowSuspended)) return { ok: false, reason: 'invalid or suspended attacker' };
+  // 11-2-1 normally needs an active attacker (it is rested by the declaration); 「레스트시키지 않고 어택」 skips that resting, so an already-rested Digimon may attack too.
+  if (!stack || (stack.suspended && !opts.allowSuspended && !opts.noRest)) return { ok: false, reason: 'invalid or suspended attacker' };
   state._raidUid = opts.raid ? stackUid : null; // 16-16: this attack was declared by 《진격》
   if (attackerP !== state.activePlayer) return { ok: false, reason: 'not the turn player (11-2-1)' }; // 11-2-1: only the turn player declares attacks
   if (!opts.noRest && !canRestByRule(state, attackerP, stack)) { log(state, `${attackerP} ${card(stack.cardId).nameKo}는 레스트할 수 없어 어택할 수 없음`); return { ok: false, reason: 'attack restricted' }; } // s5

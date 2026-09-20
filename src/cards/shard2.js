@@ -514,10 +514,9 @@ OPS.s2_progress = async (instr, ctx) => { // 《진격》
 };
 OPS.s2_attackNoRest = async (instr, ctx) => {
   const { state } = ctx; const st = thisStackOf(ctx);
-  if (!st || !canDeclare(state, ctx.self, st)) return;
+  if (!st || !canDeclare(state, ctx.self, { ...st, suspended: false })) return; // an already-rested Digimon may attack: nothing is rested (11-2-1 wording)
   if (!(await confirmCtx(ctx, `${C(st.cardId).nameKo}(으)로 레스트시키지 않고 어택할까요?`))) return;
-  st.attackNoRestOnce = true;
-  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid);
+  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
 };
 // the opponent must attack with a Digimon of theirs (EX3-024: opponent chooses; BT13-077: the effect owner chooses)
 OPS.s2_forceOppAttack = async (instr, ctx) => {

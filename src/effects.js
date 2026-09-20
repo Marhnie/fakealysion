@@ -1283,7 +1283,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'overclock': { // 16-34: ≪오버클럭≫ — delete own token / designated other Digimon, then attack the player without resting
       const me = ctx.self, plO = state.players[me], stO = plO.battle.find(x => x.uid === ctx.sourceStackUid);
-      if (!stO || stO.suspended || !S.canAttackPlayer(state, me, stO.uid)) { S.log(state, `${me} 《오버클럭》 — 어택할 수 없음`); break; }
+      if (!stO || !S.canAttackPlayer(state, me, stO.uid)) { S.log(state, `${me} 《오버클럭》 — 어택할 수 없음`); break; }
       const ocDesc = String(ctx.trigger?.overclockDesc || ''), pr = ocDesc ? S.cardDescPredicate(ocDesc) : null;
       const cands = plO.battle.filter(x => x !== stO && S.card(x.cardId).category === 'digimon' && (S.isTokenId(x.cardId) || (pr && pr(S.card(x.cardId)))));
       if (!cands.length) { S.log(state, `${me} 《오버클럭》 — 소멸시킬 토큰/대상 디지몬이 없음`); break; }

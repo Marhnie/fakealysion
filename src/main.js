@@ -1380,15 +1380,14 @@ function renderPlayerPanel(p) {
     }))),
   ]);
 
-  return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, [
-    header,
-    h('div', { className: 'field-row' }, [
+  const fieldRow = h('div', { className: 'field-row' }, [
       h('div', { className: 'field-zones' }, p === 'p2'
         ? [handZone, h('div', { className: 'zone-row' }, [raisingZone, battleZone])] // 위쪽 플레이어: 패가 필드보다 위(테이블 맞은편에 앉은 배치)
         : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
       pileRail,
-    ]),
-  ]);
+    ]);
+  // 위쪽 플레이어(P2)를 어택하는 대상 바는 메모리 게이지 바로 위(패널 맨 아래)에 둔다. 아래쪽 P1의 바는 게이지 바로 아래(패널 맨 위).
+  return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, p === 'p2' ? [fieldRow, header] : [header, fieldRow]);
 }
 
 // Horizontal memory-gauge number line (-10..0..+10 with a position marker),
@@ -1995,10 +1994,12 @@ function stepPause(pa, stage, info, next) {
   const tick = () => {
     if (sel.pendingAttack !== pa || pa.token !== token || !pa.pendingNext) return;
     // Don't run ahead of an effect that is still resolving (its banner is on screen).
-    if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 400); return; }
+    if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 150); return; }
     runPendingNext(pa);
   };
-  setTimeout(tick, Math.max(STEP.delay, readMs(info, 1300, 8000)));
+  // 처리할 효과/선택지가 없는 단계("…없습니다", "다음 체크로 넘어갑니다")는 0.2초만 보여 주고 바로 넘어간다.
+  const idleStep = /없습니다|넘어갑니다/.test(String(info || ''));
+  setTimeout(tick, idleStep ? 200 : Math.max(STEP.delay, readMs(info, 1300, 8000)));
 }
 
 function eligibleBlockers(p, collidingAttacker) {
