@@ -1830,7 +1830,7 @@ function isOptionalAutoEffect(text, script) {
 async function runPendingScript(trigger, opts = {}) {
   const st0 = state, stale = () => state !== st0; // game-epoch guard: a continuation of a replaced game must not touch the new one
   if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
-    if (opts.delay) await new Promise(r => setTimeout(r, 400));
+    if (opts.delay) await new Promise(r => setTimeout(r, Math.round(900 * READ_SPEEDS[READ.speed] / 1.7)));
     if (stale()) return;
     try { await trigger.schedFn(); } catch (e) { S.log(state, `예약된 턴 종료 효과 처리 오류: ${e && e.message}`); }
     if (stale()) return;
@@ -1875,7 +1875,7 @@ async function runPendingScript(trigger, opts = {}) {
   // (previous behavior) meant the effect banner appeared and vanished on
   // the same render tick, too fast to actually read. Skipped for effects
   // that need a real choice (ctx.choose already pauses those naturally).
-  if (opts.delay) await new Promise(r => setTimeout(r, 700));
+  if (opts.delay) await new Promise(r => setTimeout(r, Math.round(1500 * READ_SPEEDS[READ.speed] / 1.7)));
   if (stale()) return;
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
     startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
@@ -2327,14 +2327,14 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // one render. Auto mode advances after a short visible pause (and waits for any
 // pending effect to finish first); manual mode waits for the "다음 단계" button.
 // 읽기 속도: 사람이 읽어야 하는 문구(단계 설명, 효과 결과, 알림)는 글자 수에 비례해 오래 보여 준다.
-const READ_SPEEDS = { slow: 1.6, normal: 1.0, fast: 0.6 };
+const READ_SPEEDS = { slow: 2.6, normal: 1.7, fast: 1.0 }; // 사람이 인지하기엔 이전 값(1.6/1.0/0.6)이 너무 빨랐다
 const READ = { speed: 'normal' };
 try { const v = localStorage.getItem('digimon_read_speed'); if (v && v in READ_SPEEDS) READ.speed = v; } catch (e) { /* ignore */ }
 function readMs(text, minMs = 1500, maxMs = 14000) {
   const chars = String(text || '').replace(/\s+/g, '').length;
   return Math.round(Math.min(maxMs, Math.max(minMs, 900 + chars * 85)) * READ_SPEEDS[READ.speed]);
 }
-const STEP = { manual: false, delay: 1300 };
+const STEP = { manual: false, delay: 2000 };
 try { STEP.manual = localStorage.getItem('digimon_step_manual') === '1'; } catch (e) { /* ignore */ }
 
 function runPendingNext(pa) {

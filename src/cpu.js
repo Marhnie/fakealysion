@@ -674,7 +674,7 @@ export const enumerateActions = memoized(enumerateActions_), attackCandidates = 
 
 // ---------- UI driver ----------
 const SPEED_MULT = { fast: 0.55, normal: 1, slow: 1.8 };
-const BASE_PACE = 800;
+const BASE_PACE = 1200;
 export function createUiDriver(api) {
   const D = {
     enabled: false, cpu: 'p2', level: 'normal', paused: false, speed: 'normal',
