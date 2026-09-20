@@ -40,7 +40,7 @@ async function init() {
   await S.loadData();
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
-  PR.init({ getState: () => state, setState: (s2) => { state = s2; }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
   renderSetup();
 }
 
@@ -59,10 +59,11 @@ let cpuDrv = null;
 const isCpuSide = (p) => cpuOn && p === CPU_P;
 // during the CPU's turn the human may not act (drag, pass, breeding…) — they still answer prompts / blocks that belong to them
 const cpuHumanLocked = () => cpuOn && !cpuActing && !!state && !state.winner && state.activePlayer === CPU_P;
+const cpuTurnView = () => cpuOn && !!state && !state.winner && state.activePlayer === CPU_P; // for rendering (disabled buttons): true for the whole CPU turn, even while the CPU is mid-action
 const cpuPendingOwner = () => { const t = state && runningPendingUid ? state.pending.find(x => x.uid === runningPendingUid) : null; return t ? t.player : null; };
 const uiChoiceByCpu = (uc) => cpuOn && !!uc && (uc.by ? uc.by === CPU_P : Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() }) === CPU_P);
 const cpuApiObj = {
-  getState: () => (cpuOn ? state : null),
+  getState: () => (cpuOn && !PR.isReplay() ? state : null), // (never play inside the replay viewer's scratch state)
   busy: () => busy(),
   pendingAttack: () => sel.pendingAttack,
   pendingOwner: cpuPendingOwner,
@@ -101,8 +102,15 @@ const cpuApiObj = {
 };
 function cpuStart() { // called when a new game begins
   cpuOn = CPU_CFG.mode === 'cpu';
+  if (state) state.vsCpu = cpuOn ? { level: CPU_CFG.level } : null; // travels with saves / undo snapshots (see cpuSyncFromState)
   if (cpuOn) { cpuDrv = cpuDrv || Cpu.createUiDriver(cpuApiObj); cpuDrv.start(CPU_CFG.level); cpuDrv.setSpeed(CPU_CFG.speed); }
   else if (cpuDrv) cpuDrv.stop();
+}
+// after undo / load / resume replaced the game state: CPU mode follows the state's own flag
+function cpuSyncFromState() {
+  const v = state && state.vsCpu;
+  if (v) { cpuOn = true; if (v.level && Cpu.LEVEL_LABEL[v.level]) CPU_CFG.level = v.level; cpuDrv = cpuDrv || Cpu.createUiDriver(cpuApiObj); cpuDrv.start(CPU_CFG.level); cpuDrv.setSpeed(CPU_CFG.speed); }
+  else { cpuOn = false; if (cpuDrv) cpuDrv.stop(); }
 }
 let cpuMullTimer = null;
 function cpuMulliganMaybe() { // the CPU decides its opening hand (룰 5-2-1-4: after the first player) with a short pause
@@ -837,9 +845,9 @@ function renderTopbar() {
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
-    h('button', { disabled: state.phase === 'main' || cpuHumanLocked(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
-      className: 'danger', disabled: state.phase !== 'main' || cpuHumanLocked(),
+      className: 'danger', disabled: state.phase !== 'main' || cpuTurnView(),
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
     }, ['패스', h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
     PR.topbarButtons(),
@@ -2842,7 +2850,7 @@ function breedingStatus() {
 }
 function breedingSkip() { if (!state || state.phase !== 'breeding' || busy() || cpuHumanLocked()) return; E.nextPhase(state); render(); }
 function renderBreedingBar() {
-  if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuHumanLocked()) return null;
+  if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuTurnView()) return null;
   const { p, canHatch, canMove, reason } = breedingStatus();
   const nothingElse = !canHatch && !canMove;
   return h('div', { className: 'breed-bar', role: 'group', 'aria-label': '육성 페이즈' }, [

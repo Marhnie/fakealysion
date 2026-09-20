@@ -383,7 +383,7 @@ SCRIPTS['BT21-012::메인'] = [{ op: 'costGroup', cost: [{ op: 'restStack' }], t
     const { state } = ctx, p = ctx.self, pl = state.players[p], lp = ctx._lastPick, mv = me(ctx);
     if (!(ctx._res && ctx._res.played > 0) || !lp || !mv) return;
     const tam = findStack(state, p, lp.uid); if (!tam || tam === mv) return;
-    pl.battle.splice(pl.battle.indexOf(mv), 1);
+    const mvi = pl.battle.indexOf(mv); if (mvi >= 0) pl.battle.splice(mvi, 1); else if (pl.raising === mv) pl.raising = null; else return; // raising-area user: indexOf -1 used to splice off the LAST battle stack = the tamer just played (fuzz)
     pl.trash.push(...(mv.linkCards || []).map(l => l.cardId));
     tam.sources.splice(S.fdCount(tam), 0, ...mv.sources, mv.cardId);
     S.recomputeStackGrants(tam);

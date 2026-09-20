@@ -22,7 +22,7 @@ export const LEVEL_LABEL = { easy: '쉬움', normal: '보통', hard: '어려움'
 export const SPEED_LABEL = { fast: '빠르게', normal: '보통', slow: '느리게' };
 const R = { rng: Math.random };
 // tunable knobs (scripts/test-cpu.mjs --tune=key:value,… used them to calibrate the levels)
-export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 0.6, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1 };
+export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 1.0, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1 };
 export function setRng(fn) { R.rng = fn || Math.random; }
 const rnd = () => R.rng();
 const pickRand = (a) => a[Math.floor(rnd() * a.length)];

@@ -210,6 +210,7 @@ export function settleTurnEnd(state) {
   state.phase = 'unsuspend';
   state.breedingActionTaken = false;
   S.resetTurnEffectUses(state);
+  S.ruleSweepDP(state); // timed DP bonuses (s7Dp / "until turn N") lapse with the turn counter: rule-check whoever dropped to DP<=0 (17-1-3-1, 6-2-1-2)
   S.log(state, `--- ${finishing} 턴 종료, ${next} 턴 ${state.turnNumber} 시작 (메모리 ${state.memory}) ---`);
   queueTurnStartTriggers(state);
   return true;

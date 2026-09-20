@@ -291,6 +291,7 @@ function trackLeaves(state) {
   for (const p of ['p1', 'p2']) {
     const arr = state.players[p].battle;
     Object.defineProperty(arr, 'splice', { enumerable: false, configurable: true, writable: true, value: function (...args) {
+      if (args.length === 2 && args[0] === -1 && args[1] === 1) { (state._badSplice ||= []).push(new Error('battle.splice(-1,1)').stack.split(String.fromCharCode(10)).slice(2, 4).join(' < ')); return []; } // arr.splice(arr.indexOf(x), 1) with x missing (-1) would silently remove the LAST stack (fuzz: lost a freshly played tamer); refuse and record
       const removed = Array.prototype.splice.apply(this, args);
       for (const st of removed) (state._leavePending ||= []).push({ p, stack: st });
       return removed;
@@ -2132,7 +2133,7 @@ export function flushRuleChecks(state) {
   for (const x of state.pending) if (!known.has(x.uid)) x.rcSim = true;
 }
 // 17-1-3-1 for every OTHER digimon: a stack that arrives (play / move / digivolve) can carry continuous DP penalties that drop opposing or friendly digimon to DP<=0, which no modifyDP call announced.
-function ruleSweepDP(state, except) {
+export function ruleSweepDP(state, except = null) {
   for (const q of ['p1', 'p2']) for (const st of [...state.players[q].battle]) {
     if (st === except || card(st.cardId).category !== 'digimon' || !stackHasDP(state, st)) continue;
     if (effectiveDP(state, q, st) <= 0) ruleCheckDP(state, q, st);
@@ -2771,6 +2772,7 @@ export function clearExpiredModifiers(state) {
       if (stack.baseOv && stack.baseOv.length) refreshBaseInfo(state, stack, true);
     }
   }
+  ruleSweepDP(state, null); // s7Dp / hook / conditional DP bonuses lapse implicitly with the turn counter: a digimon left at DP<=0 by that must still be rule-deleted (17-1-3-1, fuzz)
 }
 
 // ---- 디지크로스 (DigiXros, rule 7-2) ----

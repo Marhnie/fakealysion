@@ -2,7 +2,7 @@
 // src/cpu.js decision layer choosing every action, block, counter and prompt answer for BOTH players.
 // Asserts: no exceptions, no stalls (turn cap), and reports win rates between levels (seats + decks swapped every other game).
 //
-// Run from the repo root:  node scripts/test-cpu.mjs [gamesPerMatchup=300] [--random-decks] < /dev/null
+// Run from the repo root:  node scripts/test-cpu.mjs [gamesPerMatchup=40; 300 = full run] [--only=hard-easy] [--tune=hardThrA:-2,…] [--random-decks] < /dev/null
 import * as fs from 'fs';
 import * as S from '../src/state.js';
 import * as E from '../src/engine.js';
@@ -11,7 +11,7 @@ import * as Cpu from '../src/cpu.js';
 global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url.replace(/^\.\//, './'), 'utf8')) });
 await S.loadData();
 
-const N = Number(process.argv.find((a) => /^\d+$/.test(a)) || 300);
+const N = Number(process.argv.find((a) => /^\d+$/.test(a)) || 40); // default: quick regression (test-all); pass 300 for the full calibration run
 const RANDOM_DECKS = process.argv.includes('--random-decks');
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
 const TURN_CAP = 90;
