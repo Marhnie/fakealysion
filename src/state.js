@@ -3176,7 +3176,8 @@ export function optionColorOk(state, p, cardId) {
   const need = c.colors || [];
   if (!need.length) return true;
   const pl = state.players[p];
-  const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => ['digimon', 'tamer'].includes(card(st.cardId).category));
+  // 4-22-2: 색 조건은 '에어리어'에 같은 색의 디지몬/테이머가 있으면 충족 — 육성 에어리어의 부화한 카드도 포함 (Lv.2 디지타마 카드는 데이터상 category 'digitama'이지만 육성 에어리어에서는 디지몬).
+  const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => st === pl.raising || ['digimon', 'tamer'].includes(card(st.cardId).category));
   const have = new Set(stacks.flatMap(st => stackColors(st)));
   if (need.every(col => have.has(col))) return true;
   const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
@@ -4340,6 +4341,7 @@ function deleteStackCore(state, p, uid, toZone, cause) {
     const fresh = placeThisInBattle(state, p, stack.cardId);
     log(state, `${p} ${card(stack.cardId).nameKo} 《불굴》 — 코스트 없이 재등장`);
     queueTriggersForStack(state, p, fresh, 'play');
+    ruleCheckDP(state, p, fresh); ruleSweepDP(state, fresh); // 17-1-3-1: the re-entered Digimon may already sit at DP<=0 (turn-long 'all opponent Digimon DP -N' reaches later arrivals; hunt: BT4-106 + ST18-02 stayed at DP 0)
   }
   return all;
 }
@@ -4587,6 +4589,10 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }
 
+// 「상대 디지몬이 없는 동안 어택할 수 없다」 (e.g. Guardromon): shared by declareAttack and the CPU's attack candidate filter
+export function cannotAttackNoOppDigimon(state, attackerP, stack) {
+  return stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON) && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon');
+}
 export function declareAttack(state, attackerP, stackUid, opts = {}) {
   const pl = state.players[attackerP];
   const stack = pl.battle.find(s => s.uid === stackUid);
@@ -4610,8 +4616,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 효과로 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
-  if (stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON)
-      && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon')) {
+  if (cannotAttackNoOppDigimon(state, attackerP, stack)) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 상대 디지몬이 없는 동안 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
