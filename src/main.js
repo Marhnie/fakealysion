@@ -73,8 +73,8 @@ const cpuApiObj = {
   answer: (uc, val) => { state._multiPick = []; state._orderPick = []; uc.resolve(val); },
   fxBusyMs: () => fxBusyMs(),
   setActing: (b) => { cpuActing = !!b; },
-  dbgPending: () => JSON.stringify({ runner: !!pendingRunner, run: runningPendingUid, att: [...autoRunAttempted], sameState: attemptedFor === state }),
-  retryPending: () => { rt('retry'); syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runningPendingUid = null; render(); }, // watchdog: re-arm a parked effect runner
+  dbgPending: () => JSON.stringify({ runner: !!pendingRunner, run: runningPendingUid, att: [...autoRunAttempted], sameState: attemptedFor === state }), // (opt-in diagnostics: window.__cpuDebug = true)
+  retryPending: () => { syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runnerTok = null; runningPendingUid = null; render(); }, // watchdog: re-arm a parked effect runner
   thinkUpdate: () => { try { const bar = document.querySelector('.cpu-bar'); if (!bar || !cpuDrv) return; const b = bar.querySelector('b'); if (b) b.textContent = `${cpuBarLabel()} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`; bar.classList.toggle('thinking', cpuDrv.isThinking()); } catch (e) { /* ignore */ } },
   skipBreeding: () => { E.nextPhase(state); render(); },
   hatch: (p) => { S.hatchDigitama(state, p); render(); },
@@ -1799,12 +1799,13 @@ function isOptionalAutoEffect(text, script) {
   return flat.length > 0 && flat.every(o => NO_CHOICE_OPS.has(o.op) && (o.op !== 'unsuspend' || o.target === 'thisStack' || true));
 }
 
-const rt = (m) => { try { const a = (window.__rt = window.__rt || []); a.push((Date.now() % 1e6) + ' ' + m); if (a.length > 80) a.shift(); } catch (e) { /* debug only */ } };
 async function runPendingScript(trigger, opts = {}) {
-  rt('run ' + trigger.uid + ' ' + trigger.cardId);
+  const st0 = state, stale = () => state !== st0; // game-epoch guard: a continuation of a replaced game must not touch the new one
   if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
     if (opts.delay) await new Promise(r => setTimeout(r, 400));
+    if (stale()) return;
     try { await trigger.schedFn(); } catch (e) { S.log(state, `예약된 턴 종료 효과 처리 오류: ${e && e.message}`); }
+    if (stale()) return;
     S.resolvePending(state, trigger.uid);
     render();
     return;
@@ -1821,7 +1822,6 @@ async function runPendingScript(trigger, opts = {}) {
     else if (trigger.tags.includes('자신의 턴') && trigger.player !== state.activePlayer) why = '유발 조건(자신의 턴)을 잃어 (15-4-4-5)';
     else if (trigger.tags.includes('상대의 턴') && trigger.player === state.activePlayer) why = '유발 조건(상대의 턴)을 잃어 (15-4-4-5)';
     if (why) {
-      rt('exit why ' + why);
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 ${why} 발휘하지 못함`);
       S.resolvePending(state, trigger.uid);
       render();
@@ -1848,8 +1848,9 @@ async function runPendingScript(trigger, opts = {}) {
   // the same render tick, too fast to actually read. Skipped for effects
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, 700));
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
+  if (stale()) return;
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
+    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
   // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger
   // sentence; the bullet is read from the card, the option can only be discarded from the turn after it was placed, and discarding it is a player choice.
   const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
@@ -1860,6 +1861,7 @@ async function runPendingScript(trigger, opts = {}) {
     if (!dst || S.card(dst.cardId).category !== 'option') why = '배틀 에어리어에 없어';
     else if (state.turnNumber <= dst.placedTurn) why = '놓인 턴에는 사용할 수 없어';
     else if (!(await Effects.delayGateOk(delayPlan, ctx))) why = '조건을 만족하지 않아';
+    if (stale()) return;
     if (why) { S.log(state, `${trigger.player} ${cn} 《딜레이》 — ${why} 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
     if (!(await ctxChoose('confirmEffect', { player: trigger.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${delayPlan.text.slice(0, 90)}` }))) { S.log(state, `${trigger.player} ${cn} 《딜레이》를 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
     S.discardForDelay(state, trigger.player, dst.uid);
@@ -1873,7 +1875,6 @@ async function runPendingScript(trigger, opts = {}) {
   const script = scriptFor(trigger);
   if (isOptionalAutoEffect(trigger.text, script)) {
     const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.map(tagLbl).join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
-    rt('optional ' + trigger.uid + ' -> ' + yes);
     if (!yes) {
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과를 발동하지 않음`);
       S.resolvePending(state, trigger.uid);
@@ -1881,11 +1882,11 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
-  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
+  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null;
+  if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-  rt('runScript ' + trigger.uid);
   await Effects.runScript(script, ctx);
-  rt('ranScript ' + trigger.uid);
+  if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
@@ -1913,20 +1914,27 @@ let attemptedFor = null;
 function syncAttempted() { if (attemptedFor !== state) { autoRunAttempted.clear(); attemptedFor = state; } }
 let pendingRunner = null; // uid of the effect currently resolving — effects resolve ONE AT A TIME
 let runningPendingUid = null;
+// Game-epoch guard: the runner (and every async continuation of an effect) belongs to ONE state object. When the game is replaced
+// (rematch, new game, undo, snapshot restore, load) the old runner is orphaned: it may be parked forever on a prompt of the dead
+// state, and must neither block the new game's runner nor touch the new state when it finally wakes up (see docs/cpu-stall-fix.md).
+let runnerTok = null;
+const cpuDebug = (...a) => { try { if (window.__cpuDebug) console.log('[cpu-debug]', ...a); } catch (e) { /* ignore */ } };
 function autoRunMandatoryPending() {
   syncAttempted();
+  if (pendingRunner && runnerTok && runnerTok.st !== state) { cpuDebug('orphaned runner of a replaced game'); pendingRunner = null; runnerTok = null; runningPendingUid = null; }
   if (pendingRunner) return;
   // 4-3-2 simultaneous triggers: the TURN player resolves their waiting effects first (choosing the
   // order when there are several); only when none are left does the non-turn player's queue start.
   const waiting = state.pending.filter(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
   if (!waiting.length) return;
-  rt('auto waiting=' + waiting.map(t => t.uid).join(','));
   // 15-16-10-2: a triggered 【시큐리티】 effect skips the waiting line and resolves at once. 15-4-5: effects that
   // triggered WHILE simultaneous ones were resolving (derived triggers, t.depth) resolve before the older waiting ones.
   const secNow = waiting.filter(t => t.evt && t.evt.kind === 'security');
   const tier = secNow.length ? secNow : (() => { const md = Math.max(...waiting.map(t => t.depth || 0)); return waiting.filter(t => (t.depth || 0) === md); })();
   const mine = tier.filter(t => t.player === state.activePlayer);
   const pool = mine.length ? mine : tier;
+  const st0 = state;
+  const tok = runnerTok = { st: st0 };
   pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
   pendingRunner = (async () => {
     let next = pool[0];
@@ -1938,14 +1946,15 @@ function autoRunMandatoryPending() {
       });
       next = pool.find(t => t.uid === uid) || pool[0];
     }
-    if (next.resolved) { rt('next resolved ' + next.uid); return; }
+    if (state !== st0 || next.resolved) return; // the game was replaced (rematch / new game / undo / load) while the order prompt was open, or the effect was closed meanwhile
     autoRunAttempted.add(next.uid);
     runningPendingUid = next.uid;
     const knownUids = new Set(state.pending.map(x => x.uid));
     try { await runPendingScript(next, { delay: true }); }
-    finally { for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + (x.rcSim ? 0 : 1); } // rcSim: 15-4-3-3 rule-check deletion triggers alongside the waiting ones // 15-4-5 derived triggers
-  })().then(() => rt('runner done')).catch((err) => { rt('runner ERR ' + (err && err.message)); try { console.warn('[effect runner]', err); S.log(state, '효과 처리 오류(무시): ' + (err && err.message)); } catch (e2) { /* ignore */ } }).finally(() => {
-    pendingRunner = null; runningPendingUid = null;
+    finally { if (state === st0) for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + (x.rcSim ? 0 : 1); } // rcSim: 15-4-3-3 rule-check deletion triggers alongside the waiting ones // 15-4-5 derived triggers
+  })().catch((err) => { try { console.warn('[effect runner]', err); if (state === st0) S.log(state, '효과 처리 오류(무시): ' + (err && err.message)); } catch (e2) { /* ignore */ } }).finally(() => {
+    if (runnerTok !== tok) return; // orphaned (game replaced / watchdog re-armed): a newer runner owns the flags now
+    pendingRunner = null; runnerTok = null; runningPendingUid = null;
     render(); // chains into the next queued effect
   });
 }

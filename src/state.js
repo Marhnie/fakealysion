@@ -668,7 +668,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     // s8: "[시큐리티]【서로의 턴】 …" — the zone marker (not a tag) says it is the card's 【시큐리티】 effect
     const hit = seg.tags.some(tag => wantTags.some(w => (eventKind === 'use' ? tag === w : tag.includes(w)))) || (eventKind === 'security' && seg.zoneMarker === '시큐리티'); // ('use' = exactly 【메인】: an Option's 【자신의 메인 페이즈 개시 시】 (ST23-15/ST24-15) is NOT a use-time effect)
     if (!hit) continue;
-    if (eventKind === 'security' && seg.zoneMarker === '시큐리티' && !seg.tags.some(tag => wantTags.some(w => tag.includes(w))) && hookDescriptorFor(cardId, seg.tags, seg.body)?.zone === 'security') continue; // starter audit (ST20-15/21-15/22-10): a zone-[시큐리티] CONTINUOUS effect already run by its own security-zone hook is not a check-time effect
+    if (eventKind === 'security' && seg.zoneMarker === '시큐리티' && !seg.tags.some(tag => wantTags.some(w => tag.includes(w))) && (hookDescriptorFor(cardId, seg.tags, seg.body)?.zone === 'security' || seg.tags.every(tg => /^(?:자신의|상대의|서로의) 턴(?: 종료 시)?$/.test(tg)))) continue; // census: EVERY zone-[시큐리티] segment tagged only with a turn scope (【서로의 턴】/【상대의 턴 종료 시】…) is continuous / turn-end (s7QueueZoneTurnEnd), never a check-time effect (EX12-072/EX8-068/BT21-095 leaked as manual pendings; BT20-052 would have auto-played on reveal) // starter audit (ST20-15/21-15/22-10): a zone-[시큐리티] CONTINUOUS effect already run by its own security-zone hook is not a check-time effect
     if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
     { const mk = (seg.zoneMarker || '').includes('육성'), inR = !!(stackUid && state.players[p]?.raising?.uid === stackUid); if (stackUid && ((mk && !inR) || (inR && !mk))) continue; } // 3-4-7-4: raising-area cards' effects trigger only if they refer to the raising area ([육성]) // s6: [육성] segments only work in the raising area
     if (hookDescriptorFor(cardId, seg.tags, seg.body)?.skipTrigger) continue; // queued by its own event hook instead (s3)
@@ -2198,10 +2198,14 @@ function ruleCheckDP(state, p, stack) {
     }
     return;
   }
-  if (effectiveDP(state, p, stack) <= 0) {
+  // 17-1-3-1 is repeated until it no longer applies: a Digimon that survived the deletion (《아머 퍼지》/《회피》/… replaced it) and still has DP<=0 is checked again (rule oracle: a survivor with the last source gone stayed at DP<=0 forever).
+  const sigOf = () => JSON.stringify([stack.sources.length, !!stack.suspended, (stack.linkCards || []).length, pl.security.length, pl.trash.length, pl.hand.length]);
+  for (let g = 0; g < 40 && pl.battle.includes(stack) && effectiveDP(state, p, stack) <= 0; g++) {
+    const sig0 = sigOf();
     log(state, `${p} ${card(stack.cardId).nameKo} DP 0 이하 — 룰체크로 소멸 (17-1-3-1)`);
     state._dp0Delete = true;
     try { deleteStack(state, p, stack.uid); } finally { state._dp0Delete = false; }
+    if (sigOf() === sig0) break; // the survival effect changed nothing measurable (e.g. immunity) — do not spin
   }
 }
 

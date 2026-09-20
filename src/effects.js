@@ -599,7 +599,9 @@ export function costGroupPayable(ctx, instr) {
 export function mainAbilityPayable(state, S, p, stackUid, cardId, tags, text) {
   let script;
   try { script = lookupCardSpecific(cardId, tags, text) || compileToScript(text); } catch (e) { return true; }
-  const first = (script || [])[0];
+  let first = (script || [])[0];
+  // a leading "if <cond> -> [costGroup]" wrapper (e.g. EX7-065 "패가 4장 이하라면, 이 테이머를 레스트시키는 것으로 …"): the wrapped cost still has to be payable to declare the ability
+  if (first && first.op === 'condition' && (first.then || []).length === 1 && first.then[0].op === 'costGroup' && !(first.else || []).length) first = first.then[0];
   if (!first || first.op !== 'costGroup') return true;
   return costGroupPayable({ state, S, self: p, opp: S.opponentOf(p), sourceStackUid: stackUid }, first);
 }
