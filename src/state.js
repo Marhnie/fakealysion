@@ -668,7 +668,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     // s8: "[시큐리티]【서로의 턴】 …" — the zone marker (not a tag) says it is the card's 【시큐리티】 effect
     const hit = seg.tags.some(tag => wantTags.some(w => (eventKind === 'use' ? tag === w : tag.includes(w)))) || (eventKind === 'security' && seg.zoneMarker === '시큐리티'); // ('use' = exactly 【메인】: an Option's 【자신의 메인 페이즈 개시 시】 (ST23-15/ST24-15) is NOT a use-time effect)
     if (!hit) continue;
-    if (eventKind === 'security' && seg.zoneMarker === '시큐리티' && !seg.tags.some(tag => wantTags.some(w => tag.includes(w))) && hookDescriptorFor(cardId, seg.tags, seg.body)?.zone === 'security') continue; // starter audit (ST20-15/21-15/22-10): a zone-[시큐리티] CONTINUOUS effect already run by its own security-zone hook is not a check-time effect
+    if (eventKind === 'security' && seg.zoneMarker === '시큐리티' && !seg.tags.some(tag => wantTags.some(w => tag.includes(w))) && (hookDescriptorFor(cardId, seg.tags, seg.body)?.zone === 'security' || seg.tags.every(tg => /^(?:자신의|상대의|서로의) 턴(?: 종료 시)?$/.test(tg)))) continue; // census: EVERY zone-[시큐리티] segment tagged only with a turn scope (【서로의 턴】/【상대의 턴 종료 시】…) is continuous / turn-end (s7QueueZoneTurnEnd), never a check-time effect (EX12-072/EX8-068/BT21-095 leaked as manual pendings; BT20-052 would have auto-played on reveal) // starter audit (ST20-15/21-15/22-10): a zone-[시큐리티] CONTINUOUS effect already run by its own security-zone hook is not a check-time effect
     if (isDelaySegment(seg.body)) continue; // 16-17: only usable later via discardForDelay, not on use
     { const mk = (seg.zoneMarker || '').includes('육성'), inR = !!(stackUid && state.players[p]?.raising?.uid === stackUid); if (stackUid && ((mk && !inR) || (inR && !mk))) continue; } // 3-4-7-4: raising-area cards' effects trigger only if they refer to the raising area ([육성]) // s6: [육성] segments only work in the raising area
     if (hookDescriptorFor(cardId, seg.tags, seg.body)?.skipTrigger) continue; // queued by its own event hook instead (s3)
@@ -1442,12 +1442,14 @@ const KEYWORD_FLAGS = ['재밍', '블로커', '관통', '재기동', '속공', '
 const EFFECTIVE_TEMP_KEYWORDS = new Set(['시큐리티어택', '재밍', '관통', '블로커', '재기동', '길동무', '방벽', '아머퍼지', '회피', '스케이프고트', '불굴', '돌진', '연계']);
 
 export function securityAttackBonus(stack) {
+  if (stack.deferred && S7_BOUND) settleDeferred(S7_BOUND, stack);
   const own = stack.keywords?.['시큐리티어택'] ? Number(stack.keywords['시큐리티어택']) || 0 : 0;
   const inherited = stack.inheritedKeywords?.['시큐리티어택'] ? Number(stack.inheritedKeywords['시큐리티어택']) || 0 : 0;
   return own + inherited + s7ContSAttack(stack);
 }
 
 export function hasKeyword(stack, name) {
+  if (stack.deferred && S7_BOUND) settleDeferred(S7_BOUND, stack);
   const has = !!(stack.keywords && stack.keywords[name]) || !!(stack.inheritedKeywords && stack.inheritedKeywords[name]) || s7ContKw(stack, name);
   const lost = stack.kwLost && stack.kwLost[name];
   if (!has || !lost) return has;
@@ -1824,6 +1826,7 @@ function evolveTargetRestrictionBase(state, p, stack) {
 }
 
 export function effectiveDP(state, p, stack) {
+  if (stack.deferred) settleDeferred(state, stack, p); // 15-15-5-2: recorded grants apply once the immunity is gone
   const ov = stack.dpBaseOverride; // "원래 DP를 N으로 변경" (until: last turn number it applies)
   const base = ov && state.turnNumber <= ov.until ? ov.value : (card(stack.cardId).dp || 0);
   return s7DpFloor(state, p, stack, base + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack) + hookDP(state, p, stack) + s7DpSum(state, stack) + lateDpAllSum(state, p, stack) + allGrantsFor(state, p, stack).dp);
@@ -2095,9 +2098,14 @@ export function grantKeyword(state, p, uid, keyword, value, duration = 'turn') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
-  if (effectBlocked(state, p, stack, 'other')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 ${keyword}을(를) 얻지 않음 (15-15-5-4)`); return; }
   const expiresAfterTurn = duration === 'permanent' ? 'permanent'
     : durationEnd(state, duration); // 'turn' — clears at end of this same turn
+  // 15-15-5-2/-4: an immune Digimon doesn't HAVE the keyword, but the grant is recorded and applies once the immunity ends
+  if (!grantGate(state, p, stack, 'other', { t: 'kw', keyword, value, until: expiresAfterTurn })) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 ${keyword}을(를) 얻지 않음 — 부여만 기록 (15-15-5-4)`); return; }
+  applyKeywordGrant(state, stack, keyword, value, expiresAfterTurn);
+  log(state, `${p} ${card(stack.cardId).nameKo}이(가) ${keyword}${value && value !== true ? '+' + value : ''} 획득 (${duration})`);
+}
+function applyKeywordGrant(state, stack, keyword, value, expiresAfterTurn) {
   // 16-4-2/16-4-3: separate Security Attack grants on the same Digimon are
   // additive (two +1 grants check +2) — unlike most keywords, where
   // re-granting is idempotent, so this one accumulates instead of
@@ -2112,7 +2120,54 @@ export function grantKeyword(state, p, uid, keyword, value, duration = 'turn') {
   const prevExpiry = stack.keywordExpiry[keyword];
   stack.keywordExpiry[keyword] = (prevExpiry === 'permanent' || expiresAfterTurn === 'permanent')
     ? 'permanent' : Math.max(prevExpiry || 0, expiresAfterTurn);
-  log(state, `${p} ${card(stack.cardId).nameKo}이(가) ${keyword}${value && value !== true ? '+' + value : ''} 획득 (${duration})`);
+}
+
+// ---- Part A: 「효과를 받지 않는다」 (15-15-5) — grants are RECORDED even when the target is immune, and take effect the moment it isn't ----
+// grantGate(): true -> the caller applies the grant now. false -> the target is immune to this effect: the grant was recorded on
+// stack.deferred ({ t, kind, src{player,category,cardId}, until (absolute last turn | 'permanent'), ... }) and stays INACTIVE.
+// settleDeferred(): re-evaluates each recorded grant against the source's immunity kind (per source effect: the opponent's Digimon vs. the
+// opponent's option vs. ... — effectBlocked reads src.category); when no longer blocked it is applied with its ORIGINAL expiry (immune time
+// never extends a duration; an expired record is simply dropped). Called from every read path (effectiveDP, hasKeyword, attack checks, unsuspend).
+export function grantGate(state, p, stack, kind, spec) {
+  if (!effectBlocked(state, p, stack, kind)) return true;
+  const src = state._fxSrc;
+  if (src && src.player !== p) (stack.deferred ||= []).push({ ...spec, kind, src: { player: src.player, category: src.category, cardId: src.cardId }, ts: stamp() });
+  return false;
+}
+const SETTLING = new Set();
+export function settleDeferred(state, stack, p = null) {
+  const list = stack && stack.deferred;
+  if (!list || !list.length || SETTLING.has(stack)) return;
+  p = p || ownerOfStack(state, stack);
+  if (!p) return;
+  SETTLING.add(stack);
+  const prevSrc = state._fxSrc;
+  try {
+    for (const e of [...list]) {
+      if (e.until !== 'permanent' && state.turnNumber > e.until) { list.splice(list.indexOf(e), 1); continue; }
+      state._fxSrc = e.src;
+      const blocked = effectBlocked(state, p, stack, e.kind);
+      state._fxSrc = prevSrc;
+      if (blocked) continue;
+      list.splice(list.indexOf(e), 1);
+      applyDeferred(state, p, stack, e);
+    }
+  } finally { state._fxSrc = prevSrc; SETTLING.delete(stack); }
+  if (!list.length) delete stack.deferred;
+}
+const maxUntil = (a, b) => (a === 'permanent' || b === 'permanent') ? 'permanent' : Math.max(a ?? 0, b);
+function applyDeferred(state, p, stack, e) {
+  const nm = card(stack.cardId).nameKo;
+  if (e.t === 'kw') applyKeywordGrant(state, stack, e.keyword, e.value, e.until);
+  else if (e.t === 'dp') { stack.tempDP = (stack.tempDP || 0) + e.amount; stack.dpExpiry = maxUntil(stack.dpExpiry, e.until); }
+  else if (e.t === 'dp7') { stack.s7Dp = (stack.s7Dp || []).filter(m => state.turnNumber <= m.until); stack.s7Dp.push({ amount: e.amount, until: e.until }); }
+  else if (e.t === 'atk') stack.cannotAttackUntil = maxUntil(stack.cannotAttackUntil, e.until);
+  else if (e.t === 'atkP') stack.cannotAttackPlayerUntil = maxUntil(stack.cannotAttackPlayerUntil, e.until);
+  else if (e.t === 'skip') stack.skipNextUnsuspend = true;
+  else if (e.t === 's3') { const cur = stack.s3 && stack.s3[e.flag]; setS3Flag(stack, e.flag, cur != null && cur > e.until ? cur : e.until); }
+  else return;
+  log(state, `${p} ${nm}: 효과를 받지 않는 상태가 끝나 기록되어 있던 효과가 적용됨 (15-15-5-2: ${e.t}${e.keyword ? ' ' + e.keyword : ''}${e.amount != null ? ' ' + e.amount : ''})`);
+  if (e.t === 'dp' || e.t === 'dp7') { if (e.amount < 0) (state._rcPending = state._rcPending || []).push({ p, uid: stack.uid }); }
 }
 
 // 2-5-3: a card that has no DP can't have DP added to or subtracted from it (unless an effect gave it an original DP).
@@ -2126,7 +2181,7 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
   if (!stack) return;
   if (!stackHasDP(state, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP를 가지지 않아 DP를 증감할 수 없음 (룰 2-5-3)`); return; }
   if (amount < 0 && s1Flag(state, stack, 'noNegDP')) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP가 마이너스되지 않음`); return; } // shard1
-  if (amount < 0 && effectBlocked(state, p, stack, 'dpDown')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과로 DP가 감소하지 않음`); return; }
+  if (!grantGate(state, p, stack, amount < 0 ? 'dpDown' : 'other', { t: 'dp', amount, until: duration === 'permanent' ? 'permanent' : durationEnd(state, duration) })) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 DP ${amount >= 0 ? '+' : ''}${amount}가 적용되지 않음 — 기록만 함 (15-15-5)`); return; }
   if (amount < 0 && hasKeyword(stack, 'DP감소무효')) {
     log(state, `${p} ${card(stack.cardId).nameKo}는 DP 감소 무효 — ${amount} 무시됨`);
     return;
@@ -2146,16 +2201,18 @@ export function modifyDP(state, p, uid, amount, duration = 'turn') {
 export function flushRuleChecks(state) {
   flushLeaves(state);
   const list = state._rcPending; state._rcPending = null;
-  if (!list) return;
   beginCause(state); // a rule check is its own cause
   const seen = new Set();
   const known = new Set(state.pending.map(x => x.uid));
-  for (const { p, uid } of list) {
+  for (const { p, uid } of list || []) {
     if (seen.has(p + uid)) continue; seen.add(p + uid);
     const pl = state.players[p];
     const st = pl.battle.find(s => s.uid === uid);
     if (st) ruleCheckDP(state, p, st);
   }
+  // 17-1-3-1 (rule-oracle R-dp0): conditional DP bonuses that depend on the game state (own security count, rest state, …) can lapse when ANY effect changes that state
+  // without a modifyDP call announcing it — sweep every Digimon once the outermost effect has finished.
+  if (state.players.p1.battle.length + state.players.p2.battle.length) ruleSweepDP(state, null);
   // 15-4-3-3: 【소멸 시】 etc. triggered by a rule-check deletion trigger simultaneously with the effects already waiting
   // (they are not "derived" triggers of the effect that just resolved, so they stay in the same resolution tier).
   for (const x of state.pending) if (!known.has(x.uid)) x.rcSim = true;
@@ -2198,10 +2255,14 @@ function ruleCheckDP(state, p, stack) {
     }
     return;
   }
-  if (effectiveDP(state, p, stack) <= 0) {
+  // 17-1-3-1 is repeated until it no longer applies: a Digimon that survived the deletion (《아머 퍼지》/《회피》/… replaced it) and still has DP<=0 is checked again (rule oracle: a survivor with the last source gone stayed at DP<=0 forever).
+  const sigOf = () => JSON.stringify([stack.sources.length, !!stack.suspended, (stack.linkCards || []).length, pl.security.length, pl.trash.length, pl.hand.length]);
+  for (let g = 0; g < 40 && pl.battle.includes(stack) && effectiveDP(state, p, stack) <= 0; g++) {
+    const sig0 = sigOf();
     log(state, `${p} ${card(stack.cardId).nameKo} DP 0 이하 — 룰체크로 소멸 (17-1-3-1)`);
     state._dp0Delete = true;
     try { deleteStack(state, p, stack.uid); } finally { state._dp0Delete = false; }
+    if (sigOf() === sig0) break; // the survival effect changed nothing measurable (e.g. immunity) — do not spin
   }
 }
 
@@ -2249,7 +2310,7 @@ export function setSkipNextUnsuspend(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
-  if (effectBlocked(state, p, stack, 'other')) return;
+  if (!grantGate(state, p, stack, 'other', { t: 'skip', until: 'permanent' })) return;
   stack.skipNextUnsuspend = true;
   log(state, `${p} ${card(stack.cardId).nameKo} 다음 액티브 페이즈에 액티브 되지 않음`);
 }
@@ -3172,7 +3233,8 @@ export function optionColorOk(state, p, cardId) {
   const need = c.colors || [];
   if (!need.length) return true;
   const pl = state.players[p];
-  const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => ['digimon', 'tamer'].includes(card(st.cardId).category));
+  // 4-22-2: 색 조건은 '에어리어'에 같은 색의 디지몬/테이머가 있으면 충족 — 육성 에어리어의 부화한 카드도 포함 (Lv.2 디지타마 카드는 데이터상 category 'digitama'이지만 육성 에어리어에서는 디지몬).
+  const stacks = [pl.raising, ...pl.battle].filter(Boolean).filter(st => st === pl.raising || ['digimon', 'tamer'].includes(card(st.cardId).category));
   const have = new Set(stacks.flatMap(st => stackColors(st)));
   if (need.every(col => have.has(col))) return true;
   const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
@@ -4336,6 +4398,7 @@ function deleteStackCore(state, p, uid, toZone, cause) {
     const fresh = placeThisInBattle(state, p, stack.cardId);
     log(state, `${p} ${card(stack.cardId).nameKo} 《불굴》 — 코스트 없이 재등장`);
     queueTriggersForStack(state, p, fresh, 'play');
+    ruleCheckDP(state, p, fresh); ruleSweepDP(state, fresh); // 17-1-3-1: the re-entered Digimon may already sit at DP<=0 (turn-long 'all opponent Digimon DP -N' reaches later arrivals; hunt: BT4-106 + ST18-02 stayed at DP 0)
   }
   return all;
 }
@@ -4377,7 +4440,7 @@ export function restrictAttack(state, p, uid, expiresAfterTurn = 'permanent') {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
-  if (effectBlocked(state, p, stack, 'other')) return;
+  if (!grantGate(state, p, stack, 'other', { t: 'atk', until: expiresAfterTurn })) return;
   stack.cannotAttackUntil = expiresAfterTurn;
   log(state, `${p} ${card(stack.cardId).nameKo} 어택 불가 상태 부여`);
 }
@@ -4389,7 +4452,7 @@ export function restrictAttackPlayer(state, p, uid, expiresAfterTurn = 'permanen
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
-  if (effectBlocked(state, p, stack, 'other')) return;
+  if (!grantGate(state, p, stack, 'other', { t: 'atkP', until: expiresAfterTurn })) return;
   stack.cannotAttackPlayerUntil = expiresAfterTurn;
   log(state, `${p} ${card(stack.cardId).nameKo} 플레이어 공격 불가 상태 부여`);
 }
@@ -4462,6 +4525,7 @@ export function canAttackPlayer(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return true;
+  if (stack.deferred) settleDeferred(state, stack, p);
   if (stack.cannotAttackPlayerUntil === 'permanent' || (typeof stack.cannotAttackPlayerUntil === 'number' && state.turnNumber <= stack.cannotAttackPlayerUntil)) return false;
   if (s1CannotAttackPlayer(state, p, stack)) return false; // shard1
   if (hookAttackPlayerBlocked(state, p, stack)) return false; // s7
@@ -4583,6 +4647,10 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }
 
+// 「상대 디지몬이 없는 동안 어택할 수 없다」 (e.g. Guardromon): shared by declareAttack and the CPU's attack candidate filter
+export function cannotAttackNoOppDigimon(state, attackerP, stack) {
+  return stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON) && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon');
+}
 export function declareAttack(state, attackerP, stackUid, opts = {}) {
   const pl = state.players[attackerP];
   const stack = pl.battle.find(s => s.uid === stackUid);
@@ -4598,6 +4666,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 이번 턴에 등장/원본이 플레이된 카드라 공격 불가`);
     return { ok: false, reason: 'entered play this turn' };
   }
+  if (stack.deferred) settleDeferred(state, stack, attackerP);
   if (stack.cannotAttackUntil === 'permanent' || (typeof stack.cannotAttackUntil === 'number' && state.turnNumber <= stack.cannotAttackUntil)) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 어택 불가 상태라 공격할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
@@ -4606,8 +4675,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 효과로 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
-  if (stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON)
-      && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon')) {
+  if (cannotAttackNoOppDigimon(state, attackerP, stack)) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 상대 디지몬이 없는 동안 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
@@ -4677,6 +4745,7 @@ export function stepSecurityCheck(ctl) {
   const wasFaceUp = secFaceUpTake(pl, id); // s5
   state.secReveal = { p: defenderP, cardId: id, up: wasFaceUp }; // s6: lets 【시큐리티】 effects ask "이 카드가 앞면이었다면"
   emitGameEvent(state, 'securityDecrease', { owner: defenderP, stack: null, cause: 'check' }); // s5
+  ruleSweepDP(state, null); // 17-1-3-1: a "while my security is N or fewer" DP bonus may lapse right now (rule-oracle R-dp0)
   emitGameEvent(state, 'securityDiscard', { owner: defenderP, stack: null, cause: 'check', cardId: id }); // b9: "이 카드가 시큐리티에서 파기되었을 때" (BT25-034/040): a checked security card is trashed from security
   if (wasFaceUp && attackerStack) emitGameEvent(state, 'faceUpChecked', { owner: attackerP, stack: attackerStack, defenderP, cardId: id }); // s5
   if (attackerStack) emitGameEvent(state, 'securityChecked', { owner: attackerP, stack: attackerStack, defenderP, cardId: id }); // s6: "이 디지몬이 상대의 시큐리티를 체크했을 때" (BT22-080)
@@ -5041,8 +5110,10 @@ export function hookRedirectOptions(state, defenderP, attackerP, aStack) {
   return out;
 }
 // Per-stack turn-limited flags used by shard-3 effects: stack.s3[flag] = last turn number (inclusive).
-export function s3Flag(state, stack, flag) { return !!(stack && stack.s3 && stack.s3[flag] != null && state.turnNumber <= stack.s3[flag]); }
+export function s3Flag(state, stack, flag) { if (stack && stack.deferred) settleDeferred(state, stack); return !!(stack && stack.s3 && stack.s3[flag] != null && state.turnNumber <= stack.s3[flag]); }
 export function setS3Flag(stack, flag, untilTurn) { (stack.s3 ||= {})[flag] = untilTurn; }
+// effect-applied flag on a (possibly opponent's) stack: recorded-but-inactive while the stack is immune (15-15-5-2/-4)
+export function setS3FlagFx(state, p, stack, flag, untilTurn) { if (grantGate(state, p, stack, 'other', { t: 's3', flag, until: untilTurn })) setS3Flag(stack, flag, untilTurn); }
 // Tokens (no printed card): ids start with TOKEN- and vanish when they leave the battle area.
 export const isTokenId = (id) => !!CARDS[id]?.isToken;
 export function purgeTokens(state) {
@@ -5258,7 +5329,17 @@ function s7Bound(state) { S7_BOUND = state; return state; }
 // Only conditions we can evaluate exactly are supported (none / name-trait descriptor / own Tamer / own named card / own trash>=N /
 // opponent hand<=N); anything else parses to null and is ignored (never misapplied).
 const CONT_GRANT_CACHE = new Map();
-let B11_DPGUARD = false; // re-entrancy guard: "DP N 이상의 상대의 디지몬이 있는 동안" reads the opponent's effective DP (which may read ours back)
+// Continuous-effect FIXED POINT (rules 15-8 / 18-3). A condition that reads DP ("DP N 이상의 상대의 디지몬이 있는 동안") can depend on
+// itself through the opponent's mirror ability. Each such condition is evaluated through condFix(key, fn): while `key` is already being
+// evaluated further up the stack it counts as NOT holding (least fixed point: an effect is active only if it is supported without
+// justifying itself). Unrolled recursion == iteration from "nothing conditional active" to convergence; nothing is cached or latched,
+// so every read re-derives the same answer (no flicker, no stale DP, no infinite recursion).
+const COND_ACTIVE = new Set();
+export function condFix(key, fn) {
+  if (COND_ACTIVE.has(key)) return false;
+  COND_ACTIVE.add(key);
+  try { return fn(); } finally { COND_ACTIVE.delete(key); }
+}
 const CONT_KW_LABELS = { '블로커': 1, '재밍': 1, '관통': 1, '재기동': 1, '속공': 1, '돌진': 1, '연계': 1, '길동무': 1, '회피': 1, '아머퍼지': 1, '방벽': 1, '스케이프고트': 1, '불굴': 1, '충돌': 1, '진격': 1, '볼텍스': 1, '에그제큐트': 1, '천승': 1, '빙장': 1, '수호': 1, '급습': 1, '프로그레스': 1 };
 function contGrantCond(cond) {
   let c = cond.trim().replace(/[,，]\s*$/, '').trim();
@@ -5269,7 +5350,7 @@ function contGrantCond(cond) {
   // b6 (BT17-004): "이 디지몬이「아르고몬」인 동안" — this stack's current name (aliases included)
   if ((m = c.match(/^이\s*디지몬이\s*「([^」]+)」\s*(?:인|이)\s*동안$/))) return (st, p, stack) => effectiveInfo(st, stack, p).nameIs(m[1]);
   // b6 (BT17-079): subject descriptor "DP 10000 이상의 이 디지몬은 《관통》을 얻는다" — this stack's current DP (re-entrancy guarded)
-  if ((m = c.match(/^DP\s*(\d+)\s*(이상|이하)\s*(?:의|인)$/))) { const f = cmp(Number(m[1]), m[2]); return (st, p, stack) => { if (B11_DPGUARD) return false; B11_DPGUARD = true; try { return f(effectiveDP(st, p, stack)); } finally { B11_DPGUARD = false; } }; }
+  if ((m = c.match(/^DP\s*(\d+)\s*(이상|이하)\s*(?:의|인)$/))) { const f = cmp(Number(m[1]), m[2]); return (st, p, stack) => condFix('self|' + p + '|' + stack.uid + '|' + c, () => f(effectiveDP(st, p, stack))); }
   if (/^자신의\s*테이머가\s*있는\s*동안$/.test(c)) return (st, p) => st.players[p].battle.some(x => card(x.cardId).category === 'tamer');
   // b5 (BT13-025/021): "상대의 패가 8장 이상인 동안" (general opponent zone-count form; the 이하 spelling exists below)
   if ((m = c.match(/^상대의\s*(시큐리티|패|트래시)(?:가|에)\s*(\d+)\s*장\s*(이상|이하)?\s*(?:인|일)\s*동안$/))) { const zone = { 시큐리티: 'security', 패: 'hand', 트래시: 'trash' }[m[1]], f = cmp(Number(m[2]), m[3]); return (st, p) => f(st.players[opponentOf(p)][zone].length); }
@@ -5300,7 +5381,7 @@ function contGrantCond(cond) {
   // b11 (EX7-001 / EX8-042 / EX8-053): "상대의 디지몬이 1마리 이하인 동안", "이 디지몬이 레스트 상태인 동안", "DP 13000 이상의 상대의 디지몬이 있는 동안"
   if ((m = c.match(/^상대의\s*디지몬이\s*(\d+)\s*마리\s*(이상|이하)\s*(?:인|일|있는)\s*동안$/))) { const f = cmp(Number(m[1]), m[2]); return (st, p) => f(st.players[opponentOf(p)].battle.filter(x => card(x.cardId).category === 'digimon').length); }
   if (/^이\s*디지몬이\s*레스트\s*상태인\s*동안$/.test(c)) return (st, p, stack) => !!stack.suspended;
-  if ((m = c.match(/^DP\s*(\d+)\s*(이상|이하)의\s*상대의\s*디지몬이\s*(있는|없는)\s*동안$/))) { const f = cmp(Number(m[1]), m[2]), exists = m[3] === '있는'; return (st, p) => { if (B11_DPGUARD) return false; B11_DPGUARD = true; try { const o = opponentOf(p); return st.players[o].battle.some(x => card(x.cardId).category === 'digimon' && f(effectiveDP(st, o, x))) === exists; } finally { B11_DPGUARD = false; } }; }
+  if ((m = c.match(/^DP\s*(\d+)\s*(이상|이하)의\s*상대의\s*디지몬이\s*(있는|없는)\s*동안$/))) { const f = cmp(Number(m[1]), m[2]), exists = m[3] === '있는'; return (st, p, stack) => condFix('opp|' + p + '|' + (stack ? stack.uid : '') + '|' + c, () => { const o = opponentOf(p); return st.players[o].battle.some(x => card(x.cardId).category === 'digimon' && f(effectiveDP(st, o, x))) === exists; }); }
   // "자신의 디지몬이 2마리 이상 있는 동안" (ST12-01)
   if ((m = c.match(/^자신의\s*디지몬이\s*(\d+)\s*마리\s*(이상|이하)\s*있(?:는\s*동안|을\s*때)$/))) { const f = cmp(Number(m[1]), m[2]); return (st, p) => f(st.players[p].battle.filter(x => card(x.cardId).category === 'digimon').length); }
   // batch4 (BT12-060/064 …): "《세이브》가 기술되어 있는 [이 디지몬은]" — the CURRENT top card's printed text mentions the token
@@ -5512,7 +5593,7 @@ export function s7AddDpMod(state, p, uid, amount, until) {
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return false;
   if (!stackHasDP(state, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP를 가지지 않아 DP를 증감할 수 없음 (룰 2-5-3)`); return false; }
-  if (amount < 0 && effectBlocked(state, p, stack, 'dpDown')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과로 DP가 감소하지 않음`); return false; }
+  if (!grantGate(state, p, stack, amount < 0 ? 'dpDown' : 'other', { t: 'dp7', amount, until })) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 DP가 변하지 않음 — 기록만 함 (15-15-5)`); return false; }
   if (amount < 0 && hasKeyword(stack, 'DP감소무효')) { log(state, `${p} ${card(stack.cardId).nameKo}는 DP 감소 무효 — ${amount} 무시됨`); return false; }
   stack.s7Dp = (stack.s7Dp || []).filter(m => state.turnNumber <= m.until);
   stack.s7Dp.push({ amount, until });

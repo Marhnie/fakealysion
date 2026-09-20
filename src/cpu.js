@@ -160,7 +160,7 @@ function optionValue(state, p, id) {
   return { score: sc, why };
 }
 function canUseOptionNow(state, p, id) {
-  return safe(() => S.optionColorOk(state, p, id) && !S.timedLocked(state, p, 'option'), false);
+  return safe(() => S.optionColorOk(state, p, id) && !S.timedLocked(state, p, 'option') && !S.s1HookAny(state, 's1cannotUseOption', { p }), false);
 }
 
 function jogressOptions(state, p, cardId) {
@@ -188,6 +188,7 @@ function canDeclareAttack(state, p, st) {
   if (st.cannotAttackUntil === 'permanent' || (typeof st.cannotAttackUntil === 'number' && state.turnNumber <= st.cannotAttackUntil)) return false;
   if (!safe(() => S.canRestByRule(state, p, st), true)) return false;
   if (safe(() => S.hookNoAttack(state, p, st) || S.s1CannotAttack(state, p, st), false)) return false;
+  if (safe(() => S.cannotAttackNoOppDigimon(state, p, st), false)) return false; // Guardromon: no attacks while the opponent has no Digimon (the CPU used to retry the rejected declaration 40x per turn)
   return true;
 }
 
@@ -261,10 +262,11 @@ function enumerateActions_(state, p) {
   // 트레이닝 / 【메인】 abilities
   board.forEach((st) => {
     const zone = pl.raising && st.uid === pl.raising.uid ? 'raising' : 'battle';
-    if (hasKw(state, p, st, '트레이닝') && !st.suspended && pl.deck.length > 3 && !canDeclareAttack(state, p, st)) acts.push({ type: 'train', uid: st.uid, cost: 0, score: 2.2, key: 'tr:' + st.uid });
+    if (hasKw(state, p, st, '트레이닝') && !st.suspended && pl.deck.length > 3 && !canDeclareAttack(state, p, st) && safe(() => S.canRestByRule(state, p, st), true)) acts.push({ type: 'train', uid: st.uid, cost: 0, score: 2.2, key: 'tr:' + st.uid });
     const abs = safe(() => S.activatableMainAbilities(state, p, st, zone), []);
     abs.forEach((ab, idx) => {
       const ok = safe(() => Fx.mainAbilityPayable(state, S, p, st.uid, ab.cardId, ab.tags, ab.text), false);
+      if (ok && ab.cardId === 'BT1-089' && !(pl.raising ? (S.card(pl.raising.cardId).category === 'digimon' && (S.card(pl.raising.cardId).level || 0) >= 3) : pl.digitamaDeck.length > 0)) return; // hatch / move impossible -> resting the tamer would do nothing
       if (ok) acts.push({ type: 'main', uid: st.uid, idx, cost: 0, score: 2.6, key: 'mn:' + st.uid + ':' + idx + ':' + ab.cardId });
     });
   });
@@ -767,14 +769,14 @@ export function createUiDriver(api) {
         case 'jogress': note(`${card(act.cardId).nameKo} 조그레스 진화`); await api.jogress(p, act.a, act.b, act.cardId); break;
         case 'attack': { const stk = findAny(st, p, act.uid); note(`${stk ? card(stk.cardId).nameKo : '?'} 어택`); api.attack(p, act.uid, act.target); break; }
         case 'train': note('【트레이닝】 사용'); api.train(p, act.uid); break;
-        case 'main': note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break;
+        case 'main': { const mk = act.key; const cnt = (D.mainUses ||= {}); cnt[D.turnKey + '|' + mk] = (cnt[D.turnKey + '|' + mk] || 0) + 1; if (cnt[D.turnKey + '|' + mk] >= 2) D.banned.add(mk); /* a 【메인】 whose script does nothing (e.g. ST17-10 with no 테리어몬 / 세인트가르고몬) changes no state but the pending row, so the before/after ban never fired: 22 no-op uses per turn — cap at 2 per turn */ note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break; }
         default: break;
       }
     } catch (e) {
       D.stats.fallbacks++;
       try { console.warn('[CPU] action failed', act.type, e); note('행동 실패(' + act.type + ')'); } catch (e2) { /* ignore */ }
       D.banned.add(act.key || act.type);
-    } finally { D.acting = false; api.setActing(false); }
+    } finally { if (api.getState() === st) { D.acting = false; api.setActing(false); } }
     const st2 = api.getState();
     if (!st2 || st2 !== st) return;
     const pl2 = st2.players[p];
@@ -785,7 +787,7 @@ export function createUiDriver(api) {
   async function stepMain(st) {
     const p = D.cpu;
     const key = st.turnNumber + ':' + st.activePlayer;
-    if (D.turnKey !== key) { D.turnKey = key; D.banned = new Set(); D.actionsThisTurn = 0; }
+    if (D.turnKey !== key) { D.turnKey = key; D.banned = new Set(); D.mainUses = {}; D.actionsThisTurn = 0; }
     if (st.phase === 'breeding') {
       const act = planBreeding(st, p, cfg());
       if (!act.key && act.type !== 'skipBreeding') return false;
@@ -844,7 +846,7 @@ export function createUiDriver(api) {
       if (D.fxSig !== sg) { D.fxSig = sg; D.fxSince = now; D.fxTries = 0; }
       else if (now - D.fxSince > 12000) {
         D.fxSince = now; D.fxTries++; D.stats.fallbacks++;
-        console.warn('[CPU] parked effect', D.fxTries, sg, api.dbgPending ? api.dbgPending() : '', JSON.stringify(st.pending.filter((x) => !x.resolved).map((x) => [x.uid, x.player, x.cardId, x.tags, x.evt])), JSON.stringify((typeof window !== 'undefined' && window.__rt || []).slice(-12)));
+        console.warn('[CPU] parked effect', D.fxTries, sg, api.dbgPending ? api.dbgPending() : '', JSON.stringify(st.pending.filter((x) => !x.resolved).map((x) => [x.uid, x.player, x.cardId, x.tags, x.evt])));
         if (D.fxTries <= 1 && api.retryPending) { note('멈춘 효과 처리 재시도'); try { api.retryPending(); } catch (e) { /* ignore */ } }
         else { const t = st.pending.find((x) => !x.resolved); if (t) { note('멈춘 효과를 수동 종료'); try { api.closePending(t.uid); } catch (e) { /* ignore */ } } }
       }
@@ -871,6 +873,9 @@ export function createUiDriver(api) {
     const st = api.getState();
     if (!st || st.winner) return;
     if (D.paused) { D.lastProgress = Date.now(); return; }
+    if (D.stRef !== st) { // game epoch: a different state object (rematch / new game / undo / load) — per-game driver bookkeeping starts fresh
+      D.stRef = st; D.banned = new Set(); D.turnKey = ''; D.actionsThisTurn = 0; D.lastSig = ''; D.fxSig = ''; D.fxSince = 0; D.fxTries = 0; D.lastProgress = Date.now(); D.busyTick = false; D.searching = false; D.acting = false; try { api.setActing(false); } catch (e) { /* ignore */ }
+    }
     const sig = sigOf(st);
     if (sig !== D.lastSig) { D.lastSig = sig; D.lastProgress = Date.now(); }
     await watchdog(st);
@@ -884,9 +889,9 @@ export function createUiDriver(api) {
     if (D.busyTick) return;
     if (Date.now() - D.lastStep < paceMs()) return;
     if (api.fxBusyMs() > 0) return; // wait for the activation VFX / effect card to finish
-    D.busyTick = true;
+    const myTick = D.busyTick = {}; // token: a step of a replaced game may stay parked forever on a dead prompt and must not hold (or later clear) the flag of the new game
     try { if (await step()) D.lastStep = Date.now(); } catch (e) { D.stats.fallbacks++; console.warn('[CPU] step error', e); note('오류 — 무시하고 계속'); D.lastStep = Date.now(); }
-    finally { D.busyTick = false; }
+    finally { if (D.busyTick === myTick) D.busyTick = false; }
   }
 
   D.start = (level) => { D.enabled = true; D.level = level || D.level; D.banned = new Set(); D.turnKey = ''; D.lastProgress = Date.now(); D.paused = false; if (!D.hb) D.hb = setInterval(() => { beat().catch((e) => console.warn('[CPU] beat', e)); }, 160); };

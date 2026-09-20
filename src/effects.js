@@ -1,4 +1,5 @@
 import { SCRIPTS as CARD_SCRIPTS, OPS as CARD_OPS } from './cards/index.js';
+import { CARDS as ALL_CARDS, parseEffectSegments as parseSegs } from './state.js'; // call-time use only (state.js <-> cards/* already form an import cycle)
 const S_COLOR_EN = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' };
 // Structured effect DSL interpreter.
 // A "script" is an array of instructions. Each instruction is a plain object
@@ -499,6 +500,7 @@ function fxSourceOf(ctx) {
   }
   return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' };
 }
+const IMMUNE_SAFE_OPS = new Set(['destroy', 'destroySum', 'retreat', 'returnToHandStripSources', 'bounceToDeckBottomStripSources', 'rest', 'restAll', 'trashEvoSources', 'modifyDP', 'modifyDPAll', 'setDP', 'grantKeyword', 'restrictAttack', 'restrictAttackPlayer']);
 const PICK_KINDS = new Set(['pickStack', 'pickStackAnySide', 'pickFromHand', 'pickFromZoneIndex', 'pickFromRevealed']);
 function wrapChoose(ctx) {
   if (ctx._fxWrapped) return;
@@ -515,11 +517,15 @@ function wrapChoose(ctx) {
     if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && payload.player && payload.player !== ctx.self) {
       const fk = payload.fxKind || FX_KIND_OF_OP[state._fxOp] || 'other';
       const pl = state.players[payload.player];
-      const uids = payload.uids.filter(u => { const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === u); return !st || !S.effectBlocked(state, payload.player, st, fk); });
-      if (payload.uids.length && !uids.length) { S.log(state, '대상이 될 수 있는 디지몬이 없음 (상대의 효과를 받지 않음)'); return null; }
-      payload = { ...payload, uids };
+      // 15-15-5-3: an immune Digimon CAN be chosen (the effect just has no result on it). Every op in IMMUNE_SAFE_OPS handles immunity in its
+      // own outcome (one-shot ops: state.js effectBlocked; grants: S.grantGate records them). Other ops keep the legacy "not offered" filter.
+      if (!IMMUNE_SAFE_OPS.has(state._fxOp)) {
+        const uids = payload.uids.filter(u => { const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === u); return !st || !S.effectBlocked(state, payload.player, st, fk); });
+        if (payload.uids.length && !uids.length) { S.log(state, '대상이 될 수 있는 디지몬이 없음 (상대의 효과를 받지 않음)'); return null; }
+        payload = { ...payload, uids };
+      }
     }
-    if (kind === 'pickStackAnySide' && payload && Array.isArray(payload.entries)) {
+    if (kind === 'pickStackAnySide' && payload && Array.isArray(payload.entries) && !IMMUNE_SAFE_OPS.has(state._fxOp)) {
       const fk = FX_KIND_OF_OP[state._fxOp] || 'other';
       const entries = payload.entries.filter(e => { if (e.player === ctx.self) return true; const pl = state.players[e.player]; const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === e.uid); return !st || !S.effectBlocked(state, e.player, st, fk); });
       payload = { ...payload, entries };
@@ -599,7 +605,9 @@ export function costGroupPayable(ctx, instr) {
 export function mainAbilityPayable(state, S, p, stackUid, cardId, tags, text) {
   let script;
   try { script = lookupCardSpecific(cardId, tags, text) || compileToScript(text); } catch (e) { return true; }
-  const first = (script || [])[0];
+  let first = (script || [])[0];
+  // a leading "if <cond> -> [costGroup]" wrapper (e.g. EX7-065 "패가 4장 이하라면, 이 테이머를 레스트시키는 것으로 …"): the wrapped cost still has to be payable to declare the ability
+  if (first && first.op === 'condition' && (first.then || []).length === 1 && first.then[0].op === 'costGroup' && !(first.else || []).length) first = first.then[0];
   if (!first || first.op !== 'costGroup') return true;
   return costGroupPayable({ state, S, self: p, opp: S.opponentOf(p), sourceStackUid: stackUid }, first);
 }
@@ -1040,7 +1048,7 @@ async function runOneCore(instr, ctx) {
         if (!uids.length) break;
         const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트시킬 디지몬 선택' });
         if (!targetUid) break;
-        S.restStack(state, targetPlayer, targetUid);
+        S.restStack(state, targetPlayer, targetUid); // (an immune target simply isn't rested — 15-15-5-1; its skip-unsuspend rider below is a recorded grant, 15-15-5-2)
         // "다음 상대의 액티브 페이즈에서는 액티브가 되지 않는다." — extremely
         // common tacked onto a rest effect (confirmed via the audit: a
         // dozen+ cards all print this exact "레스트시킨다. ... 액티브가 되지
@@ -1180,7 +1188,7 @@ async function runOneCore(instr, ctx) {
         for (const s of state.players[targetPlayer].battle) {
           if (matchesFilter(S, s, instr.filter, state) && (!instr.noEvoSources || s.sources.length === 0)) {
             S.restrictAttack(state, targetPlayer, s.uid, expiresAfterTurn);
-            if (instr.noBlock) S.setS3Flag(s, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn);
+            if (instr.noBlock) S.setS3FlagFx(state, targetPlayer, s, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn);
           }
         }
         if (instr.prompt) S.log(state, instr.prompt);
@@ -1190,7 +1198,7 @@ async function runOneCore(instr, ctx) {
       if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0 && S.card(s.cardId).category === 'digimon').map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '어택 불가로 만들 디지몬 선택' });
       if (targetUid && instr.distinct) ((ctx._distinctPicks ||= {})[instr.distinct] ||= new Set()).add(targetUid);
-      if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3Flag(tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
+      if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3FlagFx(state, targetPlayer, tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
       break;
     }
     case 'restrictAttackPlayer': {
@@ -1595,7 +1603,8 @@ async function runOneCore(instr, ctx) {
         })
         .map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '덱 아래로 되돌릴 [소멸시] 효과 보유 디지몬 선택' });
-      if (targetUid) {
+      if (targetUid && S.effectBlocked(state, targetPlayer, state.players[targetPlayer].battle.find(s => s.uid === targetUid), 'bounce')) S.log(state, '대상이 효과를 받지 않아 덱 아래로 되돌아가지 않음 (15-15-5-1)');
+      else if (targetUid) {
         const pl = state.players[targetPlayer];
         const stack = pl.battle.find(s => s.uid === targetUid);
         const idx = pl.battle.indexOf(stack);
@@ -1926,6 +1935,8 @@ function prepRewrites(text) {
   // P-195/196/197/198/204: "진화 시킬 수 있다" (spaced) is the same verb as "진화시킬 수 있다" — the effect-evolution / 등장-시-effect matchers only knew the unspaced form.
   // ("【진화 시】" is bracketed and untouched: only a following 킬/킨/켜 form is joined.)
   text = text.replace(/진화\s+시(킬|킨다|켜|킨)/g, '진화시$1');
+  // census (BT25-080): "상대의 디지몬을 1마리 소멸시킨다" (object particle BEFORE the count) = "상대의 디지몬 1마리를 소멸시킨다"; every "N마리 <verb>" matcher expects the count first
+  text = text.replace(/(디지몬|테이머)을\s*(\d+)\s*(마리|명)\s*(소멸시킨다|소멸시킬|패로\s*되돌린다|덱\s*아래로\s*되돌린다|레스트시킨다)/g, '$1 $2$3를 $4');
   // "조그레스 진화하고 있었을 때, …" (ST9-05/11, ST10-06, BT8-015/042 …) is the same condition as "…있었다면," (condTestFor -> stack.viaFusion)
   text = text.replace(/조그레스\s*진화하고\s*있었을\s*때,/g, '조그레스 진화하고 있었다면,');
   // "…N장 오픈한다. 그 카드가 <조건>(이)라면, 패에 추가한다." -> "…그중 <조건> 1장을 패에 추가한다."
@@ -2395,6 +2406,8 @@ function compileInner(text) {
   // "이 디지몬/자신의 디지몬 N마리로 (상대의 디지몬에게) 어택할 수 있다" — an effect-granted immediate attack.
   if ((m = t.match(/(이\s*디지몬|자신(?:의)?\s*디지몬\s*\d+\s*(?:마리|장))(?:으로|로)\s*(?:상대(?:의)?\s*디지몬(?:에게|에)\s*)?어택할\s*수\s*있다/)) && !/(?:동안|때)[^.]*어택할\s*수\s*있다/.test(t.replace(/\([^()]*\)/g, ''))) {
     script.push({ op: 'attackNow', who: 'self', thisStack: /^이/.test(m[1]), ...(/디지몬(?:에게|에)\s*어택할\s*수\s*있다/.test(t) ? { digimonOnly: true } : {}) }); // pass2-b2: 「상대의 디지몬에 어택」(BT12-056) also matches; digimon-only target
+  } else if (/^\s*(?:[【\[][^】\]]*[】\]]\s*)?이\s*디지몬으로\s*어택한다\.?\s*$/.test(t)) {
+    script.push({ op: 'attackNow', who: 'self', thisStack: true }); // census: the MANDATORY form (granted "【자신의 메인 페이즈 개시 시】 이 디지몬으로 어택한다." / S2-GRANT 부여 label) compiled to [] = a manual prompt on every trigger
   }
   // "자신의 패/트래시에서 <조건> 카드 N장을 자신의 테이머 아래에 놓는다/놓을 수 있다"
   if ((m = t.match(/자신(?:의)?\s*(패\s*\/\s*트래시|패\s*또는\s*트래시|패|트래시)에서,?\s*(.*?)\s*(\d+)\s*장(?:을)?\s*자신(?:의)?\s*테이머\s*아래에\s*(?:원하는\s*순서대로\s*)?놓(?:는다|을\s*수\s*있다)/s))) {
@@ -2563,11 +2576,13 @@ function compileInner(text) {
     { const dk = 'dp' + (++DISTINCT_SEQ); for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'self', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration, ...(Number(m[1]) > 1 ? { distinct: dk } : {}) }); } // "N마리(까지)" = N distinct targets
   } else if ((m = t.match(/상대(?:의)?\s*디지몬\s*(\d+)\s*마리(?:까지)?(?:를)?\s*DP\s*([+-]\s*\d+)/))) {
     { const dk = 'dp' + (++DISTINCT_SEQ); for (let i = 0; i < Number(m[1]); i++) script.push({ op: 'modifyDP', target: 'opponent', amount: Number(m[2].replace(/\s+/g, '')), duration: dpDuration, ...(Number(m[1]) > 1 ? { distinct: dk } : {}) }); } // "N마리(까지)" = N distinct targets
+  } else if (!/(?:선택|고른|골라)/.test(t) && (m = t.match(/(?:^|[\s,.])그\s*디지몬(?:의\s*DP를|을\s*DP|의\s*DP)\s*([+-]\s*\d+)/))) {
+    script.push({ op: 'modifyDP', target: 'self', last: true, amount: Number(m[1].replace(/\s+/g, '')), duration: dpDuration }); // census: "…어택했을 때, 이 테이머를 레스트시키는 것으로, 그 디지몬을 DP+1000" (EX2-062/BT2-086 tamers): "그 디지몬" = the event subject (resolveLast -> trigger.evtStackUid); was an empty script = manual on every trigger
   }
 
   for (let i = dpStart; i < script.length; i++) { // target modifiers ("레스트 상태인", "그린인", "특징 「X」를 가진", "DP N 이하의" …) in front of the target noun
     const o = script[i];
-    if ((o.op !== 'modifyDP' && o.op !== 'modifyDPAll') || o.thisStack) continue;
+    if ((o.op !== 'modifyDP' && o.op !== 'modifyDPAll') || o.thisStack || o.last) continue;
     const tgD = findTgt(t, o.target === 'opponent' ? '상대' : '자신', '디지몬', String.raw`(?:를|을|의|는|에게)?\s*(?:,\s*)?(?:이\s*턴\s*동안\s*)?DP`);
     if (tgD) Object.assign(o, tgtProps(tgD));
   }
@@ -4039,10 +4054,32 @@ export function delayBulletPlan(S, cardId, tags, text) {
   return { script: gate ? [...(script[0].then || []), ...script.slice(1)] : script, gate, text: norm }; // (the gate was already checked before discarding: run only what is behind it)
 }
 export async function delayGateOk(plan, ctx) { return !plan.gate || !!(await evalCondition(plan.gate, ctx)); }
-export function lookupCardSpecific(cardId, tags, text) {
+// rule-oracle (LM-003 / EX5-029 / BT15-064 …): a card printing an OWN 【tag】 effect and a DIFFERENT INHERITED (진화원) effect under the same 【tag】 has ONE bare "ID::tag"
+// script, authored for the own text — the inherited pending (trigger.inherited) must not run it. True when `text` is that inherited segment.
+const INH_COLLIDE = new Map();
+function inheritedCollides(cardId, tags, text) {
+  const key = cardId + '|' + tags[0] + '|' + text;
+  let r = INH_COLLIDE.get(key);
+  if (r !== undefined) return r;
+  r = false;
+  try {
+    const c = ALL_CARDS[cardId];
+    if (c && c.effectKo && c.inheritedKo) {
+      const norm = (x) => String(x).replace(/\([^()]*\)/g, '').replace(/\s+/g, '').replace(/^[\[〔]턴에?\d*회[\]〕]/, '').replace(/[.。]\s*$/, '');
+      const t = norm(text);
+      const own = parseSegs(c.effectKo).segments.filter((x) => x.tags[0] === tags[0]);
+      const inh = parseSegs(c.inheritedKo).segments.filter((x) => x.tags[0] === tags[0]);
+      r = own.length > 0 && inh.some((x) => norm(x.body) === t) && !own.some((x) => norm(x.body) === t);
+    }
+  } catch (e) { r = false; }
+  INH_COLLIDE.set(key, r);
+  return r;
+}
+export function lookupCardSpecific(cardId, tags, text, inherited = false) {
   if (typeof cardId === 'string' && cardId.includes('~')) cardId = cardId.split('~')[0]; // synthetic "<id>~<tag>" cards (effects gained from an evolution source, EX10-059) run the source card's own scripts
   const key = `${cardId}::${tags[0]}`;
   if (text != null && atIndex()[key]) { const hit = atIndex()[key].find(([needle]) => text.includes(needle)); if (hit) return hit[1]; }
+  if (inherited && text != null && (CARD_SCRIPTS[key] || CARD_SPECIFIC[key]) && inheritedCollides(cardId, tags, text)) return null; // -> the generic compiler reads the inherited text itself
   return CARD_SCRIPTS[key] || CARD_SPECIFIC[key] || (String(tags[0]).startsWith('__') ? CARD_SCRIPTS['*::' + tags[0]] || CARD_SPECIFIC['*::' + tags[0]] || null : null);
 }
 

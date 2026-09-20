@@ -1,4 +1,5 @@
 import * as S from './state.js';
+import { MB, mbInit, mbMenuButton, mbSummary, mbCpuToggle, mbBreedKey, mbBreedExpand } from './mobilebar.js'; // phone chrome: compact top bar + drawer, CPU strip, breeding sheet minimize
 import * as PR from './practice.js'; // undo/redo, save/load, replay, cheat drawer (logic: snapshot.js / savegame.js / replay.js)
 import * as E from './engine.js';
 import * as Effects from './effects.js';
@@ -8,6 +9,8 @@ import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup 
 import * as DT from './decktools.js';
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
+import { peekWrap, peekNone, peekIdOf } from './peek.js'; // 👁 필드 보기: fold any prompt into a pill
+import { renderSecurityZone } from './securityui.js'; // 시큐리티 존 (스택/TOP/체크 연출)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 import * as CpuSearch from './cpusearch.js'; // 어려움 lookahead (registers itself into Cpu.HOOKS.search)
 import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
@@ -42,6 +45,7 @@ async function init() {
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
   PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
 
@@ -73,8 +77,8 @@ const cpuApiObj = {
   answer: (uc, val) => { state._multiPick = []; state._orderPick = []; uc.resolve(val); },
   fxBusyMs: () => fxBusyMs(),
   setActing: (b) => { cpuActing = !!b; },
-  dbgPending: () => JSON.stringify({ runner: !!pendingRunner, run: runningPendingUid, att: [...autoRunAttempted], sameState: attemptedFor === state }),
-  retryPending: () => { rt('retry'); syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runningPendingUid = null; render(); }, // watchdog: re-arm a parked effect runner
+  dbgPending: () => JSON.stringify({ runner: !!pendingRunner, run: runningPendingUid, att: [...autoRunAttempted], sameState: attemptedFor === state }), // (opt-in diagnostics: window.__cpuDebug = true)
+  retryPending: () => { syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runnerTok = null; runningPendingUid = null; render(); }, // watchdog: re-arm a parked effect runner
   thinkUpdate: () => { try { const bar = document.querySelector('.cpu-bar'); if (!bar || !cpuDrv) return; const b = bar.querySelector('b'); if (b) b.textContent = `${cpuBarLabel()} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`; bar.classList.toggle('thinking', cpuDrv.isThinking()); } catch (e) { /* ignore */ } },
   skipBreeding: () => { E.nextPhase(state); render(); },
   hatch: (p) => { S.hatchDigitama(state, p); render(); },
@@ -144,8 +148,13 @@ function renderCpuBar() {
   if (!cpuOn || !state || state.winner || !cpuDrv) return null;
   const thinking = cpuDrv.isThinking();
   const label = cpuBarLabel();
-  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') }, [
+  let fold = false; try { fold = localStorage.getItem('digimon_cpu_fold') === '1'; } catch (e) { /* ignore */ }
+  const lastNote = state.log.find(e => typeof e.msg === 'string' && e.msg.startsWith('🤖 CPU: '));
+  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') + (fold ? ' cpu-min' : '') + (MB.compact && MB.cpuOpen ? ' mb-open' : ''), onClick: mbCpuToggle }, [
     h('b', {}, `${label} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`),
+    h('button', { className: 'cpu-fold', title: 'CPU 패널 접기/펼치기', onClick: (e) => { e.stopPropagation(); try { localStorage.setItem('digimon_cpu_fold', fold ? '0' : '1'); } catch (err) { /* ignore */ } render(); } }, fold ? '▸' : '▾'),
+    h('span', { className: 'cpu-strip-last' }, lastNote ? '· ' + lastNote.msg.slice(8) : '· 최근 행동 없음'),
+    h('div', { className: 'cpu-pop' }, [
     h('button', { onClick: () => { cpuDrv.setPaused(!cpuDrv.paused); render(); } }, cpuDrv.paused ? '▶ 재개' : '⏸ 일시정지'),
     h('label', { className: 'meta' }, ['속도 ', h('select', { onchange: (e) => { CPU_CFG.speed = e.target.value; saveCpuCfg(); cpuDrv.setSpeed(CPU_CFG.speed); } },
       Object.entries(Cpu.SPEED_LABEL).map(([v, l]) => { const o = h('option', { value: v }, l); if (v === CPU_CFG.speed) o.selected = true; return o; }))]),
@@ -154,6 +163,7 @@ function renderCpuBar() {
     h('label', { className: 'meta' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.reveal, onchange: (e) => { CPU_CFG.reveal = !!e.target.checked; saveCpuCfg(); render(); } }), ' CPU 패 보기']),
     cpuLastActionLine(),
     cpuHintLine(),
+    ]),
   ]);
 }
 // what the human is expected to do right now (one line, only during their own turn)
@@ -896,14 +906,22 @@ function renderTopbar() {
     h('span', {}, `활성: ${state.activePlayer}`),
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
+    mbSummary(h, { turn: state.turnNumber, player: state.activePlayer.toUpperCase(), phase: PHASE_LABEL[state.phase] || state.phase, memory: state.memory }),
     h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
-    h('button', { disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { className: state.phase === 'main' ? 'mb-hide-m' : '', disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
-      className: 'danger', disabled: state.phase !== 'main' || cpuTurnView(),
+      className: 'danger' + (state.phase !== 'main' ? ' mb-hide-m' : ''), disabled: state.phase !== 'main' || cpuTurnView(),
       onClick: () => { if (blockIfBusy()) return; if (passNeedsConfirm()) return; E.declarePass(state); render(); },
     }, ['패스', passArmed() ? h('span', { className: 'pass-warn' }, ` ⚠ 지금 낼 수 있는 카드 ${passFreeCount()}장 — 한 번 더 누르면 패스`) : h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
-    PR.topbarButtons(),
-    ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+    h('div', { className: 'mb-drawer' }, [
+      PR.topbarButtons(),
+      ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+      h('label', { className: 'mb-only' }, [
+        h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
+        ' 육성 페이즈 자동 넘김',
+      ]),
+    ]),
+    mbMenuButton(app, h),
   ]);
   const rows = [mainRow];
   // Selected-card info (including 진화원효과) lives here — part of the
@@ -1555,7 +1573,7 @@ function renderPlayerPanel(p) {
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
   const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
-    pileChip('시큐리티', pl.security.length, 'pile-security'),
+    renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() }),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
     pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
     panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, { owner: p })) : [h('span', {}, '(비어 있음)')]) : null,
@@ -1767,7 +1785,7 @@ async function ctxChoose(kind, payload) {
 const tagLbl = (x) => (x === '__ownDiscard' ? '파기 시' : String(x).replace(/^__/, '')); // pseudo-tags ('__…') shown without the prefix
 function scriptFor(trigger) {
   if (trigger.schedFn) return [{ op: 'sched' }]; // held end-of-turn effect (18-1): run via trigger.schedFn in runPendingScript
-  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text);
+  const specific = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited);
   if (specific) return specific;
   if (/^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(trigger.text.trim())) {
     const { segments } = S.parseEffectSegments(S.card(trigger.cardId).effectKo || '');
@@ -1799,12 +1817,13 @@ function isOptionalAutoEffect(text, script) {
   return flat.length > 0 && flat.every(o => NO_CHOICE_OPS.has(o.op) && (o.op !== 'unsuspend' || o.target === 'thisStack' || true));
 }
 
-const rt = (m) => { try { const a = (window.__rt = window.__rt || []); a.push((Date.now() % 1e6) + ' ' + m); if (a.length > 80) a.shift(); } catch (e) { /* debug only */ } };
 async function runPendingScript(trigger, opts = {}) {
-  rt('run ' + trigger.uid + ' ' + trigger.cardId);
+  const st0 = state, stale = () => state !== st0; // game-epoch guard: a continuation of a replaced game must not touch the new one
   if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
     if (opts.delay) await new Promise(r => setTimeout(r, 400));
+    if (stale()) return;
     try { await trigger.schedFn(); } catch (e) { S.log(state, `예약된 턴 종료 효과 처리 오류: ${e && e.message}`); }
+    if (stale()) return;
     S.resolvePending(state, trigger.uid);
     render();
     return;
@@ -1821,7 +1840,6 @@ async function runPendingScript(trigger, opts = {}) {
     else if (trigger.tags.includes('자신의 턴') && trigger.player !== state.activePlayer) why = '유발 조건(자신의 턴)을 잃어 (15-4-4-5)';
     else if (trigger.tags.includes('상대의 턴') && trigger.player === state.activePlayer) why = '유발 조건(상대의 턴)을 잃어 (15-4-4-5)';
     if (why) {
-      rt('exit why ' + why);
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 ${why} 발휘하지 못함`);
       S.resolvePending(state, trigger.uid);
       render();
@@ -1848,11 +1866,12 @@ async function runPendingScript(trigger, opts = {}) {
   // the same render tick, too fast to actually read. Skipped for effects
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, 700));
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: ctxChoose, trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
+  if (stale()) return;
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
+    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
   // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger
   // sentence; the bullet is read from the card, the option can only be discarded from the turn after it was placed, and discarding it is a player choice.
-  const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
+  const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
   if (delayPlan) {
     const dst = findStack({ player: trigger.player, uid: trigger.stackUid });
     const cn = S.card(trigger.cardId).nameKo;
@@ -1860,6 +1879,7 @@ async function runPendingScript(trigger, opts = {}) {
     if (!dst || S.card(dst.cardId).category !== 'option') why = '배틀 에어리어에 없어';
     else if (state.turnNumber <= dst.placedTurn) why = '놓인 턴에는 사용할 수 없어';
     else if (!(await Effects.delayGateOk(delayPlan, ctx))) why = '조건을 만족하지 않아';
+    if (stale()) return;
     if (why) { S.log(state, `${trigger.player} ${cn} 《딜레이》 — ${why} 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
     if (!(await ctxChoose('confirmEffect', { player: trigger.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${delayPlan.text.slice(0, 90)}` }))) { S.log(state, `${trigger.player} ${cn} 《딜레이》를 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
     S.discardForDelay(state, trigger.player, dst.uid);
@@ -1873,7 +1893,6 @@ async function runPendingScript(trigger, opts = {}) {
   const script = scriptFor(trigger);
   if (isOptionalAutoEffect(trigger.text, script)) {
     const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.map(tagLbl).join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
-    rt('optional ' + trigger.uid + ' -> ' + yes);
     if (!yes) {
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과를 발동하지 않음`);
       S.resolvePending(state, trigger.uid);
@@ -1881,15 +1900,15 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
-  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
+  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null;
+  if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-  rt('runScript ' + trigger.uid);
   await Effects.runScript(script, ctx);
-  rt('ranScript ' + trigger.uid);
+  if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
-  if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
-    const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
+  if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited)) { // bespoke scripts cover the whole segment
+    const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
     if (dropped.length) {
       state.pending.push({ uid: 'rem' + Math.random().toString(36).slice(2), player: trigger.player, cardId: trigger.cardId, stackUid: trigger.stackUid, tags: trigger.tags, text: dropped.join(' '), resolved: false, manualOnly: true, note: '자동 처리되지 않은 나머지 효과 — 직접 처리하세요' });
     }
@@ -1913,20 +1932,27 @@ let attemptedFor = null;
 function syncAttempted() { if (attemptedFor !== state) { autoRunAttempted.clear(); attemptedFor = state; } }
 let pendingRunner = null; // uid of the effect currently resolving — effects resolve ONE AT A TIME
 let runningPendingUid = null;
+// Game-epoch guard: the runner (and every async continuation of an effect) belongs to ONE state object. When the game is replaced
+// (rematch, new game, undo, snapshot restore, load) the old runner is orphaned: it may be parked forever on a prompt of the dead
+// state, and must neither block the new game's runner nor touch the new state when it finally wakes up (see docs/cpu-stall-fix.md).
+let runnerTok = null;
+const cpuDebug = (...a) => { try { if (window.__cpuDebug) console.log('[cpu-debug]', ...a); } catch (e) { /* ignore */ } };
 function autoRunMandatoryPending() {
   syncAttempted();
+  if (pendingRunner && runnerTok && runnerTok.st !== state) { cpuDebug('orphaned runner of a replaced game'); pendingRunner = null; runnerTok = null; runningPendingUid = null; }
   if (pendingRunner) return;
   // 4-3-2 simultaneous triggers: the TURN player resolves their waiting effects first (choosing the
   // order when there are several); only when none are left does the non-turn player's queue start.
   const waiting = state.pending.filter(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
   if (!waiting.length) return;
-  rt('auto waiting=' + waiting.map(t => t.uid).join(','));
   // 15-16-10-2: a triggered 【시큐리티】 effect skips the waiting line and resolves at once. 15-4-5: effects that
   // triggered WHILE simultaneous ones were resolving (derived triggers, t.depth) resolve before the older waiting ones.
   const secNow = waiting.filter(t => t.evt && t.evt.kind === 'security');
   const tier = secNow.length ? secNow : (() => { const md = Math.max(...waiting.map(t => t.depth || 0)); return waiting.filter(t => (t.depth || 0) === md); })();
   const mine = tier.filter(t => t.player === state.activePlayer);
   const pool = mine.length ? mine : tier;
+  const st0 = state;
+  const tok = runnerTok = { st: st0 };
   pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
   pendingRunner = (async () => {
     let next = pool[0];
@@ -1938,14 +1964,15 @@ function autoRunMandatoryPending() {
       });
       next = pool.find(t => t.uid === uid) || pool[0];
     }
-    if (next.resolved) { rt('next resolved ' + next.uid); return; }
+    if (state !== st0 || next.resolved) return; // the game was replaced (rematch / new game / undo / load) while the order prompt was open, or the effect was closed meanwhile
     autoRunAttempted.add(next.uid);
     runningPendingUid = next.uid;
     const knownUids = new Set(state.pending.map(x => x.uid));
     try { await runPendingScript(next, { delay: true }); }
-    finally { for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + (x.rcSim ? 0 : 1); } // rcSim: 15-4-3-3 rule-check deletion triggers alongside the waiting ones // 15-4-5 derived triggers
-  })().then(() => rt('runner done')).catch((err) => { rt('runner ERR ' + (err && err.message)); try { console.warn('[effect runner]', err); S.log(state, '효과 처리 오류(무시): ' + (err && err.message)); } catch (e2) { /* ignore */ } }).finally(() => {
-    pendingRunner = null; runningPendingUid = null;
+    finally { if (state === st0) for (const x of state.pending) if (!knownUids.has(x.uid) && x.depth == null) x.depth = (next.depth || 0) + (x.rcSim ? 0 : 1); } // rcSim: 15-4-3-3 rule-check deletion triggers alongside the waiting ones // 15-4-5 derived triggers
+  })().catch((err) => { try { console.warn('[effect runner]', err); if (state === st0) S.log(state, '효과 처리 오류(무시): ' + (err && err.message)); } catch (e2) { /* ignore */ } }).finally(() => {
+    if (runnerTok !== tok) return; // orphaned (game replaced / watchdog re-armed): a newer runner owns the flags now
+    pendingRunner = null; runnerTok = null; runningPendingUid = null;
     render(); // chains into the next queued effect
   });
 }
@@ -2104,11 +2131,19 @@ function renderModal() {
     return h('div', { className: 'cpu-choice-note' }, ['🤖 CPU가 선택 중…', pr ? h('div', { className: 'meta' }, String(pr).slice(0, 160)) : null]);
   }
   const choiceUi = renderUiChoice();
-  if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
+  if (choiceUi) {
+    const uc = state.uiChoice, pr = String((uc.payload && uc.payload.prompt) || '').replace(/\s+/g, ' ');
+    const KIND = { pickStack: '대상 선택', pickStackAnySide: '대상 선택', pickFromHand: '패에서 선택', pickFromHandIndexes: '패에서 선택', pickFromZoneIndex: '선택', pickFromRevealed: '오픈한 카드 선택', pickSourcesMulti: '진화원 선택', pickLinkCard: '링크 카드 선택', orderCards: '순서 선택', multipleChoice: '선택지', confirmEffect: '발동 확인', pickPendingOrder: '처리 순서' };
+    const fr = state._fxRec, src = fr && fr.src && fr.src.kind === 'effect' ? fxSrcLabel(fr) : '';
+    const what = KIND[uc.kind] || '선택';
+    const cancelable = uc.kind === 'confirmEffect' || (!(uc.payload && uc.payload.required) && /^pick(Stack|StackAnySide|FromHand|FromZoneIndex)$/.test(uc.kind));
+    return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]), { key: peekIdOf(uc), title: src ? `📌 ${src} — ${what}` : what, pill: `선택 대기: ${src ? src + ' — ' : ''}${what}${src ? '' : pr ? ' — ' + pr.slice(0, 30) : ''} (누르면 다시 열기)`, cancelable });
+  }
   const jogressUi = busy() ? null : renderJogressModal();
-  if (jogressUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]);
+  if (jogressUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]), { key: 'jogress', title: '조그레스/DNA 진화', pill: '조그레스 선택 대기 (누르면 다시 열기)', cancelable: true });
   const pendingUi = renderPendingAttack();
-  if (pendingUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]);
+  if (pendingUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]), { key: peekIdOf(sel.pendingAttack), title: '⚔ 공격 진행', pill: `⚔ 공격 진행 중: ${String(sel.pendingAttack.info || sel.pendingAttack.stage || '').replace(/\s+/g, ' ').slice(0, 34)} (누르면 다시 열기)`, cancelable: true });
+  peekNone();
   return null;
 }
 
@@ -2471,6 +2506,16 @@ function paBlock(pa, uid) {
 
 function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (!force && blockIfBusy()) return;
+  if (force) { // effect-granted attack ("이 디지몬으로 상대의 디지몬에게 어택할 수 있다"): with no legal target it cannot be declared at all (else the target picker had nothing to pick = softlock)
+    const pre = findStack({ player: p, uid });
+    if (pre) {
+      if (atkOpts && atkOpts.anyActive) pre.anyActiveOnce = true;
+      let tg = [], hit = false;
+      try { tg = S.legalDigimonTargets(state, p, uid); hit = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); } catch (e) { tg = [1]; }
+      delete pre.anyActiveOnce;
+      if (!hit && !(tg.length && !blockedFromDigimonTarget(p, pre))) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); return; }
+    }
+  }
   const dec = S.declareAttack(state, p, uid, atkOpts);
   if (!dec.ok) { render(); return; }
   // 11-2-2: the attack target is chosen together with the declaration, i.e. BEFORE 【어택 시】 effects are triggered/resolved.
@@ -2596,6 +2641,9 @@ function renderPendingAttack() {
       })));
     } else {
       rows.push(h('div', { className: 'meta' }, '어택 대상이 될 레스트 상태의 상대 디지몬이 없음 (플레이어에게만 어택 가능)'));
+    }
+    if (!pa.canHitPlayer && (blockedByDynamic || !pa.digimonTargets.length)) { // nothing to pick: never leave the prompt without an exit
+      rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { pa.terminate(); } }, '어택 종료 (대상 없음)')]));
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.chargeTarget) {
@@ -2957,14 +3005,17 @@ function renderBreedingBar() {
   if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuTurnView()) return null;
   const { p, canHatch, canMove, reason } = breedingStatus();
   const nothingElse = !canHatch && !canMove;
-  return h('div', { className: 'breed-bar', role: 'group', 'aria-label': '육성 페이즈' }, [
+  const minimized = mbBreedKey(`${state.turnNumber}${p}`);
+  return h('div', { className: 'breed-bar' + (minimized ? ' min' : ''), role: 'group', 'aria-label': '육성 페이즈' }, [
     h('div', { className: 'breed-title' }, `🥚 ${p.toUpperCase()} 육성 페이즈`),
     h('div', { className: 'breed-reason' }, reason),
     h('div', { className: 'breed-btns' }, [
       canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
-      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, '⬆ 배틀 에어리어로 이동') : null,
-      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, '⏭ 아무것도 안 함 → 메인 페이즈로'),
+      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, ['⬆ ', h('span', { className: 'lbl-mob-hide' }, '배틀 에어리어로 '), '이동']) : null,
+      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, ['⏭ ', MB.compact ? '넘김' : '아무것도 안 함 → 메인 페이즈로']),
     ]),
+    h('button', { className: 'breed-info', title: '설명 보기', 'aria-label': '설명', onClick: (e) => e.currentTarget.closest('.breed-bar').classList.toggle('show-reason') }, 'ⓘ'),
+    h('button', { className: 'breed-expand', title: '펼치기', 'aria-label': '펼치기', onClick: mbBreedExpand }, '▴'),
     h('label', { className: 'breed-auto meta' }, [
       h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
       ' 육성 페이즈 자동 넘김 (부화/이동을 마치면 바로 메인 페이즈로)', h('span', { className: 'breed-key' }, ' · Space/Enter = 아무것도 안 함'),
