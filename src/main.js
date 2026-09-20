@@ -818,6 +818,7 @@ function render() {
   if (!state) return renderSetup();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();
+  if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // 17-1-3-1 (rule-oracle): a recorded DP penalty that took effect lazily while no effect was resolving (15-15-5-2) is rule-checked at the next safe point
   if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
   E.autoAdvance(state);
   autoRunMandatoryPending();

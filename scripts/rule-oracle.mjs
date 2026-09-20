@@ -189,6 +189,9 @@ export function createOracle(state, meta) {
   // ---- generic invariants (run after every action, after the effect queue was drained)
   O.invariants = (sn, label) => {
     O.action = label || O.action;
+    // "render tick": reading DP settles lazily-recorded 15-15-5-2 penalties, which queue a rule check; the UI flushes it at the next render, cpusim at the next drain — do the same here BEFORE judging R-dp0
+    for (const p of ['p1', 'p2']) for (const st of [...state.players[p].battle]) dpOf(state, p, st);
+    if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state);
     ck('MEM-range', Number.isInteger(state.memory) && state.memory >= -10 && state.memory <= 10, () => 'memory=' + state.memory);
     const uids = new Set(); let dup = false, badBattle = null, badRaising = null, dp0 = null, nan = null, srcBad = null;
     for (const p of ['p1', 'p2']) {
@@ -423,7 +426,7 @@ export function makeHooks(O) {
       const expect = bb.a.dp > bb.d.dp ? 'attackerWins' : bb.a.dp < bb.d.dp ? 'defenderWins' : 'tie';
       ck('BT-dp', bing || res.result === expect || (res.aDp === bb.a.dp && res.dDp === bb.d.dp && res.result === (res.aDp > res.dDp ? 'attackerWins' : res.aDp < res.dDp ? 'defenderWins' : 'tie')), () => `DP ${bb.a.dp} vs ${bb.d.dp} -> ${res.result}`);
       if (!bing) {
-        const immuneLog = state.log.slice(0, 10).some((e) => /면역|소멸하지 않|살아|생존|길동무|재등장|불굴|벗어나지 않/.test(e.msg));
+        const immuneLog = state.log.slice(0, 10).some((e) => /면역|소멸하지 않|살아|생존|길동무|재등장|불굴|벗어나지 않|시큐리티 (?:맨 )?위에 추가/.test(e.msg));
         const shouldDelA = res.result !== 'attackerWins', shouldDelD = res.result !== 'defenderWins';
         ck('BT-delete', (!!a === !shouldDelA) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `attacker ${bb.a.name} result ${res.result} still-in-play=${!!a}`);
         ck('BT-delete', (!!d === !shouldDelD) || immuneLog || state.log.slice(0, 8).some((e) => e.src), () => `defender ${bb.d.name} result ${res.result} still-in-play=${!!d}`);
@@ -481,7 +484,7 @@ export function makeHooks(O) {
           if (state.winner === p && cur.secAtConnect > 0 && !res.some((r) => r && r.empty)) ck('S-nowin-nonempty', fxLines(state.log.slice(0, 10)).length > 0 || cur.secAtConnect <= cur.secTotal0 && false, () => `winner ${p} with security ${cur.secAtConnect} at connect`);
           else ck('S-nowin-nonempty', true);
           // attacker that lost to a security digimon must be gone (unless jamming / immune)
-          if (last && (last.result === 'defenderWins' || last.result === 'tie') && !cur.ctl.gameOver) ck('S-attacker-deleted', !a || state.log.slice(0, 12).some((e) => /면역|소멸하지 않|생존|벗어나지 않|불굴/.test(e.msg) || e.src), () => `attacker survived ${last.result}`);
+          if (last && (last.result === 'defenderWins' || last.result === 'tie') && !cur.ctl.gameOver) ck('S-attacker-deleted', !a || state.log.slice(0, 12).some((e) => /면역|소멸하지 않|생존|벗어나지 않|불굴|시큐리티 (?:맨 )?위에 추가/.test(e.msg) || e.src), () => `attacker survived ${last.result}`);
           if (a && cur.secAtConnect > 0 && cur.ctl.total > 0) ck('S-atk-gone', cur.ctl.i > 0, () => 'no check performed though security available');
         }
       } else if (cur.connected && cur.connectKind === 'digimon') ck('S-count', !cur.ctl || cur.pierce, () => 'security check on a digimon attack without pierce');
@@ -592,8 +595,8 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
     O.invariants(after, label);
     return after;
   };
-  const guardTurnEnd = async (p, preFlip, via, expMem) => { // preFlip: snapshot taken BEFORE the action that ended the turn (pass / memory crossing / forced)
-    const linesPre = O.takeLog();
+  const guardTurnEnd = async (p, preFlip, via, expMem, extraLines = []) => { // preFlip: snapshot taken BEFORE the action that ended the turn (pass / memory crossing / forced)
+    const linesPre = [...extraLines, ...O.takeLog()];
     await sim.finishTurn();
     const lines = [...linesPre, ...O.takeLog()]; const flipped = state.turnNumber !== preFlip.turn;
     if (flipped) {
@@ -641,7 +644,7 @@ export async function playOne({ seed, game, levels, maxTurns = 60, decks, keepGo
         if (act.type === 'pass') {
           E.declarePass(state); const lines = O.takeLog(); const mid = snap(state);
           ck('T-pass-mem3', mid.mem === (p === 'p1' ? -3 : 3) || lines.some((l) => /메모리|게이지/.test(l.msg) && !/패스/.test(l.msg)), () => `mem after pass ${mid.mem}`);
-          if (await guardTurnEnd(p, pre, true, p === 'p1' ? -3 : 3)) { ended = true; break; }
+          if (await guardTurnEnd(p, pre, true, p === 'p1' ? -3 : 3, lines)) { ended = true; break; }
           break;
         }
         let sig0 = JSON.stringify([state.memory, pl.hand.length, pl.battle.length, pl.security.length, state.players[opp(p)].security.length, pl.trash.length, state.log.length]);

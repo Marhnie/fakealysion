@@ -22,6 +22,7 @@ export function createSim(state, opts = {}) {
     const CX = globalThis.__CENSUS; // effect-trigger census (scripts/census.mjs); undefined in normal play -> zero overhead
     while (guard++ < 60) {
       if (CX) CX.sync(state);
+      if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // lazily-recorded DP<=0 rule checks (15-15-5-2) — rule-oracle R-dp0
       const t = state.pending.find((x) => !x.resolved);
       if (!t) return;
       let cxs = null;

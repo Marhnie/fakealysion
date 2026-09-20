@@ -233,7 +233,8 @@ function checkState(g, phaseTag) {
       const cls = new Set();
       for (const id of ids) { const a = d1[id] || 0, b = d2[id] || 0; if ((a < 0 && b > 0) || (a > 0 && b < 0)) cls.add('OWNER'); else if (a + b < 0) cls.add('LOST'); else cls.add('DUP'); }
       const trig = g.recentTrig.slice(-3).join(',') || String(g.lastAct).split(' ')[0];
-      report('CONS', [...cls].join('+') + ' | ' + trig, ids.slice(0, 4).map((id) => `${id}:${d1[id] || 0}/${d2[id] || 0}`).join(' '));
+      const whereIs = (id) => { const o = []; for (const p of ['p1', 'p2']) { const pl = state.players[p]; for (const z of ['hand', 'deck', 'trash', 'security', 'digitamaDeck']) if (pl[z].includes(id)) o.push(p + ':' + z); for (const st of [pl.raising, ...pl.battle].filter(Boolean)) { if (st.cardId === id) o.push(p + ':top' + (st.foreignTop ? '(foreign ' + st.foreignTop + ')' : '')); if ((st.sources || []).includes(id)) o.push(p + ':src@' + st.cardId); if ((st.linkCards || []).some((l) => l && l.cardId === id)) o.push(p + ':link@' + st.cardId); } } return o.join(','); };
+      report('CONS', [...cls].join('+') + ' | ' + trig, ids.slice(0, 4).map((id) => `${id}:${d1[id] || 0}/${d2[id] || 0} [${whereIs(id)}]`).join(' '));
       g.init = { p1: c.p1, p2: c.p2 }; g.consSig = '[{},{}]';
     }
   }

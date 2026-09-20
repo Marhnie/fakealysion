@@ -61,5 +61,17 @@ function game(handP1, memory = 3) {
   const alive = pl.battle.filter((x) => x.cardId === 'ST18-02' && S.effectiveDP(state, 'p1', x) <= 0);
   ok(alive.length === 0, '《불굴》 re-entered Digimon stays alive at DP<=0');
 }
+// 5. a deck-mill 【등장 시】 queued while another effect is being processed must wait in the queue (used to mill the still-revealed cards -> DUP/LOST)
+{
+  const id = Object.keys(S.CARDS).find((k) => S.CARDS[k].category === 'digimon' && /^【등장 시】 자신의 덱 위에서부터 2장 파기한다\.?$/.test((S.CARDS[k].effectKo || '').trim()));
+  ok(!!id, 'setup: a mill-2 【등장 시】 digimon exists');
+  const state = game([id]);
+  const before = state.players.p1.deck.length;
+  state._rcDepth = 1; // an effect is resolving
+  S.playDigimonFresh(state, 'p1', 0);
+  ok(state.players.p1.deck.length === before, 'deck was milled mid-effect (' + before + ' -> ' + state.players.p1.deck.length + ')');
+  ok(state.pending.some((t) => !t.resolved && t.cardId === id), 'the mill trigger should be queued');
+  state._rcDepth = 0;
+}
 console.log(fails ? `RESULT: ${fails} FAILED` : 'RESULT: OK');
 process.exit(fails ? 1 : 0);

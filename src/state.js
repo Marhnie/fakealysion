@@ -369,15 +369,17 @@ function tryAutoApplySegment(state, p, text, sourceCardId) {
   const opp = opponentOf(p);
   const t = text.replace(/[≪《》≫]/g, '').trim();
   let m;
+  // an effect is being processed (revealed cards may still sit on top of the deck): a draw / deck-mill trigger must WAIT in the queue instead of eating those cards (hunt: BT10-105 【시큐리티】 + 피코데블몬 【등장 시】 duplicated / lost cards)
+  const inFx = state._rcDepth > 0;
   // 16-17 ≪딜레이≫: this segment isn't an immediate effect of using the card —
   // it's only usable later via discardForDelay (see compileToScript's matching
   // guard). Absorb it silently so it doesn't queue as an unresolvable pending item.
   if (/^딜레이(?:\s*\([^()]*\))?(?:\s|$)/.test(t)) return true;
-  if ((m = t.match(/^(\d+)\s*드로우(?:한다)?[.。]?$/))) { drawCards(state, p, Number(m[1])); return true; }
+  if (!inFx && (m = t.match(/^(\d+)\s*드로우(?:한다)?[.。]?$/))) { drawCards(state, p, Number(m[1])); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*\+\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, Number(m[1]), sourceCardId); return true; }
   if ((m = t.match(/^메모리(?:를|을)?\s*-\s*(\d+)(?:한다)?[.。]?$/))) { grantMemory(state, p, -Number(m[1])); return true; }
-  if ((m = t.match(/^(?:자신의\s*)?덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다)?[.。]?$/))) { trashTopOfDeck(state, p, Number(m[1])); return true; }
-  if ((m = t.match(/^상대(?:의)?\s*덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다)?[.。]?$/))) { trashTopOfDeck(state, opp, Number(m[1])); return true; }
+  if (!inFx && (m = t.match(/^(?:자신의\s*)?덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다)?[.。]?$/))) { trashTopOfDeck(state, p, Number(m[1])); return true; }
+  if (!inFx && (m = t.match(/^상대(?:의)?\s*덱\s*위(?:에서)?(?:\s*부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다)?[.。]?$/))) { trashTopOfDeck(state, opp, Number(m[1])); return true; }
   if (/^(?:자신의\s*)?패(?:를)?\s*전부\s*파기(?:한다)?[.。]?$/.test(t)) {
     const n = state.players[p].hand.length; for (let i = 0; i < n; i++) trashFromHand(state, p, 0); return true;
   }
@@ -2155,6 +2157,8 @@ export function settleDeferred(state, stack, p = null) {
     }
   } finally { state._fxSrc = prevSrc; SETTLING.delete(stack); }
   if (!list.length) delete stack.deferred;
+  // (a recorded DP penalty that takes effect here is queued in state._rcPending by applyDeferred — settlement is lazy, inside read paths, so deleting from here could corrupt callers'
+  // iteration; the rule check runs at the next safe point instead: end of every effect, cpusim.drain(), main.js render(). rule-oracle R-dp0.)
 }
 const maxUntil = (a, b) => (a === 'permanent' || b === 'permanent') ? 'permanent' : Math.max(a ?? 0, b);
 function applyDeferred(state, p, stack, e) {
@@ -4984,6 +4988,7 @@ export function revertAtkEndBuffs(state, p, uid) {
 // s8: called when an attack ends — undo single-attack DP buffs; 《에그제큐트》 attackers are deleted afterwards.
 export function s8AttackEnded(state, p, uid) {
   revertAtkEndBuffs(state, p, uid);
+  ruleSweepDP(state, null); // 17-1-3-1: DP bonuses that depend on the attack being in progress lapse now (hunt: ST12-06 stayed at DP 0 after its attack)
   const st = findStackAny(state, p, uid);
   if (st && st.s8ExecDelete) { st.s8ExecDelete = false; log(state, `${p} ${card(st.cardId).nameKo} 《에그제큐트》 — 어택 종료로 소멸`); deleteStack(state, p, uid, 'trash', 'ownEffect'); }
 }

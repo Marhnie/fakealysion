@@ -1,4 +1,10 @@
 // Regression assertions for the bugs found by scripts/rule-oracle.mjs.   node scripts/test-oracle-regress.mjs < /dev/null
+// Engine bugs the oracle found (all fixed):
+//  1. Effects.lookupCardSpecific ran the bare "ID::tag" script (authored for the card's OWN effect) for an INHERITED (진화원) effect with the same 【tag】 (LM-003, EX5-029, BT15-064 …) -> `inherited` argument.
+//  2. state.js ruleCheckDP tried the DP<=0 deletion once: a 《아머 퍼지》 survivor stayed in play at DP<=0 -> repeat while it changes something.
+//  3. Conditional DP bonuses lapsing on a state change (security decrease, effect end) and 15-15-5-2 recorded DP penalties were never rule-checked -> ruleSweepDP in stepSecurityCheck / flushRuleChecks,
+//     flushRuleChecks at cpusim.drain and main.js render().
+// Oracle limits: CPU games never DigiXros/burst/app-fuse/link (fuzz.mjs covers their conservation); effect post-conditions only for ~20 single-sentence templates; DP recomputation is not independently verified.
 import * as fs from 'fs';
 import * as S from '../src/state.js';
 import * as E from '../src/engine.js';
