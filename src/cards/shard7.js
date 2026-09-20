@@ -1812,7 +1812,7 @@ SCRIPTS['AD1-007::진화 시'] = [F(async (ctx) => {
 })];
 SCRIPTS['AD1-007::자신의 턴 종료 시'] = [F(async (ctx) => {
   const h = holderOf(ctx);
-  if (!h || h.sources.length < 5 || h.suspended || !ctx.startAttack) return;
+  if (!h || h.sources.length < 5 || !ctx.startAttack) return;
   if (await confirm(ctx, '이 디지몬은 레스트하지 않고 어택할까요?')) ctx.startAttack(ctx.self, h.uid, undefined, { noRest: true });
 })];
 SCRIPTS['AD1-008::진화 시@DP 합계'] = [{ op: 'destroySum', stat: 'dp', limit: 10000 }, F(async (ctx) => {

@@ -1054,7 +1054,7 @@ sc('BT21-062::진화 시', async (ctx) => {
 // 【서로의 턴】 이 디지몬의 진화원 1장마다 이 디지몬을 DP +1000 (no generic parse for this phrasing)
 hk('BT21-072', { tag: '서로의 턴', dp: (state, hp, h, target) => (target === h ? 1000 * h.sources.length : 0) });
 sc('BT21-072::진화 시', async (ctx) => {
-  const st = me(ctx); if (!st || st.suspended) return;
+  const st = me(ctx); if (!st) return;
   if (await ask(ctx, '이 디지몬으로 레스트시키지 않고 어택할까요?')) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
 });
 sc('BT21-074::등장 시', async (ctx) => {

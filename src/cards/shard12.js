@@ -362,8 +362,11 @@ function playFromStackSource(ctx, who, stack, srcIdx) {
   const pl = ctx.state.players[who];
   const [id] = stack.sources.splice(srcIdx, 1);
   S.recomputeStackGrants(stack);
+  const so = ['p1', 'p2'].find(pp => ctx.state.players[pp].battle.includes(stack) || ctx.state.players[pp].raising === stack); // the card's OWNER (1-3: cards always go to their owner's zones when they leave)
   pl.trash.push(id);
-  return S.playFreeFromZone(ctx.state, who, 'trash', pl.trash.length - 1, { fromSources: true });
+  const ns = S.playFreeFromZone(ctx.state, who, 'trash', pl.trash.length - 1, { fromSources: true });
+  if (ns && so && so !== who) { ns.foreignTop = so; ns.foreignCardId = ns.cardId; } // played from the OPPONENT's stack: it stands in our area but is owned by them (deleteStack sends the top card to the owner's trash)
+  return ns;
 }
 const faceUpSources = (st) => st.sources.map((id, i) => ({ id, i })).filter(x => x.i >= S.fdCount(st));
 
@@ -607,6 +610,8 @@ const LEAVE = {
   'BT18-074': { pred: (id) => colorOf(id, 'black'), bounce: true },
   'BT18-054': { pred: (id) => traitIncl(id, '조', '새', '병아리', '요정') || trait(id, '하이브리드체') },
   'BT18-084': { pred: (id) => trait(id, '마수형', '환수형', '하이브리드체') },
+  'BT18-028': { pred: (id) => trait(id, '포유류형', '빙설형', '하이브리드체') }, // pass2-b3: 【서로의 턴】 leave → 진화원에서 특징으로 「포유류형」/「빙설형」/「하이브리드체」를 가진 Lv.4 이하 디지몬 등장 (was missing)
+  'BT18-072': { pred: (id) => trait(id, '곤충형', '하이브리드체') }, // pass2-b3: same family, 「곤충형」/「하이브리드체」 (was missing)
 };
 for (const [id, o] of Object.entries(LEAVE)) {
   H(id, { tag: '서로의 턴', has: '배틀 에어리어를 벗어날 때', onLeave: () => true });

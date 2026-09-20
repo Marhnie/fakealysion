@@ -597,7 +597,7 @@ OPS.s8_attackNow = async (i, ctx) => {
   const { state } = ctx;
   const uid = i.fusedUid ? S8(ctx).fused : i.fromDp ? S8(ctx).dpTargets?.[0]?.uid : i.evt ? evtOf(ctx)?.stackUid : ctx.sourceStackUid;
   const st = uid && findStack(state, ctx.self, uid);
-  if (!st || st.suspended || !isDigi(st.cardId) || !state.players[ctx.self].battle.includes(st)) { log(ctx, `${ctx.self} 어택할 수 있는 디지몬이 없음`); return; }
+  if (!st || (st.suspended && !i.noRest) || !isDigi(st.cardId) || !state.players[ctx.self].battle.includes(st)) { log(ctx, `${ctx.self} 어택할 수 있는 디지몬이 없음`); return; }
   if (i.confirm !== false && !(await confirm(ctx, `${C(st.cardId).nameKo}(으)로 어택할까요?`))) { if (i.revertOnSkip) S.revertAtkEndBuffs?.(state, ctx.self, uid); return; }
   if (ctx.startAttack) ctx.startAttack(ctx.self, uid, undefined, i.noRest ? { noRest: true } : undefined);
 };

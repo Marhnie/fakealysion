@@ -182,7 +182,8 @@ sc('EX8-070::메인', async (ctx) => {
   if (!gone || !gone.length) return;
   for (const kw of ['충돌', '관통', '재기동']) S.grantKeyword(state, self, st.uid, kw, undefined, 'opponentTurn');
   S.modifyDP(state, self, st.uid, 3000, 'opponentTurn');
-  log(ctx, `${self} ${C(st.cardId).nameKo}: 《충돌》《관통》《재기동》 + DP +3000 (상대의 턴 종료까지; 「상대의 효과로 패/덱으로 되돌아가지 않는다」는 수동으로 적용)`);
+  S.grantShield(state, self, st.uid, { kinds: ['bounce'], until: state.activePlayer === self ? state.turnNumber + 1 : state.turnNumber }); // 상대의 효과로 패/덱으로 되돌아가지 않는다 (pass2-b8)
+  log(ctx, `${self} ${C(st.cardId).nameKo}: 《충돌》《관통》《재기동》 + DP +3000 + 상대의 효과로 패/덱으로 되돌아가지 않음 (상대의 턴 종료까지)`);
 });
 
 // BT20-098 애퍼리션 레기온: 상대의 트래시에서 디지몬 카드를 Lv. 합계 9가 되도록 덱 아래로 되돌리는 것으로, 자신의 트래시에서 「고스트형」이고 되돌린 카드와 같은 Lv.의 디지몬 카드 1장씩을 코스트 없이 등장. 등장한 디지몬은 상대의 턴 종료까지 《속공》《블로커》.
@@ -338,13 +339,17 @@ sc('P-205::메인@등장 코스트 7 이하의 자신의 디지몬 1마리를 �
 SCRIPTS['*::__ownDiscard'] = [fn(async (ctx, R) => {
   const { state, self } = ctx, pl = state.players[self];
   const id = ctx.sourceCardId, text = String(ctx.trigger?.text || '').trim();
+  if (/^이\s*카드를\s*코스트를\s*지불하지\s*않고\s*등장시킬\s*수\s*있다/.test(text)) { // b5: 시큐리티에서 파기되었을 때 (BT13-098/BT15-037/BT22-034): THIS card comes back out of the trash (the generic playFree looked in the hand)
+    if (pl.trash.includes(id) && ['digimon', 'tamer'].includes(C(id).category) && await ask(ctx, `${C(id).nameKo}: 이 카드를 코스트를 지불하지 않고 등장시킬까요?`)) S.playThisFreeFromTrash(state, self, id);
+    return;
+  }
   if (/^이\s*카드를\s*배틀\s*에어리어에\s*놓을\s*수\s*있다/.test(text)) { // 덱에서 파기되었을 때 (ST14-12, BT19-097)
     if (pl.trash.includes(id) && await ask(ctx, `${C(id).nameKo}: 이 카드를 배틀 에어리어에 놓을까요?`)) S.placeThisInBattle(state, self, id);
     return;
   }
   if (/이\s*카드의\s*【시큐리티】\s*효과를\s*발휘한다/.test(text)) { // 시큐리티에서 효과로 파기되었을 때 (BT15-092, BT18-098, ST22-10)
     const Fx = await import('../effects.js');
-    const seg = S.parseEffectSegments(C(id).effectKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티'));
+    const seg = S.parseEffectSegments(C(id).effectKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티')) || S.parseEffectSegments(C(id).inheritedKo || '').segments.find(sg => sg.tags.some(t => t === '시큐리티')); // (an Option's 【시큐리티】 effect is printed in its inheritedKo box — ST22-10 …)
     if (!seg) { log(ctx, `${C(id).nameKo}: 【시큐리티】 효과가 없어 처리할 효과가 없음`); return; }
     await R.runScript(Fx.lookupCardSpecific(id, seg.tags, seg.body) || Fx.compileToScript(seg.body), ctx);
     return;

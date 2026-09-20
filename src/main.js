@@ -1,7 +1,15 @@
 import * as S from './state.js';
+import * as PR from './practice.js'; // undo/redo, save/load, replay, cheat drawer (logic: snapshot.js / savegame.js / replay.js)
 import * as E from './engine.js';
 import * as Effects from './effects.js';
 import * as DB from './deckbuilder.js';
+import * as DBS from './dbsearch.js'; // deck-builder search/filter (pure)
+import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup / sample hand / deck management (logic: decktools.js)
+import * as DT from './decktools.js';
+import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
+import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
+import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
+import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
@@ -32,7 +40,108 @@ async function init() {
   await S.loadData();
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
   renderSetup();
+}
+
+// ---------- vs CPU (P2 is played by src/cpu.js) ----------
+// Decisions live in cpu.js; here is only the wiring: the settings (persisted), the lock that keeps the human's hands off P2's side,
+// routing of ctx.choose() prompts by owner (uc.by), and the small `cpuApiObj` of real game actions the CPU driver performs
+// (the very same functions the UI buttons / drag-drops call: doPlayFromHand, doEvolve, runJogress, attackFlow, pa* attack steps …).
+const CPU_KEY = 'digimon_cpu_cfg_v1';
+const CPU_CFG = { mode: '2p', level: 'normal', speed: 'normal', reveal: false };
+try { Object.assign(CPU_CFG, JSON.parse(localStorage.getItem(CPU_KEY) || '{}')); } catch (e) { /* ignore */ }
+const saveCpuCfg = () => { try { localStorage.setItem(CPU_KEY, JSON.stringify(CPU_CFG)); } catch (e) { /* ignore */ } };
+const CPU_P = 'p2';
+let cpuOn = false;      // the running game is vs the CPU
+let cpuActing = false;  // the CPU driver is inside one of its own actions (its prompts / attack calls are allowed)
+let cpuDrv = null;
+const isCpuSide = (p) => cpuOn && p === CPU_P;
+// during the CPU's turn the human may not act (drag, pass, breeding…) — they still answer prompts / blocks that belong to them
+const cpuHumanLocked = () => cpuOn && !cpuActing && !!state && !state.winner && state.activePlayer === CPU_P;
+const cpuTurnView = () => cpuOn && !!state && !state.winner && state.activePlayer === CPU_P; // for rendering (disabled buttons): true for the whole CPU turn, even while the CPU is mid-action
+const cpuPendingOwner = () => { const t = state && runningPendingUid ? state.pending.find(x => x.uid === runningPendingUid) : null; return t ? t.player : null; };
+const uiChoiceByCpu = (uc) => cpuOn && !!uc && (uc.by ? uc.by === CPU_P : Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() }) === CPU_P);
+const cpuApiObj = {
+  getState: () => (cpuOn && !PR.isReplay() ? state : null), // (never play inside the replay viewer's scratch state)
+  busy: () => busy(),
+  pendingAttack: () => sel.pendingAttack,
+  pendingOwner: cpuPendingOwner,
+  hasScript: (t) => !t.manualOnly && scriptFor(t).length > 0,
+  closePending: (uid) => { S.resolvePending(state, uid); render(); },
+  answer: (uc, val) => { state._multiPick = []; state._orderPick = []; uc.resolve(val); },
+  fxBusyMs: () => fxBusyMs(),
+  setActing: (b) => { cpuActing = !!b; },
+  skipBreeding: () => { E.nextPhase(state); render(); },
+  hatch: (p) => { S.hatchDigitama(state, p); render(); },
+  move: (p) => { S.moveRaisingToBattle(state, p); render(); },
+  pass: () => { E.declarePass(state); render(); },
+  play: (p, idx) => doPlayFromHand(p, idx),
+  evolve: (p, uid, idx) => doEvolve(p, uid, idx),
+  jogress: async (p, a, b, cardId) => { await runJogress(p, a, b, cardId); jgCache.clear(); render(); },
+  attack: (p, uid, target) => attackFlow(p, uid, target),
+  train: (p, uid) => { S.useTraining(state, p, uid); render(); },
+  useMain: (p, uid, idx) => {
+    const st = findStack({ player: p, uid });
+    if (!st) return;
+    const ab = S.activatableMainAbilities(state, p, st, state.players[p].raising?.uid === uid ? 'raising' : 'battle')[idx];
+    if (!ab || !Effects.mainAbilityPayable(state, S, p, uid, ab.cardId, ab.tags, ab.text)) return;
+    state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: uid, tags: ab.tags, text: ab.text, resolved: false });
+    render();
+  },
+  pa: {
+    chooseTarget: (pa, tgt) => paChooseTarget(pa, tgt),
+    passRedirect: (pa) => { enterCounterTiming(pa); render(); },
+    passCounter: (pa) => { enterBlockCheck(pa); render(); },
+    useCounter: (pa, opt) => paUseCounter(pa, opt),
+    block: (pa, uid) => paBlock(pa, uid),
+    passBlock: (pa) => { resolveFinalTarget(pa); render(); },
+    pierce: (pa) => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
+    close: (pa) => { endAttack(); render(); },
+  },
+};
+function cpuStart() { // called when a new game begins
+  cpuOn = CPU_CFG.mode === 'cpu';
+  if (state) state.vsCpu = cpuOn ? { level: CPU_CFG.level } : null; // travels with saves / undo snapshots (see cpuSyncFromState)
+  if (cpuOn) { cpuDrv = cpuDrv || Cpu.createUiDriver(cpuApiObj); cpuDrv.start(CPU_CFG.level); cpuDrv.setSpeed(CPU_CFG.speed); }
+  else if (cpuDrv) cpuDrv.stop();
+}
+// after undo / load / resume replaced the game state: CPU mode follows the state's own flag
+function cpuSyncFromState() {
+  const v = state && state.vsCpu;
+  if (v) { cpuOn = true; if (v.level && Cpu.LEVEL_LABEL[v.level]) CPU_CFG.level = v.level; cpuDrv = cpuDrv || Cpu.createUiDriver(cpuApiObj); cpuDrv.start(CPU_CFG.level); cpuDrv.setSpeed(CPU_CFG.speed); }
+  else { cpuOn = false; if (cpuDrv) cpuDrv.stop(); }
+}
+let cpuMullTimer = null;
+function cpuMulliganMaybe() { // the CPU decides its opening hand (룰 5-2-1-4: after the first player) with a short pause
+  if (!cpuOn || mulliganDecided[CPU_P]) return;
+  if (CPU_P !== state.firstPlayer && !mulliganDecided[state.firstPlayer]) return;
+  const st = state;
+  clearTimeout(cpuMullTimer);
+  cpuMullTimer = setTimeout(() => {
+    if (state !== st || mulliganDecided[CPU_P]) return;
+    if (Cpu.shouldMulligan(state, CPU_P, CPU_CFG.level)) { E.mulligan(state, CPU_P); mulliganDealFlash[CPU_P] = true; state.cpuMulled = true; }
+    mulliganDecided[CPU_P] = true;
+    afterMulliganCheck();
+  }, 900);
+}
+function renderCpuBar() {
+  if (!cpuOn || !state || state.winner || !cpuDrv) return null;
+  const thinking = cpuDrv.isThinking();
+  const label = cpuDrv.paused ? '⏸ CPU 일시정지' : thinking ? '🤖 CPU 생각 중…' : (state.activePlayer === CPU_P ? '🤖 CPU 진행 중…' : '🤖 CPU 대기 (당신의 차례)');
+  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') }, [
+    h('b', {}, `${label} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`),
+    h('button', { onClick: () => { cpuDrv.setPaused(!cpuDrv.paused); render(); } }, cpuDrv.paused ? '▶ 재개' : '⏸ 일시정지'),
+    h('label', { className: 'meta' }, ['속도 ', h('select', { onchange: (e) => { CPU_CFG.speed = e.target.value; saveCpuCfg(); cpuDrv.setSpeed(CPU_CFG.speed); } },
+      Object.entries(Cpu.SPEED_LABEL).map(([v, l]) => { const o = h('option', { value: v }, l); if (v === CPU_CFG.speed) o.selected = true; return o; }))]),
+    h('label', { className: 'meta' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.reveal, onchange: (e) => { CPU_CFG.reveal = !!e.target.checked; saveCpuCfg(); render(); } }), ' CPU 패 보기']),
+  ]);
+}
+// grey out the buttons/chips of an attack panel step that the CPU decides (the human must not click for it)
+function cpuLockPanel(panel) {
+  panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  panel.querySelectorAll('.card-chip').forEach(c => { c.style.pointerEvents = 'none'; });
+  panel.insertBefore(h('div', { className: 'cpu-think-row' }, '🤖 CPU가 결정 중…'), panel.firstChild);
 }
 
 let setupPick = { p1: null, p2: null };
@@ -82,143 +191,457 @@ function renderSetup() {
     h('div', { className: 'player-panel' }, [
       h('div', { className: 'section-title' }, '새 게임'),
       h('div', { className: 'actions-row' }, [h('span', {}, 'P1 덱'), selectFor('p1')]),
-      h('div', { className: 'actions-row' }, [h('span', {}, 'P2 덱'), selectFor('p2')]),
+      h('div', { className: 'actions-row' }, [h('span', {}, CPU_CFG.mode === 'cpu' ? 'P2 덱 (CPU)' : 'P2 덱'), selectFor('p2')]),
+      h('div', { className: 'actions-row' }, [h('span', {}, '대전 방식'), (() => {
+        const s = h('select', { id: 'cpuModeSel' }, [h('option', { value: '2p' }, '2인 (한 화면)'), h('option', { value: 'cpu' }, 'CPU 대전')]);
+        s.value = CPU_CFG.mode;
+        s.addEventListener('change', (e) => { CPU_CFG.mode = e.target.value; saveCpuCfg(); renderSetup(); });
+        return s;
+      })(), CPU_CFG.mode === 'cpu' ? h('span', {}, 'CPU 강도') : null, CPU_CFG.mode === 'cpu' ? (() => {
+        const s = h('select', { id: 'cpuLevelSel' }, Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => h('option', { value: v }, l)));
+        s.value = CPU_CFG.level;
+        s.addEventListener('change', (e) => { CPU_CFG.level = e.target.value; saveCpuCfg(); });
+        return s;
+      })() : null].filter(Boolean)),
+      CPU_CFG.mode === 'cpu' ? h('div', { className: 'meta' }, 'CPU 대전: 당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
       setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
       h('div', { className: 'actions-row' }, [
         h('button', { className: 'primary', onClick: startNewGame }, '선택한 덱으로 새 게임 시작'),
         h('button', { onClick: openDeckBuilder }, '덱 빌더 열기'),
       ]),
+      PR.startScreenExtras(),
     ]),
   ]);
   app.appendChild(box);
 }
 
 // ---------- deck builder ----------
+// The search box / filter controls / deck-name input are created ONCE per builder screen and stay in the DOM;
+// filter changes only rebuild the results grid (debounced), deck lists and preview panel — never the inputs.
 
+const DBS_KEY = 'digimon_dbfilter_v1';
 let dbDraft = null;
-let dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+let dbFilter = DBS.defaultFilter();
 let dbSavedName = '';
 let dbLastError = '';
+let dbIndex = null, dbOpts = null;
+let dbPreview = null;      // card id shown in the preview panel
+let dbMatched = [];        // ids matching the current filter (preview ◀ ▶ browses these)
+let dbTerms = [];          // highlight terms of the current query
+let dbPanelOpen = false;   // filter accordion
+let dbEls = null;          // live DOM refs of the current builder screen
+let dbSyncers = [];        // functions that re-sync chip/input state from dbFilter
+let dbTimer = null;
+let dbIdFilter = null;     // { ids:Set, label } — checkup warning → show only the related cards in the grid
+let dbDA = null;           // deck-analysis panels (decktools-ui.js) of the current builder screen
+let dbDeckSort = 'none';   // right-hand deck list sort mode (decktools SORT_MODES)
+let dbKeyBound = false;
+const dbLP = { timer: null, fired: false };
+let dbLastTap = { id: '', t: 0 };
+
+function loadDbFilter() {
+  const def = DBS.defaultFilter();
+  try {
+    const j = JSON.parse(localStorage.getItem(DBS_KEY) || 'null');
+    if (!j || typeof j !== 'object') return def;
+    const out = { ...def };
+    for (const k of Object.keys(def)) {
+      if (j[k] === undefined) continue;
+      if (Array.isArray(def[k])) { if (Array.isArray(j[k])) out[k] = j[k]; }
+      else if (def[k] && typeof def[k] === 'object') out[k] = { ...def[k], ...j[k] };
+      else if (typeof def[k] === typeof j[k]) out[k] = j[k];
+    }
+    out.pageSize = 60;
+    return out;
+  } catch { return def; }
+}
+function saveDbFilter() { try { localStorage.setItem(DBS_KEY, JSON.stringify({ ...dbFilter, pageSize: 60 })); } catch { /* storage unavailable */ } }
 
 function openDeckBuilder() {
   dbDraft = DB.newDraft();
-  dbFilter = { q: '', colors: [], category: '', pageSize: 60 };
+  dbFilter = loadDbFilter();
   dbSavedName = '';
+  dbPreview = null;
+  dbLastError = '';
   renderDeckBuilderScreen();
 }
 
-function matchesDbFilter(c) {
-  if (dbFilter.category && c.category !== dbFilter.category) return false;
-  if (dbFilter.colors.length && !dbFilter.colors.some(col => (c.colors || []).includes(col))) return false;
-  if (dbFilter.q) {
-    const q = dbFilter.q.toLowerCase();
-    if (!c.nameKo.includes(dbFilter.q) && !(c.nameDisplayKo || '').includes(dbFilter.q) && !(c.id || '').toLowerCase().includes(q) && !(c.nameEn || '').toLowerCase().includes(q)) return false;
-  }
-  return true;
+function dbEnsureIndex() {
+  if (!dbIndex) { dbIndex = DBS.buildIndex(S.CARDS, S.PARALLELS); dbOpts = DBS.buildOptions(S.CARDS, dbIndex); }
+}
+function dbCtx() { return { copies: (id) => DB.copiesInDeck(dbDraft, id), max: (id) => DB.maxCopiesFor(id) }; }
+
+function dbSchedule() { // coalesce bursts of keystrokes into one grid refresh
+  clearTimeout(dbTimer);
+  dbTimer = setTimeout(() => { dbFilter.pageSize = 60; saveDbFilter(); dbRefreshResults(); }, 120);
+}
+function dbFilterChanged() { dbSyncers.forEach(f => f()); dbFilter.pageSize = 60; saveDbFilter(); dbRefreshResults(); }
+function toggleIn(arr, v) { const i = arr.indexOf(v); if (i === -1) arr.push(v); else arr.splice(i, 1); }
+
+function openDeckImport(prefill = '') {
+  document.getElementById('deck-import-overlay')?.remove();
+  const ta = h('textarea', { className: 'di-text', rows: 12, placeholder: '한 줄에 하나씩 붙여넣기:\n4 EX1-066\n1 BT7-107\n3 LM-032\n…\n(수량 카드번호 / 카드번호 x수량 / 카드번호,수량 모두 가능. 디지타마는 자동으로 디지타마 덱으로 들어갑니다)' });
+  ta.value = prefill;
+  const nameIn = h('input', { className: 'di-name', placeholder: '덱 이름 (저장할 때 사용)', value: dbSavedName || '' });
+  const summary = h('div', { className: 'di-summary meta' });
+  const list = h('div', { className: 'di-list' });
+  let parsed = null;
+  const update = () => {
+    parsed = parseDeckText(ta.value, S);
+    const parts = [`메인 ${parsed.mainN}/50`, `디지타마 ${parsed.digN}/5`, `인식한 줄 ${parsed.lines}`];
+    summary.replaceChildren(h('b', { style: parsed.mainN === 50 && parsed.digN <= 5 && !parsed.errors.length ? 'color:var(--ok)' : 'color:var(--danger)' }, parts.join(' · ')));
+    list.replaceChildren(
+      ...parsed.errors.map(e => h('div', { className: 'di-err' }, `⚠ ${e.line}행 「${e.text}」: ${e.reason}`)),
+      ...parsed.warnings.map(w => h('div', { className: 'di-warn' }, `• ${w}`)),
+      ...Object.entries({ ...parsed.main, ...parsed.digitama }).map(([id, n]) => h('div', { className: 'di-row' }, `${n} × ${S.card(id).nameKo} (${id})${S.card(id).category === 'digitama' ? ' — 디지타마' : ''}`)),
+    );
+  };
+  let timer = null;
+  ta.addEventListener('input', (e) => { if (e.isComposing) return; clearTimeout(timer); timer = setTimeout(update, 120); });
+  ta.addEventListener('compositionend', update);
+  const apply = (merge) => {
+    update();
+    if (!parsed.lines) { summary.replaceChildren(h('b', { style: 'color:var(--danger)' }, '인식된 카드가 없습니다')); return; }
+    const base = merge ? dbDraft : DB.newDraft();
+    for (const zone of ['main', 'digitama']) for (const [id, n] of Object.entries(parsed[zone])) base[zone][id] = (base[zone][id] || 0) + n;
+    dbDraft = base;
+    if (nameIn.value.trim()) dbSavedName = nameIn.value.trim();
+    dbLastError = parsed.errors.length ? `가져오기 완료 — 인식하지 못한 줄 ${parsed.errors.length}개` : '';
+    overlay.remove();
+    if (dbEls && dbEls.name) dbEls.name.value = dbSavedName || '';
+    dbRefreshDeck();
+  };
+  const close = () => overlay.remove();
+  const overlay = h('div', { id: 'deck-import-overlay', className: 'di-overlay', onClick: (e) => { if (e.target === overlay) close(); } }, [
+    h('div', { className: 'di-panel' }, [
+      h('div', { className: 'section-title' }, '덱 리스트 가져오기'),
+      ta, nameIn, summary, list,
+      h('div', { className: 'actions-row' }, [
+        h('button', { className: 'primary', onClick: () => apply(false) }, '새 덱으로 가져오기'),
+        h('button', { onClick: () => apply(true) }, '현재 덱에 합치기'),
+        h('button', { onClick: close }, '닫기'),
+      ]),
+    ]),
+  ]);
+  document.body.appendChild(overlay);
+  update();
+  setTimeout(() => ta.focus(), 30);
+}
+// Parallel (alternate-art) helpers. Art is display-only: zones/decks hold canonical card numbers (2-12-1).
+function dbArtKey(id) { const k = dbDraft?.art?.[id]; return k && S.parallelOf(k) && k.startsWith(id + '_P') ? k : null; }
+function dbArtUrl(id) { const k = dbArtKey(id); return k ? S.parallelOf(k).imgUrl : S.card(id).imgUrl; }
+// <img> that falls back to the base art if a variant image fails to load (CDN 404 / blocked).
+function artImg(src, base, props) {
+  const img = h('img', { ...props, src });
+  if (base && src !== base) img.addEventListener('error', () => { img.src = base; }, { once: true });
+  return img;
+}
+function dbAdd(id) { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; dbRefreshDeck(); }
+function dbRemove(id) { DB.removeCard(dbDraft, id); dbLastError = ''; dbRefreshDeck(); }
+function dbOpenPreview(id) { dbPreview = id; dbRefreshPreview(); }
+function dbStepPreview(d) {
+  const i = dbMatched.indexOf(dbPreview);
+  if (i === -1) return;
+  const n = dbMatched[i + d];
+  if (n) { if (dbMatched.indexOf(n) >= dbFilter.pageSize) { dbFilter.pageSize += 60; dbRefreshResults(); } dbOpenPreview(n); }
 }
 
-function allCardIds() { return Object.keys(S.CARDS); }
+function dbChip(label, isOn, toggle, title, extraCls = '') {
+  const b = h('button', { className: 'db-chip ' + extraCls, title: title || undefined, onClick: () => { toggle(); dbFilterChanged(); } }, label);
+  const sync = () => b.classList.toggle('primary', !!isOn());
+  dbSyncers.push(sync); sync();
+  return b;
+}
+function dbRange(key, label, step) {
+  const mk = (bound, ph) => {
+    const inp = h('input', { type: 'number', className: 'db-num', placeholder: ph, min: '0', step: String(step), inputmode: 'numeric' });
+    inp.value = dbFilter[key][bound];
+    inp.addEventListener('input', () => { dbFilter[key][bound] = inp.value; dbSchedule(); });
+    dbSyncers.push(() => { if (document.activeElement !== inp) inp.value = dbFilter[key][bound]; });
+    return inp;
+  };
+  return h('div', { className: 'db-row' }, [h('span', { className: 'db-lbl' }, label), mk('min', '최소'), '~', mk('max', '최대')]);
+}
 
 function renderDeckBuilderScreen() {
-  // Full re-render destroys/recreates every DOM node (this app's usual
-  // pattern), which would otherwise steal focus out of the search box on
-  // every keystroke. Snapshot + restore focus/cursor across the rebuild.
-  const prevActive = document.activeElement;
-  const wasSearchFocused = prevActive && prevActive.placeholder === '이름/카드번호 검색';
-  const prevCursor = wasSearchFocused ? prevActive.selectionStart : null;
-
-  const prevDbScroll = app.querySelector('.board')?.scrollTop || 0; // full rebuild would jump back to the top on every tap
+  dbEnsureIndex();
+  dbSyncers = [];
+  const prevScroll = app.querySelector('.board')?.scrollTop || 0;
   app.innerHTML = '';
-  const v = DB.validate(dbDraft);
+  const els = dbEls = {};
+
+  els.mainN = h('span'); els.digN = h('span');
   app.appendChild(h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
-    h('b', {}, '덱 빌더'),
-    h('span', {}, `메인 ${v.mainN}/50`),
-    h('span', { style: v.digitamaN > 5 ? 'color:var(--danger)' : '' }, `디지타마 ${v.digitamaN}/5`),
+    h('b', {}, '덱 빌더'), els.mainN, els.digN,
     h('button', { onClick: () => { const el = document.getElementById('db-deck'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, '내 덱 ↓'),
     h('button', { onClick: () => { state = null; render(); } }, '나가기'),
   ])]));
 
-  const filterRow = h('div', { className: 'actions-row' }, [
-    (() => { const inp = h('input', { placeholder: '이름/카드번호 검색', value: dbFilter.q }); inp.addEventListener('input', (e) => { dbFilter.q = e.target.value; if (e.isComposing) return; renderDeckBuilderScreen(); }); inp.addEventListener('compositionend', (e) => { dbFilter.q = e.target.value; renderDeckBuilderScreen(); }); return inp; })(),
-    ...['red', 'blue', 'yellow', 'green', 'black', 'purple', 'white'].map(col => h('button', {
-      className: dbFilter.colors.includes(col) ? 'primary' : '',
-      onClick: () => { const i = dbFilter.colors.indexOf(col); if (i === -1) dbFilter.colors.push(col); else dbFilter.colors.splice(i, 1); renderDeckBuilderScreen(); },
-    }, col)),
-    ...['', 'digimon', 'tamer', 'option', 'digitama'].map(cat => h('button', {
-      className: dbFilter.category === cat ? 'primary' : '',
-      onClick: () => { dbFilter.category = cat; renderDeckBuilderScreen(); },
-    }, cat || '전체')),
+  // --- search row (created once) ---
+  const inp = h('input', { className: 'db-search', placeholder: '검색: 이름·번호·특징·효과 …', value: dbFilter.q, autocomplete: 'off', enterkeyhint: 'search' });
+  let composing = false;
+  inp.addEventListener('compositionstart', () => { composing = true; });
+  inp.addEventListener('input', (e) => { dbFilter.q = inp.value; if (e.isComposing || composing) return; dbSchedule(); }); // IME: don't refresh mid-composition
+  inp.addEventListener('compositionend', () => { composing = false; dbFilter.q = inp.value; dbSchedule(); });
+  els.search = inp;
+  const scopeSel = h('select', { className: 'db-scope', title: '검색 범위' }, DBS.SCOPES.map(([v, l]) => h('option', { value: v }, l)));
+  scopeSel.value = dbFilter.scope;
+  scopeSel.addEventListener('change', () => { dbFilter.scope = scopeSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { scopeSel.value = dbFilter.scope; });
+  const help = h('span', { className: 'db-help', tabindex: '0', title: '검색 문법\n· 공백 = AND  (예: 옐로 퍼플)\n· "따옴표" = 구문 그대로  (예: "덱 위에서부터 3장")\n· -단어 = 제외  (예: 블로커 -재밍)\n· a|b = 또는  (예: 리커버리|세이브)\n대소문자·띄어쓰기는 무시합니다.' }, '?');
+  const sortSel = h('select', { className: 'db-sort', title: '정렬' }, DBS.SORTS.map(([v, l]) => h('option', { value: v }, '정렬: ' + l)));
+  sortSel.value = dbFilter.sort;
+  sortSel.addEventListener('change', () => { dbFilter.sort = sortSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { sortSel.value = dbFilter.sort; });
+  els.count = h('span', { className: 'meta db-count' });
+  els.toggle = h('button', { onClick: () => { dbPanelOpen = !dbPanelOpen; els.panel.style.display = dbPanelOpen ? '' : 'none'; dbUpdateBar(); } });
+  const resetBtn = h('button', { onClick: () => {
+    const keep = dbFilter.sort; dbFilter = DBS.defaultFilter(); dbFilter.sort = keep;
+    els.search.value = ''; dbFilterChanged();
+  } }, '필터 초기화');
+  const searchRow = h('div', { className: 'db-row db-searchrow' }, [inp, scopeSel, help]);
+  const barRow = h('div', { className: 'db-row' }, [els.toggle, sortSel, resetBtn, els.count]);
+
+  // --- filter panel (accordion) ---
+  const traitInput = h('input', { className: 'db-trait-in', placeholder: '특징 추가 (자동완성)', list: 'db-trait-list', autocomplete: 'off' });
+  const traitList = h('datalist', { id: 'db-trait-list' }, dbOpts.traits.map(t => h('option', { value: t })));
+  els.traitChips = h('span', { className: 'db-chips' });
+  const renderTraitChips = () => els.traitChips.replaceChildren(...dbFilter.traits.map(t => h('button', { className: 'db-chip primary', title: '클릭하면 제거', onClick: () => { toggleIn(dbFilter.traits, t); dbFilterChanged(); } }, t + ' ✕')));
+  dbSyncers.push(renderTraitChips); renderTraitChips();
+  const addTrait = () => { const v = traitInput.value.trim(); if (v && dbOpts.traits.includes(v) && !dbFilter.traits.includes(v)) { dbFilter.traits.push(v); traitInput.value = ''; dbFilterChanged(); } };
+  traitInput.addEventListener('change', addTrait);
+  traitInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addTrait(); } });
+
+  const colorKo = Object.fromEntries(DBS.COLORS.map(([k, ko]) => [k, ko]));
+  const sect = (label, ...kids) => h('div', { className: 'db-row' }, [h('span', { className: 'db-lbl' }, label), ...kids]);
+  const setSel = h('select', { className: 'db-scope', title: '세트' }, [h('option', { value: '' }, '전체 세트'), ...dbOpts.sets.map(s => h('option', { value: s }, s))]);
+  setSel.value = dbFilter.setKey;
+  setSel.addEventListener('change', () => { dbFilter.setKey = setSel.value; dbFilterChanged(); });
+  dbSyncers.push(() => { setSel.value = dbFilter.setKey; });
+
+  els.panel = h('div', { className: 'db-panel', style: dbPanelOpen ? '' : 'display:none' }, [
+    sect('종류', ...DBS.CATS.map(([v, l]) => dbChip(l, () => dbFilter.cats.includes(v), () => toggleIn(dbFilter.cats, v)))),
+    sect('색', ...DBS.COLORS.map(([v, l]) => dbChip(l, () => dbFilter.colors.includes(v), () => toggleIn(dbFilter.colors, v), '', 'col-' + v)),
+      dbChip('단색만', () => dbFilter.mono, () => { dbFilter.mono = !dbFilter.mono; }, '체크 해제 = 다색 포함')),
+    sect('Lv', ...[2, 3, 4, 5, 6, 7].map(n => dbChip('Lv.' + n, () => dbFilter.levels.includes(n), () => toggleIn(dbFilter.levels, n)))),
+    dbRange('cost', '등장·사용 코스트', 1), dbRange('dp', 'DP', 1000), dbRange('evo', '진화 코스트', 1),
+    sect('특징', traitInput, traitList, els.traitChips),
+    sect('키워드', ...dbOpts.keywords.map(k => dbChip(k, () => dbFilter.keywords.includes(k), () => toggleIn(dbFilter.keywords, k), '《' + k + '》'))),
+    sect('효과 타입', ...dbOpts.tags.map(k => dbChip('【' + DBS.tagLabel(k) + '】', () => dbFilter.tags.includes(k), () => toggleIn(dbFilter.tags, k)))),
+    sect('팩', ...['ST', 'BT', 'EX', 'P', 'LM', 'AD', 'RB'].map(p => dbChip(p, () => dbFilter.packs.includes(p), () => toggleIn(dbFilter.packs, p))), setSel),
+    sect('레어도', ...dbOpts.rarities.map(r => dbChip(r, () => dbFilter.rarities.includes(r), () => toggleIn(dbFilter.rarities, r)))),
+    sect('패러렐', dbChip('패러렐 있음 (🎨)', () => dbFilter.hasPar, () => { dbFilter.hasPar = !dbFilter.hasPar; }, '대체 일러스트가 있는 카드만')),
+    sect('덱', dbChip('내 덱에 있는 카드만', () => dbFilter.inDeck, () => { dbFilter.inDeck = !dbFilter.inDeck; }),
+      dbChip('한도(4장) 찬 카드 숨기기', () => dbFilter.hideMax, () => { dbFilter.hideMax = !dbFilter.hideMax; })),
   ]);
 
-  const matched = allCardIds().filter(id => matchesDbFilter(S.card(id)));
-  const shown = matched.slice(0, dbFilter.pageSize);
-  const cardGrid = h('div', { className: 'hand-list' }, shown.map(id => {
-    const have = DB.copiesInDeck(dbDraft, id);
-    return cardChip(id, {
-      selected: have > 0,
-      deckCount: have || undefined,
-      onClick: () => { const r = DB.addCard(dbDraft, id); dbLastError = r.ok ? '' : r.reason; renderDeckBuilderScreen(); },
-    });
-  }));
-  if (dbLastError) filterRow.appendChild(h('span', { style: 'color:var(--danger)' }, dbLastError));
-  const loadMore = matched.length > shown.length
-    ? h('button', { onClick: () => { dbFilter.pageSize += 60; renderDeckBuilderScreen(); } }, `더 보기 (${matched.length - shown.length}장 더 있음)`)
-    : h('span', { className: 'meta' }, `총 ${matched.length}장 검색됨`);
+  els.err = h('div', { className: 'meta', style: 'color:var(--danger)' });
+  els.grid = h('div', { className: 'hand-list' });
+  els.more = h('div', { className: 'actions-row' });
 
-  const draftMainList = Object.entries(dbDraft.main).map(([id, n]) => deckLineItem(id, n));
-  const draftDigitamaList = Object.entries(dbDraft.digitama).map(([id, n]) => deckLineItem(id, n));
-
-  const saved = DB.loadSavedDecks();
+  // --- right column: deck ---
+  els.deckErrors = h('div');
+  els.mainList = h('div', { className: 'stack-list' });
+  els.digList = h('div', { className: 'stack-list' });
+  els.mainLbl = h('div', { className: 'zone-label' }); els.digLbl = h('div', { className: 'zone-label' });
+  els.saved = h('div');
   const nameInput = h('input', { placeholder: '덱 이름', value: dbSavedName });
   nameInput.addEventListener('input', (e) => { dbSavedName = e.target.value; });
-
+  els.name = nameInput;
+  dbDA = createDeckAnalysis({
+    h, S, E, DB, cardChip, showToast,
+    getDraft: () => dbDraft, getSavedName: () => dbSavedName, refreshDeck: () => dbRefreshDeck(),
+    openPreview: (id) => dbOpenPreview(id), artUrl: (id) => dbArtUrl(id),
+    loadDeck: (name, def) => { dbDraft = { name, main: { ...def.main }, digitama: { ...def.digitama }, art: { ...(def.art || {}) } }; dbSavedName = name; dbLastError = ''; dbRefreshDeck(); },
+    setIdFilter: (ids, label) => { dbIdFilter = ids && ids.length ? { ids: new Set(ids), label: label || '' } : null; dbRefreshResults(); if (dbIdFilter) els.board.querySelector('.db-left')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+  });
+  const sortSelDeck = h('select', { className: 'db-scope', title: '내 덱 정렬' }, DT.SORT_MODES.map(([v, l]) => h('option', { value: v }, '덱 정렬: ' + l)));
+  sortSelDeck.value = dbDeckSort;
+  sortSelDeck.addEventListener('change', () => { dbDeckSort = sortSelDeck.value; dbRefreshDeck(); });
   const rightCol = h('div', { className: 'player-panel', id: 'db-deck', style: 'min-width:260px;' }, [
-    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 1장 제거)'),
-    v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'),
-    h('div', { className: 'zone-label' }, `메인덱 (${v.mainN}/50)`),
-    h('div', { className: 'stack-list' }, draftMainList),
-    h('div', { className: 'zone-label' }, `디지타마덱 (${v.digitamaN}/5)`),
-    h('div', { className: 'stack-list' }, draftDigitamaList),
+    h('div', { className: 'section-title' }, '내 덱 (카드를 탭하면 미리보기 · ＋/－ 수량 · ✕ 전부 제거)'),
+    els.deckErrors, sortSelDeck, els.mainLbl, els.mainList, els.digLbl, els.digList,
     h('div', { className: 'actions-row' }, [nameInput, h('button', { className: 'primary', onClick: () => {
-      if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; renderDeckBuilderScreen(); return; }
+      if (!dbSavedName.trim()) { dbLastError = '덱 이름을 입력하세요'; dbRefreshDeck(); return; }
       // 1-4-1: an illegal deck (not exactly 50 / >5 digitama / over the copy limit) cannot be saved.
       const legal = DB.validate(dbDraft);
-      if (!legal.ok) { dbLastError = '저장 불가 — ' + legal.errors.join(' / '); renderDeckBuilderScreen(); return; }
+      if (!legal.ok) { dbLastError = '저장 불가 — ' + legal.errors.join(' / '); dbRefreshDeck(); return; }
       dbLastError = '';
       const all = DB.loadSavedDecks();
       all[dbSavedName.trim()] = DB.toDeckDefRecord({ ...dbDraft, name: dbSavedName.trim() });
       DB.saveSavedDecks(all);
-      renderDeckBuilderScreen();
+      dbRefreshDeck();
     } }, '저장')]),
-    Object.keys(saved).length ? h('div', {}, [
-      h('div', { className: 'zone-label' }, '저장된 덱'),
-      ...Object.keys(saved).map(name => h('div', { className: 'actions-row' }, [
-        h('span', {}, name),
-        h('button', { onClick: () => { dbDraft = { name, main: { ...saved[name].main }, digitama: { ...saved[name].digitama } }; dbSavedName = name; renderDeckBuilderScreen(); } }, '불러오기'),
-        h('button', { className: 'danger', onClick: () => { delete saved[name]; DB.saveSavedDecks(saved); renderDeckBuilderScreen(); } }, '삭제'),
-      ])),
-    ]) : null,
-    h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; renderDeckBuilderScreen(); } }, '새로 만들기(초기화)'),
+    els.saved,
+    h('div', { className: 'actions-row' }, [
+      h('button', { className: 'primary', onClick: () => openDeckImport() }, '📋 덱 가져오기 (붙여넣기)'),
+      h('button', { onClick: () => { const t = deckToText(dbDraft, S); if (!t) { dbLastError = '내보낼 카드가 없습니다'; dbRefreshDeck(); return; } (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => { dbLastError = ''; showToast('덱 리스트를 복사했습니다'); }).catch(() => { openDeckImport(t); }); } }, '덱 복사(내보내기)'),
+      h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; dbLastError = ''; dbRefreshDeck(); } }, '새로 만들기(초기화)'),
+    ]),
+    dbDA.el,
   ]);
 
-  app.appendChild(h('div', { className: 'board' }, [
-    h('div', { className: 'player-panel' }, [filterRow, cardGrid, loadMore]),
+  els.board = h('div', { className: 'board' }, [
+    h('div', { className: 'player-panel db-left' }, [searchRow, barRow, els.panel, els.err, els.grid, els.more]),
     rightCol,
-  ]));
+  ]);
+  app.appendChild(els.board);
+  els.preview = h('div', { id: 'db-preview', className: 'db-preview', style: 'display:none' });
+  app.appendChild(els.preview);
 
-  const dbBoard = app.querySelector('.board');
-  if (dbBoard && prevDbScroll) dbBoard.scrollTop = prevDbScroll;
-  if (wasSearchFocused) {
-    const freshInput = [...app.querySelectorAll('input')].find(i => i.placeholder === '이름/카드번호 검색');
-    if (freshInput) { freshInput.focus(); freshInput.setSelectionRange(prevCursor, prevCursor); }
+  if (!dbKeyBound) {
+    dbKeyBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (!dbEls || !dbEls.board.isConnected || !dbPreview) return;
+      if (e.key === 'Escape') { dbPreview = null; dbRefreshPreview(); return; }
+      const t = e.target && e.target.tagName;
+      if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA') return;
+      if (e.key === 'ArrowLeft') dbStepPreview(-1); else if (e.key === 'ArrowRight') dbStepPreview(1);
+    });
   }
+
+  dbRefreshDeck();
+  if (prevScroll) els.board.scrollTop = prevScroll;
+}
+
+function dbUpdateBar() {
+  if (!dbEls) return;
+  const n = DBS.activeFilterCount(dbFilter);
+  dbEls.toggle.textContent = `필터 ${dbPanelOpen ? '▴' : '▾'}${n ? ` (${n})` : ''}`;
+  dbEls.count.textContent = `${dbMatched.length}장`;
+}
+
+function dbTile(id) {
+  const have = DB.copiesInDeck(dbDraft, id);
+  const chip = cardChip(id, {
+    showId: true,
+    selected: have > 0,
+    deckCount: have || undefined,
+    art: dbArtUrl(id), parBadge: !!dbArtKey(id), parCount: (S.PARALLELS[id] || []).length || undefined,
+    onClick: () => {
+      if (dbLP.fired) { dbLP.fired = false; return; } // long-press already added
+      const now = Date.now();
+      if (dbLastTap.id === id && now - dbLastTap.t < 350) { dbLastTap = { id: '', t: 0 }; dbAdd(id); return; } // double-click = add
+      dbLastTap = { id, t: now };
+      dbOpenPreview(id);
+    },
+  });
+  chip.style.position = 'relative';
+  chip.appendChild(h('button', { className: 'db-quick', title: '덱에 1장 추가', onClick: (e) => { e.stopPropagation(); dbAdd(id); } }, '＋'));
+  chip.addEventListener('pointerdown', () => { dbLP.fired = false; clearTimeout(dbLP.timer); dbLP.timer = setTimeout(() => { dbLP.fired = true; dbAdd(id); }, 600); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) chip.addEventListener(ev, () => clearTimeout(dbLP.timer));
+  return chip;
+}
+
+function dbRefreshResults() {
+  if (!dbEls) return;
+  const r = DBS.runSearch(dbFilter, S.CARDS, dbIndex, dbCtx());
+  dbMatched = r.ids; dbTerms = r.terms;
+  if (dbIdFilter) dbMatched = Object.keys(S.CARDS).filter(id => dbIdFilter.ids.has(id)); // checkup warning: only the related cards (other filters ignored)
+  const shown = dbMatched.slice(0, dbFilter.pageSize);
+  dbEls.grid.replaceChildren(...(dbIdFilter ? [h('div', { className: 'dt-idfilter' }, [`🩺 점검 항목 「${dbIdFilter.label}」 관련 카드만 표시 중 (${dbMatched.length}장) `, h('button', { onClick: () => { dbIdFilter = null; dbRefreshResults(); } }, '해제 ✕')])] : []), ...shown.map(dbTile));
+  dbEls.more.replaceChildren(dbMatched.length > shown.length
+    ? h('button', { onClick: () => { dbFilter.pageSize += 60; dbRefreshResults(); } }, `더 보기 (${dbMatched.length - shown.length}장 더 있음)`)
+    : h('span', { className: 'meta' }, dbMatched.length ? `총 ${dbMatched.length}장 검색됨` : '검색 결과가 없습니다'));
+  dbUpdateBar();
+  if (dbPreview) dbRefreshPreview(); // ◀ ▶ position / highlight follow the new results
+}
+
+function dbRefreshDeck() {
+  if (!dbEls) return;
+  const els = dbEls;
+  const v = DB.validate(dbDraft);
+  els.mainN.textContent = `메인 ${v.mainN}/50`;
+  els.digN.textContent = `디지타마 ${v.digitamaN}/5`;
+  els.digN.style.color = v.digitamaN > 5 ? 'var(--danger)' : '';
+  els.deckErrors.replaceChildren(v.errors.length ? h('div', { className: 'effect-box' }, v.errors.join(' / ')) : h('div', { className: 'meta', style: 'color:var(--ok)' }, '유효한 덱 구성입니다'));
+  els.mainLbl.textContent = `메인덱 (${v.mainN}/50)`;
+  els.digLbl.textContent = `디지타마덱 (${v.digitamaN}/5)`;
+  els.mainList.replaceChildren(...DT.sortEntries(Object.entries(dbDraft.main), dbDeckSort, S.card).map(([id, n]) => deckLineItem(id, n)));
+  els.digList.replaceChildren(...DT.sortEntries(Object.entries(dbDraft.digitama), dbDeckSort, S.card).map(([id, n]) => deckLineItem(id, n)));
+  els.err.textContent = dbLastError;
+  if (document.activeElement !== els.name) els.name.value = dbSavedName;
+  if (dbDA) { dbDA.renderSaved(els.saved); dbDA.refresh(); } // saved-deck manager + live stats/checkup panels
+  dbRefreshResults(); // tile copy counts, in-deck / at-limit filters
 }
 
 function deckLineItem(id, n) {
-  return cardChip(id, {
-    deckCount: n,
-    onClick: () => { DB.removeCard(dbDraft, id); renderDeckBuilderScreen(); },
-  });
+  const chip = cardChip(id, { showId: true, deckCount: n, art: dbArtUrl(id), parBadge: !!dbArtKey(id), onClick: () => dbOpenPreview(id) });
+  chip.style.position = 'relative';
+  chip.appendChild(h('button', { className: 'db-quick db-minus', title: '덱에서 1장 빼기', onClick: (e) => { e.stopPropagation(); dbRemove(id); } }, '－'));
+  const ctl = h('div', { className: 'dt-line-ctl' }, [
+    h('button', { title: '1장 추가', onClick: () => dbAdd(id) }, '＋'),
+    h('button', { title: '1장 빼기', onClick: () => dbRemove(id) }, '－'),
+    h('button', { className: 'danger', title: '이 카드 전부 제거', onClick: () => { DT.setCount(dbDraft, id, 0, dbDA.env); dbLastError = ''; dbRefreshDeck(); } }, '✕'),
+  ]);
+  return h('div', { className: 'dt-line' }, [chip, ctl]);
+}
+
+// ---- preview panel (right side on desktop, bottom sheet on phones) ----
+function dbHl(text) { return DBS.splitHighlight(text, dbTerms).map(p => p.hit ? h('mark', {}, p.t) : p.t); }
+function dbArtPicker(id, c) {
+  const vars = S.PARALLELS[id] || [];
+  if (!vars.length) return null;
+  const cur = dbArtKey(id);
+  const opt = (key, url, label) => h('button', { className: 'db-art' + (cur === key ? ' on' : ''), title: label + ' — 이 덱에서 사용할 일러스트', onClick: () => { DB.setArt(dbDraft, id, key); dbRefreshDeck(); } }, [
+    artImg(url, c.imgUrl, { alt: label, loading: 'lazy' }), h('span', {}, label)]);
+  return h('div', { className: 'db-art-row' }, [
+    h('div', { className: 'zone-label' }, `일러스트 선택 (패러렐 ${vars.length}종 · 게임 규칙상 동일한 카드)`),
+    h('div', { className: 'db-art-list' }, [opt(null, c.imgUrl, `일반 ${c.rarity || ''}`.trim()),
+      ...vars.map((v, i) => opt(v.key, v.imgUrl, `패러렐${vars.length > 1 ? i + 1 : ''} ${v.rarity || ''}`.trim()))]),
+  ]);
+}
+function dbRefreshPreview() {
+  if (!dbEls) return;
+  const box = dbEls.preview;
+  dbEls.board.classList.toggle('db-preview-open', !!dbPreview);
+  if (!dbPreview || !S.CARDS[dbPreview]) { dbPreview = null; box.style.display = 'none'; box.replaceChildren(); return; }
+  const id = dbPreview, c = S.card(id);
+  const have = DB.copiesInDeck(dbDraft, id), max = DB.maxCopiesFor(id);
+  const zone = c.category === 'digitama' ? 'digitama' : 'main';
+  const zoneN = DB.totalCount(dbDraft[zone]), zoneMax = zone === 'digitama' ? 5 : 50;
+  const inZone = dbDraft[zone][id] || 0;
+  const canAdd = have < max && zoneN < zoneMax;
+  const idx = dbMatched.indexOf(id);
+  const CAT_KO = { digimon: '디지몬', tamer: '테이머', option: '옵션', digitama: '디지타마' };
+  const COL_KO = Object.fromEntries(DBS.COLORS.map(([k, ko]) => [k, ko]));
+  const line = (k, val) => (val == null || val === '' ? null : h('div', { className: 'db-pv-line' }, [h('b', {}, k + ' '), val]));
+  const textBox = (label, text) => (text ? h('div', { className: 'db-pv-box' }, [h('div', { className: 'zone-label' }, label), h('div', { className: 'db-pv-text' }, dbHl(text))]) : null);
+  const all = (c.effectKo || '') + '\n' + (c.inheritedKo || '');
+  const linesOf = (re) => all.split('\n').filter(l => re.test(l)).join('\n');
+  const security = linesOf(/^\s*【시큐리티】/);
+  const linkish = linesOf(/링크|크로스|조그레스|Xros|Jogress|링크/i);
+  const evo = c.evoNormal ? `${c.evoNormal.conditionText || ('Lv.' + c.evoNormal.level)} → 진화 코스트 ${c.evoNormal.cost}` : null;
+  box.replaceChildren(
+    h('div', { className: 'db-pv-head' }, [
+      h('button', { disabled: idx <= 0, title: '이전 카드 (←)', onClick: () => dbStepPreview(-1) }, '◀'),
+      h('span', { className: 'meta' }, idx >= 0 ? `${idx + 1} / ${dbMatched.length}` : '검색 결과 밖'),
+      h('button', { disabled: idx === -1 || idx >= dbMatched.length - 1, title: '다음 카드 (→)', onClick: () => dbStepPreview(1) }, '▶'),
+      h('button', { className: 'db-pv-close', title: '닫기 (Esc)', onClick: () => { dbPreview = null; dbRefreshPreview(); } }, '✕'),
+    ]),
+    h('div', { className: 'db-pv-body' }, [
+      c.imgUrl ? artImg(dbArtUrl(id), c.imgUrl, { className: 'db-pv-img', alt: c.nameKo }) : null,
+      dbArtPicker(id, c),
+      h('div', { className: 'db-pv-name' }, dbHl(c.nameDisplayKo || c.nameKo)),
+      h('div', { className: 'meta' }, [c.id, ' · ', CAT_KO[c.category] || c.category, c.rarity ? ` · ${c.rarity}` : '', c.setName ? ` · ${c.setName}` : '']),
+      line('Lv', c.level != null ? String(c.level) : null),
+      line(c.category === 'option' ? '사용 코스트' : '등장 코스트', c.cost != null ? String(c.cost) : null),
+      line('DP', c.dp != null ? String(c.dp) : null),
+      line('색', (c.colors || []).map(k => COL_KO[k] || k).join(' / ')),
+      line('특징', [...(c.types || []), c.attribute, c.form && /^[가-힣]/.test(c.form) ? c.form : null].filter(Boolean).join(' / ')),
+      line('진화', evo),
+      textBox('효과', c.effectKo),
+      textBox('진화원 효과', c.inheritedKo),
+      textBox('시큐리티 효과', security),
+      textBox('링크 / 크로스 / 조그레스', linkish),
+    ]),
+    h('div', { className: 'db-pv-foot' }, [
+      h('span', {}, `덱 ${inZone}장 (동일 넘버 ${have}/${max}) · ${zone === 'digitama' ? '디지타마' : '메인'} ${zoneN}/${zoneMax}`),
+      h('button', { className: 'primary', disabled: !canAdd, title: canAdd ? '' : (have >= max ? `같은 카드 넘버 최대 ${max}장` : '덱이 가득 찼습니다'), onClick: () => dbAdd(id) }, '＋ 덱에 추가'),
+      h('button', { disabled: inZone <= 0, onClick: () => dbRemove(id) }, '－ 덱에서 빼기'),
+    ]),
+  );
+  box.style.display = '';
 }
 
 let mulliganDecided = { p1: false, p2: false };
@@ -228,6 +651,9 @@ let mulliganDecided = { p1: false, p2: false };
 // the other player clicks "이 핸드 유지" after you already mulliganed).
 let mulliganDealFlash = { p1: false, p2: false };
 
+let lastStartPick = null;
+// 🎲 restart the same decks with a fresh shuffle / opening hand (solo practice)
+function restartHand() { if (lastStartPick) setupPick = { ...lastStartPick }; if (!setupPick.p1 || !setupPick.p2) { state = null; render(); return; } startNewGame(); }
 function startNewGame() {
   // 1-4-1: refuse to start with an illegal deck (previously-saved decks may predate the save check).
   for (const p of ['p1', 'p2']) {
@@ -237,6 +663,8 @@ function startNewGame() {
     if (!v.ok) { setupError = `${p.toUpperCase()} 덱 "${d?.name || setupPick[p]}"은(는) 게임에 사용할 수 없습니다: ` + v.errors.join(' / '); renderSetup(); return; }
   }
   setupError = '';
+  lastStartPick = { p1: setupPick.p1, p2: setupPick.p2 };
+  PR.newGameStarted();
   sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' };
   state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
   E.drawOpeningHand(state, 'p1');
@@ -244,19 +672,21 @@ function startNewGame() {
   mulliganDecided = { p1: false, p2: false };
   mulliganDealFlash = { p1: true, p2: true };
   state.firstPlayer = E.coinFlip(); // 5-2-1-3: first player is decided BEFORE hands/mulligans (rock-paper-scissors); 5-2-1-4: mulligan goes first player first
+  cpuStart(); // vs-CPU mode: P2 is played by src/cpu.js (its opening hand is hidden and decided automatically)
   renderMulliganStage();
 }
 
 function renderMulliganStage() {
   app.innerHTML = '';
-  app.appendChild(h('div', { className: 'topbar' }, [h('b', {}, '오프닝 핸드 확인 / 멀리건')]));
+  app.appendChild(h('div', { className: 'topbar' }, [h('b', {}, '오프닝 핸드 확인 / 멀리건'), h('button', { className: 'pr-btn', title: '같은 덱으로 새로 셔플해 오프닝 핸드부터 다시 (혼자 연습용)', onClick: () => restartHand() }, '🎲 시작 핸드 다시 뽑기')]));
   const panels = ['p1', 'p2'].map(p => {
     const pl = state.players[p];
     const justDealt = mulliganDealFlash[p];
     mulliganDealFlash[p] = false;
     return h('div', { className: 'player-panel' }, [
       h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
-      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => cardChip(id, {}))),
+      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => (isCpuSide(p) && !CPU_CFG.reveal) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, { owner: p }))),
+      isCpuSide(p) ? h('div', { className: 'actions-row' }, [h('span', {}, mulliganDecided[p] ? ('🤖 CPU 결정 완료 ✔' + (state.cpuMulled ? ' (멀리건함)' : ' (핸드 유지)')) : '🤖 CPU가 결정 중…')]) :
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
@@ -273,6 +703,7 @@ function renderMulliganStage() {
     ]);
   });
   app.appendChild(h('div', { className: 'board' }, panels));
+  cpuMulliganMaybe();
 }
 
 function afterMulliganCheck() {
@@ -298,6 +729,7 @@ function settleTurnEndIfIdle() {
   if (state.turnEnding && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
 }
 function blockIfBusy() {
+  if (cpuHumanLocked()) return true; // vs CPU: nothing on the CPU's turn is the human's to do (silently ignored)
   if (!busy()) return false;
   S.log(state, '해결 중인 처리(효과/선택/어택)가 남아 있어 지금은 행동할 수 없음 (룰 6-5-1)');
   render();
@@ -331,6 +763,7 @@ function render() {
   if (!state) return renderSetup();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();
+  if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
   E.autoAdvance(state);
   autoRunMandatoryPending();
   // 6-1-4: once memory sits on the opponent's side and there's genuinely
@@ -353,11 +786,17 @@ function render() {
   const prevModal = app.querySelector('.modal-panel');
   const prevModalScroll = prevModal ? prevModal.scrollTop : 0;
   app.innerHTML = '';
+  jgCache.clear();
   app.classList.toggle('log-open', panelsOpen.log);
   app.classList.toggle('sheet-open', !!(sel.hand || sel.stack));
+  try { fxSync(); } catch (e) { console.warn('fxSync', e); } // effect-visibility bookkeeping (queue, ghosts, markers)
   app.appendChild(renderTopbar());
+  { const cpuBar = renderCpuBar(); if (cpuBar) app.appendChild(cpuBar); } // vs CPU: status / pause / speed
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
+  const breedBar = renderBreedingBar();
+  app.classList.toggle('breeding-bar-on', !!breedBar);
+  if (breedBar) app.appendChild(breedBar);
   app.appendChild(renderLog());
   const modal = renderModal();
   if (modal) app.appendChild(modal);
@@ -367,6 +806,10 @@ function render() {
   if (newModal && prevModalScroll) newModal.scrollTop = prevModalScroll;
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
+  app.appendChild(renderFxLayer());
+  try { fxFieldRender(state); } catch (e) { console.warn('fxField', e); } // on-field annotations: re-anchor to the rebuilt tiles
+  fxEmit('render', { state }); // VFX overlay: snapshot tile geometry, watch battle log lines, play queued effect animations
+  PR.afterRender(); // undo timeline (stable points), auto-save, cheat drawer
 }
 
 // deleteStack() (rule-check DP<=0, battle losses, 【소멸】 effects — every
@@ -375,9 +818,10 @@ function render() {
 // happened, similar to pl.pendingDrawFlash.
 function renderVanishToast() {
   const names = state.pendingVanishFlash || [];
-  state.pendingVanishFlash = [];
+  const srcs = [...new Set(state.pendingVanishSrc || [])];
+  state.pendingVanishFlash = []; state.pendingVanishSrc = [];
   if (!names.length) return null;
-  return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}`);
+  return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}` + (srcs.length ? `\n원인: ${srcs.join(', ')}` : ''));
 }
 
 function renderTopbar() {
@@ -392,6 +836,7 @@ function renderTopbar() {
     return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row' }, [
       h('b', {}, state.winner === 'draw' ? '게임 종료 — 무승부 (영구 순환, 18-3-2)' : `게임 종료 — 승자: ${state.winner}`),
       h('button', { className: 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+      PR.topbarButtons(),
     ])]);
   }
   const mainRow = h('div', { className: 'topbar-row' }, [
@@ -400,12 +845,13 @@ function renderTopbar() {
     h('span', {}, `페이즈: ${PHASE_LABEL[state.phase] || state.phase}`),
     bar,
     h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
-    h('button', { disabled: state.phase === 'main', title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
-      className: 'danger', disabled: state.phase !== 'main',
+      className: 'danger', disabled: state.phase !== 'main' || cpuTurnView(),
       onClick: () => { if (blockIfBusy()) return; E.declarePass(state); render(); },
     }, ['패스', h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
-    ...['p1', 'p2'].map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+    PR.topbarButtons(),
+    ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
   ]);
   const rows = [mainRow];
   // Selected-card info (including 진화원효과) lives here — part of the
@@ -414,17 +860,11 @@ function renderTopbar() {
   const infoText = describeSelectedEffects();
   if (infoText) {
     const selStack = findStack(sel.stack);
-    const canArmFusion = sel.stack && !sel.stack2 && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer
-      && selStack && !selStack.suspended && S.card(selStack.cardId).category === 'digimon';
     rows.push(h('div', { className: 'topbar-info' }, [
       h('div', { className: 'topbar-info-text', onClick: (e) => e.currentTarget.classList.toggle('open') }, infoText),
       h('div', { className: 'info-actions' }, [
         ...selectionActionButtons(),
-        canArmFusion && !sel.armFusion
-          ? h('button', { onClick: () => { sel.armFusion = true; render(); } }, '🔗 조그레스 상대 선택')
-          : null,
-        sel.armFusion ? h('span', { className: 'meta' }, '다른 내 디지몬을 탭하세요') : null,
-        h('button', { className: 'info-close', onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; sel.armFusion = false; render(); } }, '✕'),
+        h('button', { className: 'info-close', onClick: () => { sel.hand = null; sel.stack = null; sel.stack2 = null; render(); } }, '✕'),
       ]),
     ]));
   }
@@ -438,6 +878,12 @@ function selectionActionButtons() {
   if (sel.hand && handPlayable(sel.hand.player)) {
     const p = sel.hand.player, cat = S.card(state.players[p].hand[sel.hand.idx]).category;
     out.push(h('button', { className: 'primary', onClick: () => { const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi); } }, cat === 'option' ? '▶ 사용' : '▶ 등장'));
+    // 조그레스: a hand card with a 〔조그레스〕 line gets its own obvious action (a disabled-looking one still explains itself when tapped)
+    const jinfo = cat === 'digimon' ? jogressInfo(p, state.players[p].hand[sel.hand.idx]) : null;
+    if (jinfo) {
+      const hc = state.players[p].hand[sel.hand.idx], n = jinfo.pairs.length;
+      out.push(h('button', { className: 'jg-btn' + (n ? '' : ' jg-none'), title: `〔조그레스〕 ${jinfo.cond}`, onClick: () => openJogress(p, hc, null) }, n ? `🧬 조그레스 진화 (${n}조합)` : '🧬 조그레스 (재료 없음)'));
+    }
   }
   const st = findStack(sel.stack);
   if (st && sel.stack.player === state.activePlayer && state.phase === 'main') {
@@ -446,6 +892,13 @@ function selectionActionButtons() {
       let can = false;
       try { can = S.canAttackPlayer(state, p, st.uid) || S.legalDigimonTargets(state, p, st.uid).length > 0; } catch (e) { can = false; }
       out.push(h('button', { className: 'danger', disabled: !can, title: '공격 대상 목록을 엽니다 (또는 보드의 빨간 테두리 대상을 직접 탭)', onClick: () => { const u = st.uid; sel.stack = null; attackFlow(p, u); } }, '⚔ 공격'));
+    }
+    if (sel.stack.zone === 'battle' && S.card(st.cardId).category === 'digimon') { // board-first start: which hand cards could fuse this Digimon?
+      const cands = [...new Set(state.players[p].hand)].filter(id => jogressInfo(p, id)?.pairs.some(pr => pr.top.uid === st.uid || pr.bottom.uid === st.uid));
+      if (cands.length) {
+        out.push(h('span', { className: 'jg-hint' }, `🧬 조그레스 가능: ${cands.map(id => S.card(id).nameDisplayKo || S.card(id).nameKo).join(', ')}`));
+        for (const id of cands) out.push(h('button', { className: 'jg-btn', onClick: () => openJogress(p, id, st.uid) }, `🧬 ${S.card(id).nameDisplayKo || S.card(id).nameKo}`));
+      }
     }
     for (const a of stackActionList(p, st, sel.stack.zone)) out.push(h('button', { disabled: a.disabled, title: a.title, onClick: () => a.run() }, a.label));
   }
@@ -459,6 +912,7 @@ function cardChip(cardId, opts = {}) {
   if (opts.suspended) cls.push('suspended');
   if (opts.attackable) cls.push('attackable');
   if (opts.target) cls.push('tap-target');
+  if (opts.jogress) cls.push('jogress-mat');
   if (opts.justDrawn) cls.push('just-drawn');
   // Show the LIVE effective DP (temp/inherited/turn-conditional modifiers
   // all folded in — see S.effectiveDP) rather than always the static
@@ -471,7 +925,7 @@ function cardChip(cardId, opts = {}) {
     ? h('span', { className: dpModified ? (opts.effectiveDp > c.dp ? 'dp-buffed' : 'dp-debuffed') : '' },
         dpModified ? `DP${c.dp}→${opts.effectiveDp}` : `DP${c.dp}`)
     : null;
-  const metaParts = [c.level ? `Lv.${c.level}` : c.category, dpNode, c.cost != null ? `C${c.cost}` : null].filter(x => x != null);
+  const metaParts = [c.level ? `Lv.${c.level}` : c.category, dpNode, opts.showId ? cardId : (c.cost != null ? `C${c.cost}` : null)].filter(x => x != null); // 덱 빌더: 'C7' 대신 카드 번호
   const metaChildren = metaParts.flatMap((part, i) => i === 0 ? [part] : [' · ', part]);
   const attrs = { className: cls.join(' '), onClick: opts.onClick };
   if (opts.draggable) {
@@ -484,8 +938,11 @@ function cardChip(cardId, opts = {}) {
     attrs.ondragleave = (e) => { e.currentTarget.classList.remove('drop-hover'); };
     attrs.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drop-hover'); opts.onDrop(dragData); };
   }
+  const artSrc = opts.art || (opts.owner ? S.artUrl(state, opts.owner, cardId) : null) || c.imgUrl;
   return h('div', attrs, [
-    c.imgUrl ? h('img', { src: c.imgUrl, alt: c.nameKo, loading: 'lazy' }) : null,
+    artSrc ? artImg(artSrc, c.imgUrl, { alt: c.nameKo, loading: 'lazy' }) : null,
+    opts.parBadge ? h('span', { className: 'par-badge', title: '패러렐(대체 일러스트)' }, '패러렐') : null,
+    opts.parCount ? h('span', { className: 'par-count', title: `패러렐 ${opts.parCount}종` }, `🎨×${opts.parCount}`) : null,
     h('div', { className: 'nm' }, c.nameDisplayKo || c.nameKo),
     h('div', { className: 'meta' }, metaChildren),
     opts.keywordBadges?.length ? h('div', { className: 'keyword-badges' }, opts.keywordBadges.map(k => h('span', { className: 'kw-badge' }, k))) : null,
@@ -522,7 +979,6 @@ function activeKeywordBadges(stack) {
 // Shared by the desktop drop handler AND the tap flow (doEvolve/doFuse): a hand card (or, for attacks, an
 // opposing stack) being "dropped" on `stack`. Everything the drop did lives here so a tap does exactly the same.
 async function handleStackDrop(p, stack, zoneKind, drag) {
-  const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
   if (!drag) return;
   // An opposing battle stack dropped directly onto this one is a direct
   // attack declaration on THIS specific digimon — no separate target-
@@ -534,32 +990,34 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
   }
   if (drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main' || S.card(drag.cardId).category !== 'digimon') return;
   if (blockIfBusy()) return;
-  // Dropping the hand card on the SECOND of two selected battle stacks
-  // is how DNA/Jogress fusion is triggered — no separate button needed,
-  // the two-click stack1+stack2 selection already signals that intent.
-  if (isSecondSelected && sel.stack && sel.stack.player === p && sel.stack.uid !== stack.uid) {
-    const stA = findStack(sel.stack);
-    const jr = stA ? S.canJogress(stA, stack, drag.cardId) : { ok: true };
-    if (!jr.ok) {
-      S.log(state, `${p} ${S.card(drag.cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stack.cardId).nameKo} (${jr.reason})`);
-      dragData = null; render();
+  // 조그레스 (8-2): a hand card with a printed 〔조그레스〕 line dropped/tapped on a battle Digimon opens the jogress modal
+  // (pairs containing that Digimon pre-selected) — or explains why it can't (or asks which method if normal evolution also fits).
+  if (zoneKind === 'battle' && S.parseJogress(drag.cardId)) {
+    jgCache.clear();
+    const info = jogressInfo(p, drag.cardId);
+    const withStack = !!info && info.pairs.some(pr => pr.top.uid === stack.uid || pr.bottom.uid === stack.uid);
+    let canNormal = false;
+    try {
+      const r0 = S.evolveTargetRestriction(state, p, stack), x0 = S.evoExtraArg(state, p, stack);
+      canNormal = ['digimon', 'tamer'].includes(S.card(stack.cardId).category) && (E.evolutionMethods(stack.cardId, drag.cardId, x0, r0, { state, p, stack }).length > 0 || E.canEvolveAny(stack.cardId, drag.cardId, x0, r0).ok);
+    } catch (e) { canNormal = false; }
+    if (withStack) {
+      if (canNormal) {
+        const pick = await ctxChoose('multipleChoice', { player: p, prompt: `${S.card(drag.cardId).nameKo}: 일반 진화와 조그레스 진화가 모두 가능합니다. 어느 쪽으로 진화하시겠습니까?`, options: ['일반 진화', '🧬 조그레스 진화', '취소'] });
+        if (pick === 1) { dragData = null; openJogress(p, drag.cardId, stack.uid); return; }
+        if (pick !== 0) { dragData = null; render(); return; }
+        // pick === 0: fall through to normal evolution
+      } else { dragData = null; openJogress(p, drag.cardId, stack.uid); return; }
+    } else if (!canNormal) {
+      dragData = null; render(); showToast(jogressReason(p, drag.cardId));
       return;
     }
-    // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
-    const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
-    let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
-    if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, drag.cardId) + S.continuousEvoCostDiscount(state, p, stack, drag.cardId) + S.hookEvoCostDiscount(state, p, stack, drag.cardId));
-    if (!S.fuseStacks(state, p, sel.stack.uid, stack.uid, drag.cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
-    sel.stack = null; sel.stack2 = null;
-    E.checkAutoEndTurn(state);
-    dragData = null; render();
-    return;
   }
   // canEvolveAny checks evoNormal AND every special "〔진화〕 <이름/특징>"
   // line on the target — a failure here means NO printed condition
   // justifies this evolution, so the drop must be rejected outright
   // rather than silently let through for cost 0.
-  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
+  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category) && !(S.card(stack.cardId).category === 'tamer' && E.evolutionMethods(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), S.evolveTargetRestriction(state, p, stack), { state, p, stack }).length)) { S.log(state, `${p} 진화 거부: ${S.card(stack.cardId).nameKo}는 디지몬이 아님 (8-1-1)`); dragData = null; render(); return; }
   // 8-1-2-1 / 8-1-3-1: the PLAYER picks which way to evolve (every satisfied printed condition, 버스트 진화, 어플 합체, effect-granted alternatives).
   const evoRestr = S.evolveTargetRestriction(state, p, stack);
   const methods = E.evolutionMethods(stack.cardId, drag.cardId, S.evoExtraArg(state, p, stack), evoRestr, { state, p, stack });
@@ -609,6 +1067,21 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
     evoModDelta += absorb.delta;
   }
   const cost = Math.max(0, check.cost + evoModDelta);
+  if (method && method.id === 'tamer10') { // BT7-112: pay "패 또는 트래시에서 테이머/하이브리드체 카드 N장을 (원하는 순서대로) 덱 아래로 되돌린다" before digivolving
+    if (!S.canPayCost(state, cost)) { S.log(state, `${p} ${S.card(drag.cardId).nameKo} 진화 불가: 코스트 ${cost}를 지불할 수 없음`); S.restoreEvoCostMods(evoSnap); dragData = null; render(); return; }
+    const plR = state.players[p], okR = (id) => S.card(id).category === 'tamer' || (S.card(id).types || []).includes(method.returnTrait);
+    const elig = (z) => plR[z].map((id, i) => i).filter(i => okR(plR[z][i]) && !(z === 'hand' && plR.hand[i] === drag.cardId && i === plR.hand.indexOf(drag.cardId)));
+    for (let k = 0; k < method.returnN; k++) {
+      const zs = ['hand', 'trash'].filter(z => elig(z).length);
+      if (!zs.length) break;
+      let z = zs[0];
+      if (zs.length > 1) { const kz = await ctxChoose('multipleChoice', { player: p, prompt: `덱 아래로 되돌릴 카드 (${k + 1}/${method.returnN}) — 영역`, options: zs.map(x => (x === 'hand' ? '패' : '트래시')) }); z = zs[kz] || zs[0]; }
+      const ix = await ctxChoose('pickFromZoneIndex', { player: p, zone: z, eligibleIdxs: elig(z), prompt: `덱 아래로 되돌릴 테이머/하이브리드체 카드 (${k + 1}/${method.returnN}, 놓는 순서)` });
+      const [rid] = plR[z].splice(ix ?? elig(z)[0], 1);
+      plR.deck.push(rid);
+      S.log(state, `${p} ${S.card(rid).nameKo}을(를) 덱 아래로 되돌림 (${S.card(drag.cardId).nameKo} 진화 코스트)`);
+    }
+  }
   if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);
   dragData = null; render();
@@ -679,21 +1152,144 @@ function stackActionList(p, stack, zoneKind) {
   return out;
 }
 
-// Tap flow: with a hand card selected, which own stacks can it act on? 'fuse' = the 2nd selected DNA partner,
-// 'evolve' = every printed/granted evolution condition satisfied — the SAME legality functions handleStackDrop uses.
+// ---- 조그레스 (DNA 진화, 룰 8-2) UI ----
+// One modal ("X + Y → Z", every legal pair) is the single entry: opened from the info-panel button, from tapping/dropping the
+// hand card on a material, or from a selected material's action bar. Legality/cost come from the SAME S.canJogress /
+// S.previewEvoCostDelta the engine path (runJogress → S.fuseStacks) uses.
+let jogressModal = null; // { player, cardId, preUid, showAll } — UI only
+const jgCache = new Map(); // per-render memo of jogressInfo
+function showToast(msg) {
+  if (state) S.log(state, msg); // (the deck builder has no game state)
+  const el = h('div', { className: 'ui-toast', role: 'alert' }, msg);
+  app.appendChild(el);
+  setTimeout(() => el.remove(), Math.max(4200, readMs(msg, 3000, 12000)));
+}
+const jogressCond = (cardId) => { const l = (S.card(cardId).effectKo || '').split('\n').find(x => /〔조그레스〕/.test(x)); return l ? l.replace(/^.*?〔조그레스〕\s*/, '').trim() : ''; };
+// -> null (no printed jogress line / not a digimon) | { cond, pairs:[{top,bottom,base,delta,cost,ok}], restricted }
+function jogressInfo(p, cardId) {
+  const key = p + '|' + cardId;
+  if (jgCache.has(key)) return jgCache.get(key);
+  let out = null;
+  try {
+    const jg = S.card(cardId).category === 'digimon' ? S.parseJogress(cardId) : null;
+    if (jg) {
+      const bat = state.players[p].battle.filter(s => S.card(s.cardId).category === 'digimon');
+      const pairs = []; let restricted = null;
+      for (let i = 0; i < bat.length; i++) for (let j = i + 1; j < bat.length; j++) {
+        const a = bat[i], b = bat[j];
+        if (!S.canJogress(a, b, cardId).ok) continue;
+        const rr = [a, b].map(s => E.evoRestrictionCheck(cardId, S.evolveTargetRestriction(state, p, s))).find(r => !r.ok);
+        if (rr) { restricted = rr.reason; continue; }
+        // 8-2-2-2: the material written on the LEFT of the 〔조그레스〕 condition ends up on top (same rule as S.fuseStacks)
+        const ca = S.card(a.cardId), cb = S.card(b.cardId);
+        const aTop = (jg.left(ca) && jg.right(cb)) || !(jg.left(cb) && jg.right(ca));
+        const [top, bottom] = aTop ? [a, b] : [b, a];
+        const delta = S.previewEvoCostDelta(state, p, bottom, cardId);
+        const cost = Math.max(0, jg.cost + delta);
+        pairs.push({ top, bottom, base: jg.cost, delta, cost, ok: S.canPayCost(state, cost) });
+      }
+      out = { cond: jogressCond(cardId), pairs, restricted, matCount: bat.length };
+    }
+  } catch (e) { out = null; }
+  jgCache.set(key, out);
+  return out;
+}
+function jogressReason(p, cardId) {
+  const info = jogressInfo(p, cardId);
+  if (!info) return '이 카드에는 조그레스 조건이 없음';
+  if (info.restricted) return `조그레스 불가: ${info.restricted}`;
+  if (info.matCount < 2) return `재료 부족: 배틀 에어리어에 디지몬 2장이 필요함 (${info.cond})`;
+  return `재료가 조건에 맞지 않음: ${info.cond}`;
+}
+function jogressMatUids() { // own battle digimon that could be a material for the selected hand card
+  const out = new Set();
+  if (!sel.hand || sel.hand.player !== state.activePlayer || state.phase !== 'main' || busy()) return out;
+  const hc = state.players[sel.hand.player].hand[sel.hand.idx];
+  const info = hc != null ? jogressInfo(sel.hand.player, hc) : null;
+  if (info) for (const pr of info.pairs) { out.add(pr.top.uid); out.add(pr.bottom.uid); }
+  return out;
+}
+function openJogress(p, cardId, preUid) {
+  jgCache.clear();
+  if (blockIfBusy()) return;
+  if (p !== state.activePlayer || state.phase !== 'main') { render(); showToast('조그레스는 자신의 메인 페이즈에만 할 수 있음'); return; }
+  const info = jogressInfo(p, cardId);
+  if (!info || !info.pairs.length) { render(); showToast(jogressReason(p, cardId)); return; }
+  jogressModal = { player: p, cardId, preUid: preUid || null, showAll: false };
+  render();
+}
+// The one engine path (rule 8-2): validate → cost incl. evolve-cost modifiers (8-2-2-5) → S.fuseStacks (stacking order 8-2-2-2, attack cleanup).
+async function runJogress(p, uidA, uidB, cardId) {
+  const stA = findStack({ player: p, uid: uidA }), stB = findStack({ player: p, uid: uidB });
+  if (!stA || !stB || !state.players[p].hand.includes(cardId)) return false;
+  const jr = S.canJogress(stA, stB, cardId);
+  if (!jr.ok) { S.log(state, `${p} ${S.card(cardId).nameKo} 조그레스 거부: ${S.card(stA.cardId).nameKo}+${S.card(stB.cardId).nameKo} (${jr.reason})`); return false; }
+  // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
+  const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
+  let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
+  if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, stB, cardId) + S.hookEvoCostDiscount(state, p, stB, cardId));
+  const res = S.fuseStacks(state, p, uidA, uidB, cardId, jcost, 'hand');
+  if (!res) S.restoreEvoCostMods(evoSnap);
+  E.checkAutoEndTurn(state);
+  return !!res;
+}
+function renderJogressModal() {
+  const m = jogressModal;
+  if (!m) return null;
+  const p = m.player, info = jogressInfo(p, m.cardId);
+  if (!info || !info.pairs.length || state.activePlayer !== p || state.phase !== 'main' || !state.players[p].hand.includes(m.cardId)) { jogressModal = null; return null; }
+  const pre = m.preUid ? info.pairs.filter(x => x.top.uid === m.preUid || x.bottom.uid === m.preUid) : [];
+  const filtered = pre.length > 0 && pre.length < info.pairs.length && !m.showAll;
+  const shown = filtered ? pre : info.pairs;
+  const nm = (id) => S.card(id).nameDisplayKo || S.card(id).nameKo;
+  const memAfter = (cost) => Math.max(-10, Math.min(10, state.memory + (p === 'p1' ? -cost : cost)));
+  const fmt = (n) => (n > 0 ? '+' : '') + n;
+  const rows = shown.map(pr => {
+    const go = async () => {
+      if (blockIfBusy()) return;
+      jogressModal = null; sel.hand = null; sel.stack = null; sel.stack2 = null; dragData = null;
+      await runJogress(p, pr.top.uid, pr.bottom.uid, m.cardId);
+      jgCache.clear(); render();
+    };
+    return h('div', { className: 'jg-row' + (shown.length === 1 ? ' pre' : '') }, [
+      h('div', { className: 'jg-cards' }, [
+        cardChip(pr.top.cardId, { owner: p, sourcesCount: pr.top.sources.length }), h('span', { className: 'jg-op' }, '＋'),
+        cardChip(pr.bottom.cardId, { owner: p, sourcesCount: pr.bottom.sources.length }), h('span', { className: 'jg-op' }, '→'),
+        cardChip(m.cardId, { owner: p }),
+      ]),
+      h('div', { className: 'jg-cost' }, [
+        h('b', {}, `코스트 ${pr.cost}`), pr.delta ? ` (기본 ${pr.base}, 효과 ${fmt(pr.delta)})` : '',
+        ` · 메모리 ${fmt(state.memory)} → `, h('b', {}, fmt(memAfter(pr.cost))),
+      ]),
+      h('button', { className: 'primary jg-confirm', disabled: !pr.ok, onClick: go }, pr.ok ? `🧬 ${nm(pr.top.cardId)} + ${nm(pr.bottom.cardId)} → ${nm(m.cardId)}` : `메모리 부족 (코스트 ${pr.cost})`),
+    ]);
+  });
+  return h('div', { className: 'player-panel jg-modal' }, [
+    h('h3', {}, `🧬 조그레스 진화 → ${nm(m.cardId)}`),
+    h('div', { className: 'step-info' }, `조건: ${info.cond}${info.pairs.length > 1 ? ` — 가능한 조합 ${info.pairs.length}개, 하나를 고르세요` : ''}`),
+    ...rows,
+    h('div', { className: 'actions-row' }, [
+      filtered ? h('button', { onClick: () => { m.showAll = true; render(); } }, `다른 조합도 보기 (${info.pairs.length}개)`) : null,
+      h('button', { onClick: () => { jogressModal = null; render(); } }, '취소'),
+    ].filter(Boolean)),
+  ]);
+}
+
+// Tap flow: with a hand card selected, which own stacks can it act on? 'evolve' = every printed/granted evolution condition
+// satisfied — the SAME legality functions handleStackDrop uses; 'jogress' = a legal DNA material (opens the jogress modal).
 function handTargetKind(p, stack, zoneKind) {
   if (!sel.hand || sel.hand.player !== p || p !== state.activePlayer || state.phase !== 'main') return null;
   if (zoneKind !== 'battle' && zoneKind !== 'raising') return null;
   const hc = state.players[p].hand[sel.hand.idx];
   if (hc == null || S.card(hc).category !== 'digimon') return null;
-  if (sel.stack2 && sel.stack2.uid === stack.uid && sel.stack && sel.stack.player === p) return 'fuse';
-  if (!['digimon', 'digitama'].includes(S.card(stack.cardId).category)) return null;
+  if (!['digimon', 'digitama', 'tamer'].includes(S.card(stack.cardId).category)) return null; // (tamer: 「테이머를 Lv.N 디지몬으로서 취급하여 진화」 cards)
   try {
     const restr = S.evolveTargetRestriction(state, p, stack);
     const extra = S.evoExtraArg(state, p, stack);
     if (E.evolutionMethods(stack.cardId, hc, extra, restr, { state, p, stack }).length) return 'evolve';
-    return E.canEvolveAny(stack.cardId, hc, extra, restr).ok ? 'evolve' : null;
-  } catch (e) { return null; }
+    if (E.canEvolveAny(stack.cardId, hc, extra, restr).ok) return 'evolve';
+  } catch (e) { /* fall through */ }
+  return zoneKind === 'battle' && jogressMatUids().has(stack.uid) ? 'jogress' : null;
 }
 // Can the selected hand card be played/used from the hand right now (tap the battle area / the ▶ button)?
 function handPlayable(p) {
@@ -706,13 +1302,16 @@ function renderStack(p, stack, zoneKind, opts = {}) {
   const isSelected = sel.stack && sel.stack.uid === stack.uid;
   const isSecondSelected = sel.stack2 && sel.stack2.uid === stack.uid;
   const isOwnActiveBattle = p === state.activePlayer && zoneKind === 'battle' && !stack.suspended && state.phase === 'main';
+  const jgMat = zoneKind === 'battle' && p === state.activePlayer && jogressMatUids().has(stack.uid);
   const chip = cardChip(stack.cardId, {
+    owner: p,
     selected: isSelected || isSecondSelected,
     suspended: stack.suspended,
     sourcesCount: stack.sources.length,
     effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
-    keywordBadges: activeKeywordBadges(stack),
-    draggable: isOwnActiveBattle,
+    keywordBadges: [...activeKeywordBadges(stack), ...(jgMat ? ['🧬재료'] : [])],
+    jogress: jgMat,
+    draggable: isOwnActiveBattle && !isCpuSide(p),
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
     target: !!handTargetKind(p, stack, zoneKind),
@@ -722,33 +1321,31 @@ function renderStack(p, stack, zoneKind, opts = {}) {
       : (() => {
         // Tap flow: a hand card is selected and this stack is a legal evolve / DNA target → same action as dropping it here.
         const tk = handTargetKind(p, stack, zoneKind);
+        if (tk === 'jogress') { openJogress(p, state.players[p].hand[sel.hand.idx], stack.uid); return; }
+        if (!tk && sel.hand && sel.hand.player === p && zoneKind === 'battle' && p === state.activePlayer && state.phase === 'main' && jogressInfo(p, state.players[p].hand[sel.hand.idx])) {
+          render(); showToast(jogressReason(p, state.players[p].hand[sel.hand.idx])); return; // a jogress card is selected: explain instead of silently swapping the selection
+        }
         if (tk) {
-          const hi = sel.hand.idx; sel.hand = null; sel.armFusion = false;
-          if (tk !== 'fuse') { sel.stack = null; sel.stack2 = null; }
+          const hi = sel.hand.idx; sel.hand = null;
+          sel.stack = null; sel.stack2 = null;
           doEvolve(p, stack.uid, hi);
           return;
         }
-        if (sel.stack && sel.stack.uid === stack.uid) { sel.stack = null; sel.armFusion = false; }
-        // Only treat this click as picking a DNA/Jogress fusion partner when
-        // the "조그레스 상대 선택" button was explicitly used first — otherwise
-        // simply viewing one card's info, then clicking a different card to
-        // view ITS info instead, was silently arming the second fusion slot
-        // and hijacking the next click on that card.
-        else if (sel.armFusion && sel.stack && !sel.stack2 && sel.stack.player === p && zoneKind === 'battle' && sel.stack.uid !== stack.uid) {
-          sel.stack2 = { player: p, uid: stack.uid, zone: zoneKind };
-          sel.armFusion = false;
-        } else {
+        if (sel.stack && sel.stack.uid === stack.uid) sel.stack = null;
+        else {
           sel.stack = { player: p, uid: stack.uid, zone: zoneKind };
           sel.stack2 = null;
-          sel.armFusion = false;
-          sel.hand = null; // one thing selected at a time (a hand card is picked AFTER the DNA partners)
+          sel.hand = null; // one thing selected at a time
         }
         render();
       })),
   });
 
+  chip.dataset.fxp = p; chip.dataset.fxu = stack.uid; chip.dataset.fxn = S.card(stack.cardId).nameKo; chip.dataset.fxc = stack.cardId; // VFX overlay anchors
+  const fxHit = fxHitFor(p, stack);
+  if (fxHit) { chip.classList.add('fx-hit', fxHit); chip.appendChild(h('div', { className: 'fx-badge' }, '🎯')); }
   const acts = stackActionList(p, stack, zoneKind);
-  const actBtn = (a, cls) => h('button', { className: cls, title: a.title, disabled: a.disabled, onClick: (e) => { e.stopPropagation(); a.run(); } }, a.label);
+  const actBtn =(a, cls) => h('button', { className: cls, title: a.title, disabled: a.disabled, onClick: (e) => { e.stopPropagation(); a.run(); } }, a.label);
   const delayBtn = acts.find(a => a.kind === 'delay') ? actBtn(acts.find(a => a.kind === 'delay'), 'delay-btn') : null;
   const trainBtn = acts.find(a => a.kind === 'train') ? actBtn(acts.find(a => a.kind === 'train'), 'delay-btn train-btn') : null;
   const mainActs = acts.filter(a => a.kind === 'main');
@@ -810,8 +1407,10 @@ async function playFreshFromDrag(drag, p) {
     }
     // Card-specific "…등장할 때, <비용>하는 것으로 지불하는 등장 코스트 -N" abilities (HOOKS.playDiscount) — confirmed one by one.
     for (const o of S.hookPlayCostOptions(state, drag.player, drag.cardId)) { if (await askYN(drag.player, o.label)) discount += await o.apply(ctxChoose) || 0; }
+    { const hl = state.players[drag.player].hand; if (hl[drag.idx] !== drag.cardId) { const hi = hl.indexOf(drag.cardId); if (hi >= 0) drag.idx = hi; } } // a cost option that discards from the hand (EX9-018/043/064) shifts the played card's index
     if (category === 'digimon') discount += S.s1PlayDiscount(state, drag.player, drag.cardId); // shard1
     if (category === 'digimon') discount += S.handSelfPlayDiscount(state, drag.player, drag.cardId); // shard7: printed "이 카드가 등장할 때, …등장 코스트 -N"
+    if (category === 'digimon' && discount < 0 && S.isPlayCostLocked(state)) { S.log(state, `${drag.player} 등장 코스트 감소 무효 (서로는 지불하는 등장 코스트를 마이너스할 수 없다)`); discount = 0; } // ST13-08/EX7-015: covers every reduction source (hand self-discount, Xros, assembly, hook options)
     const cost = Math.max(0, (S.card(drag.cardId).cost || 0) + discount);
     if (!S.canPayCost(state, cost)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo} 등장 불가: 코스트 ${cost}를 지불할 수 없음 (룰 1-3-11-1)`); dragData = null; render(); return; }
     if (cost > 0) S.spendMemory(state, cost);
@@ -867,12 +1466,12 @@ function renderPlayerPanel(p) {
 
   // 6-4: hatch OR move, not both, per breeding phase visit
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
-  const pileRail = h('div', { className: 'pile-rail' }, [
+  const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
     pileChip('시큐리티', pl.security.length, 'pile-security'),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
     pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
-    panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, {})) : [h('span', {}, '(비어 있음)')]) : null,
+    panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, { owner: p })) : [h('span', {}, '(비어 있음)')]) : null,
   ].filter(Boolean));
 
   const canMoveRaising = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && pl.raising && S.canMoveFromRaising(pl.raising);
@@ -902,6 +1501,7 @@ function renderPlayerPanel(p) {
       ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hover'); playFreshFromDrag(dragData, p); },
     }, [
       ...pl.battle.map(s => renderStack(p, s, 'battle', legalClickTargets.has(s.uid) ? { attackTarget: { attackerP: sel.stack.player, attackerUid: sel.stack.uid } } : {})),
+      ...fxGhostNodes(p), // 소멸한 카드의 흔적 (효과 출처 표시, 눌러서 닫기)
       // Always show plenty of open slots to drop a new card into — at
       // least 3 empty ones, more if the area is still mostly empty —
       // instead of only appearing once and disappearing the moment the
@@ -918,8 +1518,9 @@ function renderPlayerPanel(p) {
   const justDrawnCount = pl.pendingDrawFlash || 0;
   pl.pendingDrawFlash = 0;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
-    zonePill([`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택')]),
+    zonePill(isCpuSide(p) && !CPU_CFG.reveal ? `🤖 CPU 핸드 (${pl.hand.length}장, 비공개)` : [`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택')]),
     ...(() => {
+      if (isCpuSide(p)) return []; // the CPU's hand abilities are its own business
       // "[패]【메인】"/"[트래시]【메인】" abilities printed on Digimon/Tamer cards (usable from hand / trash in the main phase)
       const abs = [...S.zoneMainAbilities(state, p, 'hand').map(a => ({ ...a, zone: 'hand' })), ...S.zoneMainAbilities(state, p, 'trash').map(a => ({ ...a, zone: 'trash' }))];
       return abs.length ? [h('div', { className: 'actions-row' }, abs.map(a => h('button', {
@@ -931,29 +1532,29 @@ function renderPlayerPanel(p) {
         },
       }, `⚡메인(${a.zone === 'hand' ? '패' : '트래시'}) ${S.card(a.cardId).nameKo}`)))] : [];
     })(),
-    h('div', { className: 'hand-list' }, pl.hand.map((id, i) => cardChip(id, {
+    h('div', { className: 'hand-list', 'data-fxhand': p }, pl.hand.map((id, i) => (isCpuSide(p) && !CPU_CFG.reveal) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, {
+      owner: p,
       selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
-      draggable: p === state.activePlayer && state.phase === 'main',
+      draggable: p === state.activePlayer && state.phase === 'main' && !isCpuSide(p),
       dragPayload: { kind: 'hand', player: p, idx: i, cardId: id },
       justDrawn: i >= pl.hand.length - justDrawnCount,
+      keywordBadges: (p === state.activePlayer && state.phase === 'main' && jogressInfo(p, id)?.pairs.length) ? ['🧬조그레스 가능'] : undefined,
       onClick: () => {
         sel.hand = (sel.hand && sel.hand.idx === i && sel.hand.player === p) ? null : { player: p, idx: i, cardId: id };
-        if (sel.hand && !sel.stack2) { sel.stack = null; sel.armFusion = false; } // tap flow: the hand card is the only selection unless DNA partners are already picked
+        if (sel.hand) sel.stack = null; // tap flow: the hand card is the only selection
         render();
       },
     }))),
   ]);
 
-  return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, [
-    header,
-    h('div', { className: 'field-row' }, [
-      h('div', { className: 'field-zones' }, [
-        h('div', { className: 'zone-row' }, [raisingZone, battleZone]),
-        handZone,
-      ]),
+  const fieldRow = h('div', { className: 'field-row' }, [
+      h('div', { className: 'field-zones' }, p === 'p2'
+        ? [handZone, h('div', { className: 'zone-row' }, [raisingZone, battleZone])] // 위쪽 플레이어: 패가 필드보다 위(테이블 맞은편에 앉은 배치)
+        : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
       pileRail,
-    ]),
-  ]);
+    ]);
+  // 위쪽 플레이어(P2)를 어택하는 대상 바는 메모리 게이지 바로 위(패널 맨 아래)에 둔다. 아래쪽 P1의 바는 게이지 바로 아래(패널 맨 위).
+  return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, p === 'p2' ? [fieldRow, header] : [header, fieldRow]);
 }
 
 // Horizontal memory-gauge number line (-10..0..+10 with a position marker),
@@ -1049,7 +1650,21 @@ async function ctxChoose(kind, payload) {
   // nothing to pick from: skip the "대상 없음 / 취소"-only prompt (same result as cancelling it)
   if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && !payload.uids.length && !payload.required) return null;
   return new Promise(resolve => {
-    state.uiChoice = { kind, payload, resolve: (val) => { state.uiChoice = null; resolve(val); render(); } };
+    // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
+    // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
+    const st = state;
+    const uc = { kind, payload, hold: false, by: cpuOn ? Cpu.deciderFor(st, kind, payload, { pendingOwner: cpuPendingOwner(), override: cpuActing ? CPU_P : null }) : null, resolve: (val) => { if (st.uiChoice === uc) st.uiChoice = null; resolve(val); if (state) render(); } };
+    st.uiChoice = uc;
+    try {
+      const rec = st._fxRec;
+      if (rec && rec.src && rec.src.kind === 'effect') fxEmit('effect', { rec, state: st }); // make sure this effect's banner is booked before we wait
+      uc.hold = fxGetMode() !== 'off';
+      if (uc.hold) {
+        const release = () => { if (uc.hold) { uc.hold = false; if (state === st && st.uiChoice === uc) render(); } };
+        fxWhenIdle().then(release, release);
+        setTimeout(release, 3500); // last-resort fallback: the choice must always become answerable
+      }
+    } catch (e) { uc.hold = false; }
     render();
   });
 }
@@ -1174,8 +1789,10 @@ async function runPendingScript(trigger, opts = {}) {
       return;
     }
   }
+  if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
+  if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text)) { // bespoke scripts cover the whole segment
     const dropped = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text) ? [] : Effects.droppedSentences(trigger.text); // bespoke scripts implement the whole text
@@ -1258,7 +1875,8 @@ function renderUiChoice() {
   const uc = state.uiChoice;
   if (!uc) return null;
   const { kind, payload, resolve } = uc;
-  const rows = [h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')];
+  const fxr = state._fxRec; // which card is asking (shown inline at the top of every choice modal)
+  const rows = [fxFieldOn() && fxr && fxr.src && fxr.src.kind === 'effect' ? h('div', { className: 'fxf-modal-src fxf-' + fxr.src.owner }, '📌 ' + fxSrcLabel(fxr)) : null, h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')].filter(Boolean);
 
   if (kind === 'pickPendingOrder') {
     payload.items.forEach((it, i) => rows.push(h('div', { className: 'actions-row' }, [
@@ -1276,7 +1894,7 @@ function renderUiChoice() {
       const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
       return { uid, cardId: st?.cardId };
     }).filter(x => x.cardId);
-    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { onClick: () => resolve(x.uid) }))));
+    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { owner: x.player, onClick: () => resolve(x.uid) }))));
     if (!(payload.required && cards.length)) rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소')); // 1-3-6: a required choice can't pick zero
   } else if (kind === 'pickStackAnySide') {
     const cards = payload.entries.map(({ player, uid }) => {
@@ -1285,6 +1903,7 @@ function renderUiChoice() {
       return { player, uid, cardId: st?.cardId };
     }).filter(x => x.cardId);
     rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, {
+      owner: x.player,
       selected: false,
       onClick: () => resolve({ player: x.player, uid: x.uid }),
     }))));
@@ -1292,19 +1911,20 @@ function renderUiChoice() {
   } else if (kind === 'pickFromHand') {
     const pl = state.players[payload.player];
     const idxs = pl.hand.map((id, i) => i);
-    rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], { onClick: () => resolve(pl.hand[i]) }))));
+    rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], { owner: payload.player, onClick: () => resolve(pl.hand[i]) }))));
     if (!(payload.required && idxs.length)) rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
   } else if (kind === 'pickFromHandIndexes' || kind === 'pickFromZoneIndex') {
     const pl = state.players[payload.player];
     const zone = payload.zone || 'hand';
     const idxs = payload.eligibleIdxs;
     if (kind === 'pickFromZoneIndex') {
-      rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl[zone][i], { onClick: () => resolve(i) }))));
+      rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl[zone][i], { owner: payload.player, onClick: () => resolve(i) }))));
       if (!(payload.required && idxs.length)) rows.push(h('button', { onClick: () => resolve(null) }, '선택 안 함'));
     } else {
       if (!state._multiPick) state._multiPick = [];
       const picked = state._multiPick;
       rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], {
+        owner: payload.player,
         selected: picked.includes(i),
         onClick: () => { const p = picked.indexOf(i); if (p === -1) picked.push(i); else picked.splice(p, 1); render(); },
       }))));
@@ -1378,8 +1998,15 @@ function renderUiChoice() {
 // regular actions panel; whichever of these exists takes over the screen.
 function renderModal() {
   if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
+  if (state.uiChoice && state.uiChoice.hold) return null; // waiting for the activation VFX to finish (ctxChoose) — nothing may pile on top of it
+  if (state.uiChoice && uiChoiceByCpu(state.uiChoice)) { // a prompt that belongs to the CPU: read-only note (the CPU driver answers it)
+    const pr = state.uiChoice.payload && state.uiChoice.payload.prompt;
+    return h('div', { className: 'cpu-choice-note' }, ['🤖 CPU가 선택 중…', pr ? h('div', { className: 'meta' }, String(pr).slice(0, 160)) : null]);
+  }
   const choiceUi = renderUiChoice();
   if (choiceUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]);
+  const jogressUi = busy() ? null : renderJogressModal();
+  if (jogressUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]);
   const pendingUi = renderPendingAttack();
   if (pendingUi) return h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]);
   return null;
@@ -1483,7 +2110,7 @@ function describeSelectedEffects() {
   const parts = [];
   const showCard = (id) => {
     const c = S.card(id);
-    const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} C${c.cost ?? '-'} DP${c.dp ?? '-'}`];
+    const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} 코스트${c.cost ?? "-"} DP${c.dp ?? '-'}`];
     if (c.evoNormal) bits.push(`진화: ${(c.evoNormal.colors||[]).join('/')} Lv.${c.evoNormal.level}→코스트${c.evoNormal.cost}`);
     if (c.effectKo) bits.push(c.effectKo);
     if (c.inheritedKo) bits.push('[진화원효과] ' + c.inheritedKo);
@@ -1529,6 +2156,14 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // even when nothing can be decided in it, instead of the whole chain resolving in
 // one render. Auto mode advances after a short visible pause (and waits for any
 // pending effect to finish first); manual mode waits for the "다음 단계" button.
+// 읽기 속도: 사람이 읽어야 하는 문구(단계 설명, 효과 결과, 알림)는 글자 수에 비례해 오래 보여 준다.
+const READ_SPEEDS = { slow: 1.6, normal: 1.0, fast: 0.6 };
+const READ = { speed: 'normal' };
+try { const v = localStorage.getItem('digimon_read_speed'); if (v && v in READ_SPEEDS) READ.speed = v; } catch (e) { /* ignore */ }
+function readMs(text, minMs = 1500, maxMs = 14000) {
+  const chars = String(text || '').replace(/\s+/g, '').length;
+  return Math.round(Math.min(maxMs, Math.max(minMs, 900 + chars * 85)) * READ_SPEEDS[READ.speed]);
+}
 const STEP = { manual: false, delay: 1300 };
 try { STEP.manual = localStorage.getItem('digimon_step_manual') === '1'; } catch (e) { /* ignore */ }
 
@@ -1547,10 +2182,12 @@ function stepPause(pa, stage, info, next) {
   const tick = () => {
     if (sel.pendingAttack !== pa || pa.token !== token || !pa.pendingNext) return;
     // Don't run ahead of an effect that is still resolving (its banner is on screen).
-    if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 400); return; }
+    if (state.pending.some(t => !t.resolved && scriptFor(t).length) || state.uiChoice) { setTimeout(tick, 150); return; }
     runPendingNext(pa);
   };
-  setTimeout(tick, STEP.delay);
+  // 처리할 효과/선택지가 없는 단계("…없습니다", "다음 체크로 넘어갑니다")는 0.2초만 보여 주고 바로 넘어간다.
+  const idleStep = /없습니다|넘어갑니다/.test(String(info || ''));
+  setTimeout(tick, idleStep ? 200 : Math.max(STEP.delay, readMs(info, 1300, 8000)));
 }
 
 function eligibleBlockers(p, collidingAttacker) {
@@ -1626,7 +2263,7 @@ function resolveFinalTarget(pa) {
 function enterBlockCheck(pa) {
   const attackerStack = findStack({ player: pa.attacker, uid: pa.uid });
   if (!attackerStack) { S.log(state, '어택 중인 디지몬이 배틀 에어리어에 없어 블록할 수 없고 어택이 종료 (12-1-6 / 11-2-7-4)'); endAttack(); return; }
-  const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌'));
+  const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌') || S.hookGrantedKeywords(state, pa.attacker, attackerStack).includes('충돌'));
   const blockers = eligibleBlockers(pa.opp, colliding).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
     pa.blockers = [];
@@ -1710,6 +2347,28 @@ function endAttack() {
   if (st) { S.queueTriggersForStack(state, pa.attacker, st, 'attackEnd'); S.emitGameEvent(state, 'attackEnd', { owner: pa.attacker, stack: st, cause: null }); }
 }
 
+// Attack-step actions shared by the buttons in renderPendingAttack and the CPU driver (cpuApiObj.pa) — one code path for both.
+function paChooseTarget(pa, tgt) {
+  if (tgt === 'PLAYER') { pa.targetKind = 'player'; } else { pa.targetKind = 'digimon'; pa.targetUid = tgt; }
+  enterRedirectTiming(pa); render();
+}
+function paUseCounter(pa, opt) {
+  const r = S.activateCounter(state, pa.opp, opt, pa); // rule 9 / 11-3-2: use cost + color condition (options), once per attack
+  if (!r.ok) { S.log(state, `${pa.opp} ${S.card(opt.cardId).nameKo} 카운터 불가: ${r.reason}`); render(); return; }
+  state.pending.push({ uid: 'ct' + Math.random().toString(36).slice(2), player: pa.opp, cardId: opt.cardId, stackUid: opt.stackUid, tags: opt.tags, text: opt.body, resolved: false });
+  enterBlockCheck(pa); render();
+}
+function paBlock(pa, uid) {
+  const s = state.players[pa.opp].battle.find(x => x.uid === uid);
+  if (!s) { resolveFinalTarget(pa); render(); return; }
+  S.restStack(state, pa.opp, s.uid, 'block');
+  pa.targetKind = 'digimon'; pa.targetUid = s.uid;
+  noteRedirect(pa);
+  { const aBl = findStack({ player: pa.attacker, uid: pa.uid }); if (aBl) S.emitGameEvent(state, 'blocked', { owner: pa.attacker, stack: aBl, blocker: s, cause: null }); } // "이 디지몬이 블록당했을 때" (ST1-09)
+  resolveFinalTarget(pa);
+  render();
+}
+
 function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (!force && blockIfBusy()) return;
   const dec = S.declareAttack(state, p, uid, atkOpts);
@@ -1727,7 +2386,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (atkOpts && atkOpts.anyActive) dec.stack.anyActiveOnce = true; // BT4-090: 「이 효과로는 액티브 상태의 상대 디지몬에게도 어택할 수 있다」 = this attack only
   const digimonTargets = S.legalDigimonTargets(state, p, uid);
   if (dec.stack.anyActiveOnce) delete dec.stack.anyActiveOnce;
-  const canHitPlayer = S.canAttackPlayer(state, p, uid);
+  const canHitPlayer = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); // b9: digimonOnly = "상대의 디지몬에게 어택할 수 있다" (RB1-025)
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
   pa.fireDeclare = fireDeclare;
   sel.pendingAttack = pa;
@@ -1746,7 +2405,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
 
 const RESULT_LABEL_KO = { attackerWins: '공격측 승리', defenderWins: '방어측 승리', tie: '동점 (양쪽 소멸)', jammedSurvive: '≪재밍≫으로 생존', noBattle: '시큐리티 디지몬 없음 (배틀 없음)' };
 
-function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
+function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result, leftOwner, rightOwner) {
   const leftWins = result === 'attackerWins' || result === 'jammedSurvive';
   const rightWins = result === 'defenderWins';
   // jammedSurvive is deliberately excluded from rightLoses — Jamming means
@@ -1755,9 +2414,9 @@ function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result) {
   const rightLoses = result === 'attackerWins' || result === 'tie';
   const sideClass = (wins, loses) => `vs-side${wins ? ' vs-winner' : ''}${loses ? ' vs-loser' : ''}`;
   return h('div', { className: 'vs-battle' }, [
-    h('div', { className: sideClass(leftWins, leftLoses) }, [cardChip(leftCardId, {}), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
+    h('div', { className: sideClass(leftWins, leftLoses) }, [cardChip(leftCardId, { owner: leftOwner }), h('div', { className: 'vs-dp' }, `DP ${leftDp}`)]),
     h('div', { className: 'vs-mid' }, [h('div', { className: 'vs-vs' }, 'VS'), h('div', { className: 'vs-result' }, RESULT_LABEL_KO[result] || result || '')]),
-    h('div', { className: sideClass(rightWins, rightLoses) }, [cardChip(rightCardId, {}), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
+    h('div', { className: sideClass(rightWins, rightLoses) }, [cardChip(rightCardId, { owner: rightOwner }), h('div', { className: 'vs-dp' }, `DP ${rightDp}`)]),
   ]);
 }
 
@@ -1801,13 +2460,13 @@ function renderPendingAttack() {
   }
 
   // ≪연계≫ — optional, offered until the battle actually resolves.
-  if (attackerStackNow && pa.stage !== 'digimonResult' && pa.stage !== 'result' && !pa.chainUsed) {
+  if (attackerStackNow && pa.stage !== 'digimonResult' && pa.stage !== 'result' && !pa.chainUsed && !isCpuSide(pa.attacker)) {
     const chainUids = S.chainOptions(state, pa.attacker, pa.uid);
     if (chainUids.length) {
       rows.push(h('div', { className: 'zone-label' }, '《연계》 — 다른 디지몬 1마리를 레스트시켜 DP 합산 + S 어택 +1:'));
       rows.push(h('div', { className: 'stack-list' }, chainUids.map(uid => {
         const st = state.players[pa.attacker].battle.find(x => x.uid === uid);
-        return cardChip(st.cardId, { onClick: () => { if (S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; pa.dp = S.effectiveDP(state, pa.attacker, attackerStackNow); } render(); } });
+        return cardChip(st.cardId, { owner: pa.attacker, onClick: () => { if (S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; pa.dp = S.effectiveDP(state, pa.attacker, attackerStackNow); } render(); } });
       })));
     }
   }
@@ -1831,7 +2490,7 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'zone-label' }, '또는 디지몬 직접 공격:'));
       rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
         const st = state.players[pa.opp].battle.find(s => s.uid === uid);
-        return cardChip(st.cardId, { onClick: () => {
+        return cardChip(st.cardId, { owner: pa.opp, onClick: () => {
           pa.targetKind = 'digimon'; pa.targetUid = uid; enterRedirectTiming(pa); render();
         } });
       })));
@@ -1877,21 +2536,16 @@ function renderPendingAttack() {
         h('span', {}, `${S.card(opt.cardId).nameKo}: ${opt.body}`),
         h('button', {
           disabled: !!pa.counterUsed,
-          onClick: () => {
-            const r = S.activateCounter(state, pa.opp, opt, pa); // rule 9 / 11-3-2: use cost + color condition (options), once per attack
-            if (!r.ok) { S.log(state, `${pa.opp} ${S.card(opt.cardId).nameKo} 카운터 불가: ${r.reason}`); render(); return; }
-            state.pending.push({ uid: 'ct' + Math.random().toString(36).slice(2), player: pa.opp, cardId: opt.cardId, stackUid: opt.stackUid, tags: opt.tags, text: opt.body, resolved: false });
-            enterBlockCheck(pa); render();
-          },
+          onClick: () => paUseCounter(pa, opt),
         }, '발동'),
       ]));
     });
     rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '넘기기'));
   } else if (pa.stage === 'digimonResult' && pa.paused) {
-    if (pa.battlePreview) rows.push(renderVsBattle(pa.battlePreview.aCard, pa.battlePreview.aDp, pa.battlePreview.dCard, pa.battlePreview.dDp, null));
+    if (pa.battlePreview) rows.push(renderVsBattle(pa.battlePreview.aCard, pa.battlePreview.aDp, pa.battlePreview.dCard, pa.battlePreview.dDp, null, pa.attacker, pa.opp));
   } else if (pa.stage === 'digimonResult') {
     const res = pa.battleRes;
-    rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result));
+    rows.push(renderVsBattle(res.attackerCardId, res.aDp, res.defenderCardId, res.dDp, res.result, pa.attacker, pa.opp));
     if (res.result === 'defenderWins' || res.result === 'tie') {
       rows.push(h('div', { className: 'meta' }, '공격측 소멸 (생존 효과가 있다면 범용 도구로 처리)'));
     }
@@ -1900,7 +2554,7 @@ function renderPendingAttack() {
       if (survivorsWithKw.length) {
         rows.push(h('div', { className: 'actions-row' }, [
           h('span', {}, '≪전투후액티브≫ 액티브로 되돌리기?'),
-          ...survivorsWithKw.map(s => cardChip(s.cardId, { onClick: () => { S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
+          ...survivorsWithKw.map(s => cardChip(s.cardId, { owner: pa.attacker, onClick: () => { S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
         ]));
       }
     }
@@ -1932,13 +2586,8 @@ function renderPendingAttack() {
     rows.push(h('div', { className: 'zone-label' },
       pa.mandatoryBlock ? '≪충돌≫ — 상대는 반드시 블록해야 함, 막을 디지몬 선택:' : '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {
-      onClick: () => {
-        S.restStack(state, pa.opp, s.uid, 'block');
-        pa.targetKind = 'digimon'; pa.targetUid = s.uid;
-        noteRedirect(pa);
-        resolveFinalTarget(pa);
-        render();
-      },
+      owner: pa.opp,
+      onClick: () => paBlock(pa, s.uid),
     }))));
     if (!pa.mandatoryBlock) {
       rows.push(h('div', { className: 'actions-row' }, [
@@ -1955,7 +2604,7 @@ function renderPendingAttack() {
     } else {
       res.checks.forEach((c, i) => {
         rows.push(h('div', { className: 'zone-label' }, `시큐리티 체크 ${i + 1}/${pa.secCtl ? pa.secCtl.total : res.checks.length}`));
-        rows.push(renderVsBattle(pa.attackerCardId, c.atkDp != null ? c.atkDp : pa.dp, c.revealed, c.secDp, c.result));
+        rows.push(renderVsBattle(pa.attackerCardId, c.atkDp != null ? c.atkDp : pa.dp, c.revealed, c.secDp, c.result, pa.attacker, pa.opp));
       });
       const last = res.checks[res.checks.length - 1];
       if (!pa.secDone) {
@@ -1975,7 +2624,9 @@ function renderPendingAttack() {
       }
     }
   }
-  return h('div', { className: 'player-panel' }, rows);
+  const panelEl = h('div', { className: 'player-panel' }, rows);
+  if (cpuOn && cpuDrv && cpuDrv.paDecider(pa) === CPU_P) cpuLockPanel(panelEl); // this step is the CPU's decision: the human's buttons are inert
+  return panelEl;
 }
 
 function renderLog() {
@@ -1984,12 +2635,246 @@ function renderLog() {
   }
   return h('div', { className: 'log-panel' }, [
     h('div', { className: 'log-panel-header' }, [
-      h('span', { className: 'section-title', style: 'margin:0;' }, '로그'),
+      h('span', { className: 'fx-tabs' }, [
+        h('button', { className: 'fx-tab' + (fxUI.tab === 'log' ? ' on' : ''), onClick: () => { fxUI.tab = 'log'; render(); } }, '로그'),
+        h('button', { className: 'fx-tab' + (fxUI.tab === 'fx' ? ' on' : ''), onClick: () => { fxUI.tab = 'fx'; render(); } }, '효과 기록'),
+      ]),
       h('button', { className: 'log-close-btn', onClick: () => { panelsOpen.log = false; render(); } }, '접기 ▶'),
     ]),
-    ...state.log.slice(0, 100).map(e => h('div', {}, `[턴${e.turn}] ${e.msg}`)),
+    ...(fxUI.tab === 'fx' ? renderFxHistory() : state.log.slice(0, 100).map(e => h('div', {}, [`[턴${e.turn}] `,
+      e.src && e.src.kind === 'effect' ? [h('span', { className: `fx-logsrc fx-${e.src.owner}` }, [`${pNm(e.src.owner)} `, fxCardLink(e.src.cardId, `「${S.card(e.src.cardId).nameKo}」`), e.src.tag ? `【${e.src.tag}】` : '']), ': '] : null,
+      e.msg].flat().filter(x => x != null)))),
   ]);
 }
 
-window.__dbg = () => ({ dragData, sel, state, S, E, Effects, render, attackFlow });
+// ================= effect visibility (presentation only — the engine never reads any of this) =================
+// state.fxHistory holds one record per resolved effect (see effects.js runScript / state.js fxNewRec): source card, tag, printed
+// text, the log lines it produced and the stacks it made vanish. Here: resolution card + pager, board markers, ghost tiles, history tab.
+const FX_DELAYS = { auto: -1, '2': 2000, '5': 5000, '10': 10000, manual: 0 };
+const fxUI = { seen: 0, stateRef: null, queue: [], idx: 0, open: false, timer: null, tab: 'log', info: null, expanded: new Set(), ghosts: [], markRec: null, markUntil: 0, markTimer: null, hits: { p1: new Set(), p2: new Set() }, cfg: 'auto' };
+try { const v = localStorage.getItem('digimon_fx_delay'); if (v && v in FX_DELAYS) fxUI.cfg = v; } catch (e) { /* ignore */ }
+const pNm = (p) => String(p || '').toUpperCase();
+const fxOwnerOf = (m) => { const x = /^(p1|p2)\s/.exec(m); return x ? x[1] : null; };
+const fxTrivial = (r) => !r.entries.length && !r.vanished.length && r.mem0 === r.mem1;
+function fxForeign(rec) { // did the effect touch the OTHER player's cards / lines?
+  if (rec.src.kind !== 'effect') return false;
+  return rec.vanished.some(v => v.owner !== rec.src.owner) || rec.entries.some(e => { const o = fxOwnerOf(e.msg); return o && o !== rec.src.owner; });
+}
+function fxDelayFor(rec) {
+  if (fxUI.cfg === 'manual') return 0;
+  if (fxUI.cfg === 'auto') { // reading time from the printed text + concrete results
+    const txt = `${rec.text || ''} ${(rec.entries || []).map(e => e.msg).join(' ')}`;
+    const d0 = readMs(txt, 2500, 16000);
+    return fxForeign(rec) || rec.src.kind !== 'effect' ? d0 : Math.min(d0, Math.round(3500 * READ_SPEEDS[READ.speed])); // the acting player's own harmless effects fade sooner
+  }
+  const d = FX_DELAYS[fxUI.cfg];
+  return fxForeign(rec) || rec.src.kind !== 'effect' ? d : Math.min(d, 2000); // the acting player's own harmless effects fade sooner
+}
+function fxSrcLabel(rec) {
+  if (rec.src.kind !== 'effect') return rec.src.label || '룰';
+  return `${pNm(rec.src.owner)}의 「${S.card(rec.src.cardId).nameKo}」${rec.src.tag ? '【' + rec.src.tag + '】' : ''}`;
+}
+function fxHitNames(rec) { // names of on-board cards the effect's log lines are about, per owner (+ vanished ones)
+  const out = { p1: new Set(), p2: new Set() };
+  for (const v of rec.vanished) out[v.owner].add(v.name);
+  for (const e of rec.entries) {
+    const o = fxOwnerOf(e.msg); if (!o || /스택 소멸/.test(e.msg)) continue;
+    for (const s of state.players[o].battle) { const nm = S.card(s.cardId).nameKo; if (e.msg.includes(nm)) out[o].add(nm); }
+  }
+  return out;
+}
+function fxResults(rec) {
+  const items = [];
+  for (const e of rec.entries) {
+    if (/스택 소멸/.test(e.msg)) continue;
+    const o = fxOwnerOf(e.msg);
+    items.push({ owner: o, text: o ? `${pNm(o)} ${e.msg.replace(/^(p1|p2)\s+/, '')}` : e.msg });
+  }
+  for (const v of rec.vanished) items.push({ owner: v.owner, text: `💀 ${pNm(v.owner)}의 「${v.name}」 소멸`, vanish: true });
+  if (rec.mem0 !== rec.mem1) items.push({ owner: null, text: `메모리 ${rec.mem0} → ${rec.mem1}` });
+  return items;
+}
+function fxCardLink(cardId, label) {
+  return h('span', { className: 'fx-cardlink', title: '카드 정보 보기', onClick: (e) => { e.stopPropagation(); fxUI.info = cardId; render(); } }, label);
+}
+const fxHeld = () => !!state && (!!state.uiChoice || fxBusyMs() > 0);
+function fxSync() {
+  if (!state) return;
+  const hist = state.fxHistory || [];
+  if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.fieldBase = fxUI.seen; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
+  for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
+  if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
+  // Presentation order: activation VFX -> choice modal -> results. While a choice modal is open (or held) or the fx timeline is busy,
+  // the resolution card, board markers and ghost tiles wait; they show up right after (modal close re-renders; a timer covers the VFX case).
+  const unbooked = [...hist.filter(r => r.id > fxUI.seen), state._fxRec].some(fxUnbooked);
+  if (unbooked || fxHeld()) {
+    fxUI.hits = { p1: new Set(), p2: new Set() };
+    clearTimeout(fxUI.holdTimer);
+    if (!state.uiChoice) fxUI.holdTimer = setTimeout(() => { if (state) render(); }, Math.max(unbooked ? 150 : 0, fxBusyMs() + 60));
+    return;
+  }
+  if (fxFieldOn()) { // 필드 표기: results are drawn ON the field (src/fxfield.js) — no collected panel / pager / ghost tiles / 🎯 markers
+    fxFieldSync(state, hist, fxUI.fieldBase || 0, fxDelayFor);
+    if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
+    fxUI.queue = []; fxUI.open = false; fxUI.ghosts = []; fxUI.markRec = null; fxUI.hits = { p1: new Set(), p2: new Set() };
+    return;
+  }
+  for (const rec of hist.slice(0, 6)) { // ghost tiles for freshly vanished stacks (a rec can gain vanishes after being seen)
+    const from = rec._vs || 0;
+    for (const v of rec.vanished.slice(from)) fxUI.ghosts.push({ ...v, by: fxSrcLabel(rec), gid: rec.id + ':' + fxUI.ghosts.length + ':' + Math.random().toString(36).slice(2, 6) });
+    rec._vs = rec.vanished.length;
+  }
+  if (fxUI.ghosts.length > 8) fxUI.ghosts.splice(0, fxUI.ghosts.length - 8);
+  const fresh = hist.filter(r => r.id > fxUI.seen && !fxTrivial(r)).reverse();
+  if (hist[0]) fxUI.seen = Math.max(fxUI.seen, hist[0].id);
+  if (fresh.length) {
+    const wasOpen = fxUI.open && fxUI.queue.length;
+    for (const r of fresh) if (!fxUI.queue.includes(r)) fxUI.queue.push(r);
+    if (fxUI.queue.length > 30) fxUI.queue.splice(0, fxUI.queue.length - 30);
+    if (!wasOpen) fxUI.idx = fxUI.queue.length - fresh.length;
+    fxUI.open = true;
+    fxUI.markRec = fresh[fresh.length - 1]; fxUI.markUntil = Date.now() + 6000;
+    clearTimeout(fxUI.markTimer); fxUI.markTimer = setTimeout(() => { if (state) render(); }, 6100);
+    clearTimeout(fxUI.timer);
+    if (fxUI.cfg !== 'manual') { const ms = Math.max(...fresh.map(fxDelayFor)); fxUI.timer = setTimeout(() => { fxUI.open = false; if (state) render(); }, ms); }
+  }
+  fxUI.hits = { p1: new Set(), p2: new Set() };
+  if (fxUI.markRec && Date.now() < fxUI.markUntil) { const n = fxHitNames(fxUI.markRec); fxUI.hits = n; }
+}
+function fxHitFor(p, stack) {
+  if (!fxUI.markRec || Date.now() >= fxUI.markUntil || !fxUI.hits[p].has(S.card(stack.cardId).nameKo)) return null;
+  return fxUI.markRec.src.owner !== p ? 'fx-hit-foe' : 'fx-hit-own';
+}
+function fxGhostNodes(p) {
+  return fxUI.ghosts.filter(g => g.owner === p).map(g => {
+    const c = S.card(g.cardId);
+    return h('div', { className: `fx-ghost fx-${p}`, title: '눌러서 닫기', onClick: () => { fxUI.ghosts = fxUI.ghosts.filter(x => x !== g); render(); } }, [
+      c.imgUrl ? artImg(S.artUrl(state, g.owner, g.cardId) || c.imgUrl, c.imgUrl, { alt: c.nameKo }) : null,
+      h('div', { className: 'nm' }, c.nameKo),
+      h('div', { className: 'fx-ghost-by' }, `소멸: ${g.by}`),
+    ]);
+  });
+}
+function fxRecView(rec, full) {
+  const c = rec.src.cardId ? S.card(rec.src.cardId) : { nameKo: '' };
+  const foreign = fxForeign(rec), so = rec.src.owner;
+  const kids = [];
+  if (foreign) {
+    const n = fxHitNames(rec), tgt = pNm(so === 'p1' ? 'p2' : 'p1'), names = [...n[so === 'p1' ? 'p2' : 'p1']];
+    kids.push(h('div', { className: 'fx-alert' }, `⚠ ${pNm(so)}의 「${c.nameKo}」 효과로 ${tgt} 피해` + (names.length ? ': ' + names.map(x => `「${x}」`).join(' ') : '')));
+  }
+  kids.push(h('div', { className: `fx-src-row fx-${so || 'rule'}` }, [
+    rec.src.kind === 'effect' && c.imgUrl ? artImg(S.artUrl(state, so, rec.src.cardId) || c.imgUrl, c.imgUrl, { className: 'fx-src-img', alt: c.nameKo, onClick: () => { fxUI.info = rec.src.cardId; render(); } }) : null,
+    h('div', {}, [
+      h('div', { className: 'fx-src-name' }, rec.src.kind === 'effect'
+        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited ? h('span', { className: 'fx-tag' }, ' 상속') : null]
+        : `⚙ ${rec.src.label}`),
+      h('div', { className: 'meta' }, `턴 ${rec.turn}`),
+    ]),
+  ]));
+  const res = fxResults(rec), shown = full ? res.slice(0, 14) : res;
+  kids.push(res.length ? h('ul', { className: 'fx-results' }, [...shown.map(r => h('li', { className: r.owner ? `fx-${r.owner}` : '' }, r.text)), res.length > shown.length ? h('li', {}, `… 외 ${res.length - shown.length}건`) : null])
+    : h('div', { className: 'meta' }, '(눈에 띄는 변화 없음)'));
+  if (rec.text && (full || fxUI.expanded.has(rec.id))) kids.push(h('div', { className: 'fx-text' }, rec.text));
+  return h('div', { className: 'fx-rec' + (foreign ? ' fx-rec-foe' : '') }, kids);
+}
+function fxVfxSelect() { // 이펙트 (activation VFX intensity, fx.js)
+  return h('label', { className: 'meta fx-cfg' }, ['이펙트 ', h('select', { onchange: (e) => fxSetMode(e.target.value) },
+    FX_MODE_LABELS.map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxGetMode()) o.selected = true; return o; }))]);
+}
+function readSpeedSelect() {
+  return h('label', { className: 'meta fx-cfg' }, ['읽기 속도 ', h('select', { onchange: (e) => { READ.speed = e.target.value; try { localStorage.setItem('digimon_read_speed', READ.speed); } catch (err) { /* ignore */ } } },
+    [['slow', '느리게'], ['normal', '보통'], ['fast', '빠르게']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === READ.speed) o.selected = true; return o; }))]);
+}
+function fxFieldSelect() { // 필드 표기: annotate effects on the field (default on)
+  return h('label', { className: 'meta fx-cfg' }, ['필드 표기 ', h('select', { onchange: (e) => { fxFieldSetOn(e.target.value === '1'); if (state) render(); } },
+    FIELD_LABELS.map(([v, l]) => { const o = h('option', { value: v }, l); if ((v === '1') === fxFieldOn()) o.selected = true; return o; }))]);
+}
+function fxDelaySelect() {
+  return h('label', { className: 'meta fx-cfg' }, ['효과 표시 ', h('select', { onchange: (e) => { fxUI.cfg = e.target.value; try { localStorage.setItem('digimon_fx_delay', fxUI.cfg); } catch (err) { /* ignore */ } } },
+    [['auto', '읽는 시간 자동'], ['2', '짧게 2초'], ['5', '보통 5초'], ['10', '길게 10초'], ['manual', '수동 확인']].map(([v, l]) => { const o = h('option', { value: v }, l); if (v === fxUI.cfg) o.selected = true; return o; }))]);
+}
+function renderFxLayer() {
+  const root = h('div', { className: 'fx-root' });
+  if (fxUI.info) {
+    const c = S.card(fxUI.info);
+    root.appendChild(h('div', { className: 'fx-info', onClick: () => { fxUI.info = null; render(); } }, [
+      c.imgUrl ? artImg(S.artUrl(state, state?.activePlayer, fxUI.info) || c.imgUrl, c.imgUrl, { alt: c.nameKo }) : null,
+      h('div', {}, [h('b', {}, c.nameKo), h('div', { className: 'fx-text' }, c.effectKo || ''), h('div', { className: 'meta' }, '(눌러서 닫기)')]),
+    ]));
+  }
+  if (!fxUI.queue.length || fxHeld()) return root; // resolution card never covers an open/pending choice modal or the activation VFX
+  if (!fxUI.open) { root.appendChild(h('div', { className: 'fx-chip', onClick: () => { fxUI.open = true; render(); } }, `⚡ 효과 ${fxUI.queue.length}건 ▲`)); return root; }
+  fxUI.idx = Math.min(Math.max(0, fxUI.idx), fxUI.queue.length - 1);
+  const rec = fxUI.queue[fxUI.idx], n = fxUI.queue.length;
+  root.appendChild(h('div', { className: 'fx-panel' + (fxForeign(rec) ? ' fx-panel-foe' : '') }, [
+    h('div', { className: 'fx-head' }, [
+      h('b', {}, '⚡ 효과 처리'),
+      n > 1 ? h('span', { className: 'fx-pager' }, [
+        h('button', { disabled: fxUI.idx <= 0, onClick: () => { fxUI.idx--; render(); } }, '◀ 이전'),
+        ` ${fxUI.idx + 1}/${n} `,
+        h('button', { disabled: fxUI.idx >= n - 1, onClick: () => { fxUI.idx++; render(); } }, '다음 ▶'),
+      ]) : null,
+      h('button', { className: 'primary', onClick: () => { fxUI.queue = []; fxUI.open = false; clearTimeout(fxUI.timer); render(); } }, '확인 ✕'),
+    ]),
+    fxRecView(rec, true),
+    h('div', { className: 'fx-foot' }, [fxDelaySelect(), readSpeedSelect(), fxVfxSelect(), fxUI.cfg === 'manual' ? h('span', { className: 'meta' }, '확인을 누를 때까지 유지') : h('span', { className: 'meta' }, '잠시 후 자동으로 접힙니다')]),
+  ]));
+  return root;
+}
+function renderFxHistory() {
+  const hist = (state.fxHistory || []).filter(r => !fxTrivial(r));
+  return [
+    fxFieldSelect(), fxDelaySelect(), readSpeedSelect(), fxVfxSelect(),
+    ...(hist.length ? hist.map(r => h('div', { className: 'fx-hist-item', onClick: () => { fxUI.expanded.has(r.id) ? fxUI.expanded.delete(r.id) : fxUI.expanded.add(r.id); render(); } }, [
+      h('div', { className: 'fx-hist-title' }, `${fxUI.expanded.has(r.id) ? '▼' : '▶'} ${fxSrcLabel(r)}`),
+      fxRecView(r, false),
+    ])) : [h('div', { className: 'meta' }, '아직 처리된 효과가 없습니다.')]),
+  ];
+}
+
+// ================= breeding phase bar (육성 페이즈): big, always-visible choices incl. "do nothing" =================
+const BREED = { auto: false };
+try { BREED.auto = localStorage.getItem('digimon_breed_auto') === '1'; } catch (e) { /* ignore */ }
+function breedingStatus() {
+  const p = state.activePlayer, pl = state.players[p];
+  const taken = !!state.breedingActionTaken;
+  const canHatch = !taken && !pl.raising && pl.digitamaDeck.length > 0;
+  const canMove = !taken && !!pl.raising && S.canMoveFromRaising(pl.raising);
+  let reason = '';
+  if (taken) reason = '이번 육성 페이즈에는 이미 부화/이동 중 하나를 했습니다 (룰 6-4).';
+  else if (!canHatch && !canMove) reason = pl.raising ? '육성 에어리어의 카드가 아직 배틀 에어리어로 이동할 수 없습니다 (Lv.3 이상만 이동 가능).' : '부화할 디지타마가 없습니다.';
+  else if (canHatch) reason = '육성 에어리어가 비어 있어 디지타마를 부화할 수 있습니다. 부화/이동은 선택사항입니다.';
+  else reason = '육성 에어리어의 카드를 배틀 에어리어로 이동할 수 있습니다. 부화/이동은 선택사항입니다.';
+  return { p, canHatch, canMove, reason };
+}
+function breedingSkip() { if (!state || state.phase !== 'breeding' || busy() || cpuHumanLocked()) return; E.nextPhase(state); render(); }
+function renderBreedingBar() {
+  if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuTurnView()) return null;
+  const { p, canHatch, canMove, reason } = breedingStatus();
+  const nothingElse = !canHatch && !canMove;
+  return h('div', { className: 'breed-bar', role: 'group', 'aria-label': '육성 페이즈' }, [
+    h('div', { className: 'breed-title' }, `🥚 ${p.toUpperCase()} 육성 페이즈`),
+    h('div', { className: 'breed-reason' }, reason),
+    h('div', { className: 'breed-btns' }, [
+      canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
+      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, '⬆ 배틀 에어리어로 이동') : null,
+      h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, '⏭ 아무것도 안 함 → 메인 페이즈로'),
+    ]),
+    h('label', { className: 'breed-auto meta' }, [
+      h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
+      ' 육성 페이즈 자동 넘김 (부화/이동을 마치면 바로 메인 페이즈로)', h('span', { className: 'breed-key' }, ' · Space/Enter = 아무것도 안 함'),
+    ]),
+  ]);
+}
+document.addEventListener('keydown', (e) => {
+  if (!state || state.phase !== 'breeding' || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key !== ' ' && e.key !== 'Enter') return;
+  const t = e.target && e.target.tagName;
+  if (t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'BUTTON') return;
+  if (!document.querySelector('.breed-bar') || document.querySelector('.modal-backdrop')) return;
+  e.preventDefault(); breedingSkip();
+});
+
+window.__dbg = () => ({ PR, dragData, sel, state, S, E, Effects, render, attackFlow, fxUI });
 init();

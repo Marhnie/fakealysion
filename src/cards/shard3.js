@@ -964,6 +964,7 @@ function legendMain(o) {
     if (hi < 0) return;
     addSourcesBottom(ctx, ctx.self, t, [removeFromHand(ctx, ctx.self, hi)]);
     if (o.dp) dpTemp(ctx, ctx.self, t, o.dp, o.opp ? untilOppTurnEnd(ctx) : ctx.state.turnNumber);
+    if (o.after) await o.after(ctx, t);
     if (o.force) {
       const v = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(isDig), '「메인 페이즈 개시 시 어택」 효과를 줄 상대 디지몬 선택');
       if (v) giveForcedAttack(ctx, v, ctx.sourceCardId);
@@ -975,6 +976,29 @@ sc('EX6-008::메인', legendMain({ cost: 1, level: 4, dp: 4000 }));
 sc('EX6-038::메인', legendMain({ cost: 1, level: 3, dp: 2000, opp: true }));
 sc('EX6-040::메인', legendMain({ cost: 1, level: 4, dp: 2000, opp: true }));
 sc('EX6-042::메인', legendMain({ cost: 2, level: 5, force: true }));
+// EX6-009 / EX6-010 / EX6-044 [패]【메인】 (had no script: the generic compile left the card in hand AND under the digimon -> duplicated card, found by scripts/fuzz.mjs)
+sc('EX6-009::메인', legendMain({ cost: 2, level: 5, after: async (ctx, t) => { S.grantKeyword(ctx.state, ctx.self, t.uid, '시큐리티어택', 1, 'turn'); } }));
+sc('EX6-010::메인', legendMain({ cost: 3, level: 6, after: async (ctx, t) => {
+  const lim = dp(ctx, ctx.self, t);
+  const c = PL(ctx, ctx.opp).battle.filter(s => isDig(s) && dp(ctx, ctx.opp, s) <= lim);
+  const v = await pickStack(ctx, ctx.opp, c, '소멸시킬 상대의 디지몬 선택 (DP가 그 디지몬 이하)');
+  if (v) destroy(ctx, ctx.opp, v);
+} }));
+sc('EX6-044::메인', legendMain({ cost: 3, level: 6, after: async (ctx, t) => {
+  const lim = dp(ctx, ctx.self, t);
+  for (const s of PL(ctx, ctx.opp).battle.filter(x => isDig(x) && dp(ctx, ctx.opp, x) <= lim)) S.retreat(ctx.state, ctx.opp, s.uid, 1);
+} }));
+sc('EX6-037::메인', legendMain({ cost: 1, level: 3, after: async (ctx) => { S.drawCards(ctx.state, ctx.self, 1); } }));
+// BT23-072 [패]【메인】 3 코스트: put this card under our raising-area 「위그드라실_7D6」/「마더 이터」, then 《1 드로우》
+sc('BT23-072::메인', [fn(async (ctx) => {
+  const pl = PL(ctx, ctx.self); const rs = pl.raising;
+  const hi = pl.hand.indexOf(ctx.sourceCardId);
+  if (hi < 0 || !rs || !['위그드라실_7D6', '마더 이터'].some(n => S.cardNameIs(rs.cardId, n))) return;
+  if (!S.canPayCost(ctx.state, 3)) return;
+  S.spendMemory(ctx.state, 3);
+  addSourcesBottom(ctx, ctx.self, rs, [removeFromHand(ctx, ctx.self, hi)]);
+  S.drawCards(ctx.state, ctx.self, 1);
+})]);
 // EX6-010 (진화원, 자신의 턴): 「라그나로드몬」인 동안 이 디지몬이 체크한 카드의 【시큐리티】 효과는 발휘하지 않는다
 hk('EX6-010', { tag: '자신의 턴', src: 'inheritedKo', has: '체크한 카드', suppressSecurity: (state, hp, holder) => C(holder.cardId).nameKo === '라그나로드몬' });
 // EX6-011 / EX6-029 [패]【카운터】 《블래스트 조그레스《「A」+「B」》》

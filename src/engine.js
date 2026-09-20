@@ -210,6 +210,7 @@ export function settleTurnEnd(state) {
   state.phase = 'unsuspend';
   state.breedingActionTaken = false;
   S.resetTurnEffectUses(state);
+  S.ruleSweepDP(state); // timed DP bonuses (s7Dp / "until turn N") lapse with the turn counter: rule-check whoever dropped to DP<=0 (17-1-3-1, 6-2-1-2)
   S.log(state, `--- ${finishing} 턴 종료, ${next} 턴 ${state.turnNumber} 시작 (메모리 ${state.memory}) ---`);
   queueTurnStartTriggers(state);
   return true;
@@ -284,10 +285,13 @@ function parseEvoConditions(targetCardId) {
   const tgt = S.card(targetCardId);
   const conditions = [];
   if (tgt.evoNormal) conditions.push({ ...tgt.evoNormal, raw: tgt.evoNormal.conditionText || '' });
-  const text = tgt.effectKo || '';
-  for (const m of text.matchAll(/〔진화〕\s*((?:「[^」\n]*」|[^:：\n「])+?)\s*[:：]\s*코스트\s*(\d+)/g)) { // 「벨페몬: 슬립 모드」 — a colon inside 「」 is part of the name
-    const desc = m[1].trim();
-    const cost = Number(m[2]);
+  const text = (tgt.effectKo || '').replace(/(코스트\s*\d+)\s*\/\s*(?=[^\n]*?[:：]\s*코스트)/g, '$1\n〔진화〕 '); // batch4: "〔진화〕 「A」 : 코스트 5/《세이브》가 기술되어 있는 …Lv.4 : 코스트 3" — several conditions on ONE line (BT12-081)
+  // second printed spelling: "진화: 「워가루몬」에서 0" / "진화: 『명칭에 「가트몬」을 포함』에서 3" (58 cards: BT9 X-antibody, P-072/073/092/099 …)
+  const evoLines = [...text.matchAll(/〔진화〕\s*((?:「[^」\n]*」|[^:：\n「])+?)\s*[:：]\s*코스트\s*(\d+)/g)].map(m => [m[1], m[2]])
+    .concat([...text.matchAll(/(?:^|\n)\s*진화\s*[:：]\s*(?:(「[^」\n]*」)|『([^』\n]*)』)\s*에서\s*(\d+)/g)].map(m => [m[1] || m[2], m[3]]));
+  for (const m of evoLines) { // 「벨페몬: 슬립 모드」 — a colon inside 「」 is part of the name
+    const desc = m[0].trim();
+    const cost = Number(m[1]);
     const cond = { cost, raw: desc };
     const lvM = desc.match(/Lv\.(\d+)/);
     if (lvM) cond.level = Number(lvM[1]);
@@ -326,6 +330,7 @@ export function evoRestrictionCheck(targetCardId, restriction = null) {
   const tgt = S.card(targetCardId);
   if (restriction) {
     if (restriction.cannotEvolve) return { ok: false, reason: '진화 제한: 이 디지몬은 진화할 수 없음' };
+    if (restriction.maxLevel != null && (tgt.level || 0) > restriction.maxLevel) return { ok: false, reason: `진화 제한: Lv.${restriction.maxLevel + 1} 이상으로는 진화할 수 없음` }; // b10 (EX3-069)
     if (restriction.colors && !restriction.colors.some(c => (tgt.colors || []).includes(c))) {
       return { ok: false, reason: `진화 제한: ${restriction.colors.join('/')} 인 디지몬으로만 진화 가능` };
     }
@@ -371,22 +376,22 @@ function satisfiedEvoConditions(sourceCardId, targetCardId, extraColors = [], re
     // "자신의 「A」가 있는 동안, 「B」" …) with the shared descriptor parser; the field-by-field checks below only cover what it cannot parse.
     const isNormalCond = cond === conditions[0] && !!tgt.evoNormal;
     // "〔진화〕 특징으로 「X」를 가진 카드가 아래에 N장 있는 「Name」" (P-185/BT18-018/BT18-042): needs the source STACK's under-cards (extraColors.under)
-    const um = isNormalCond ? null : String(cond.raw || '').match(/^(?:(?:특징으로?|특징)\s*「([^」]+)」\s*(?:를|을)?\s*가진\s*)?카드가\s*아래에\s*(\d+)장\s*있는\s*「([^」]+)」\s*$/);
+    const um = isNormalCond ? null : String(cond.raw || '').match(/^(?:(?:특징으로?|특징)\s*「([^」]+)」\s*(?:를|을)?\s*가진\s*)?카드가\s*아래에\s*(\d+)장\s*있는\s*((?:「[^」]+」\s*\/?\s*)+)$/); // pass2-b4: also a name list (BT18-102 「우정훈」/「선우현」)
     if (um) {
-      if (!srcNames.includes(um[3])) continue;
+      { const umNames = [...um[3].matchAll(/「([^」]+)」/g)].map(x => x[1]); if (!srcNames.some(n => umNames.includes(n))) continue; }
       const cnt = (extraColors.under || []).filter(id => !um[1] || (S.card(id).types || []).includes(um[1])).length;
       if (cnt >= Number(um[2])) out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
       continue;
     }
     { const gm = isNormalCond ? null : String(cond.raw || '').match(/^(.*?(?:동안|있다면)),\s*/); if (gm && restriction && restriction.evoGate && !restriction.evoGate(gm[1])) continue; } // state-dependent gate (EX10-023 「자신의 「최지석」이 있는 동안」 …)
-    const pr = isNormalCond ? null : S.cardDescPredicate(String(cond.raw || '').replace(/^.*?(?:동안|있다면),\s*/, ''));
+    const pr = isNormalCond ? null : S.cardDescPredicate(String(cond.raw || '').replace(/^.*?(?:동안|있다면),\s*/, '').replace(extraColors.ignoreLevel ? /\s*Lv\.\s*\d+(?:\s*(?:이하|이상))?/g : /(?!)/, ''));
     if (pr) {
       const variants = [...new Set([...srcNames, ...srcInclNames])];
       if (!variants.some(n => pr({ ...src, nameKo: n, types: srcTraits, colors: srcColors }))) continue;
       out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
       continue;
     }
-    if (typeof cond.level === 'number' && src.level !== cond.level) continue;
+    if (typeof cond.level === 'number' && src.level !== cond.level && !extraColors.ignoreLevel) continue; // b5: ignoreLevel = "Lv.을 무시하고 진화" (evolveEffect op)
     if (cond.nameExact && !srcNames.includes(cond.nameExact)) continue;
     if (cond.nameIncludes && !srcNames.some(n => n.includes(cond.nameIncludes)) && !srcInclNames.some(n => n.includes(cond.nameIncludes))) continue;
     if (cond.trait && !srcTraits.some(t => t.includes(cond.trait))) continue;
@@ -411,6 +416,24 @@ export function evolutionMethods(sourceCardId, targetCardId, extraColors = [], r
   const sat = satisfiedEvoConditions(sourceCardId, targetCardId, extraColors, restriction);
   sat.forEach((c, i) => addPlain({ id: (c.isNormal ? 'normal' : 'line') + i, kind: c.isNormal ? 'normal' : 'special-line', label: c.isNormal ? '일반 진화' : '특수 진화 조건', baseCost: c.cost, conditionText: c.raw || '', ignoresCondition: false, sideEffect: false }));
   const okBase = !restriction || !restriction.cannotEvolve;
+  // "패의 이 카드는, <색>인 자신의 테이머를 <색>인 Lv.N의 디지몬으로서 취급하여 [진화 코스트 X를 지불하여] 진화할 수 있다." (BT4/6/7 하이브리드체 Lv.4): a Tamer in the battle area can be the evolution base.
+  if (ctx && ctx.stack && okBase && S.card(ctx.stack.cardId).category === 'tamer') {
+    const tgtC = S.card(targetCardId); let tm = (tgtC.effectKo || '').match(/패의\s*이\s*카드는,?\s*((?:[가-힣]+(?:\/[가-힣]+)*)인\s*)?자신의\s*(?:테이머|「([^」]+)」)(?:를|을)\s*((?:[가-힣]+(?:\/[가-힣]+)*)인\s*)?Lv\.\s*(\d+)의\s*디지몬(?:으로서|으로|로서|로)도?\s*취급하여\s*(?:진화\s*코스트\s*(\d+)(?:을|를|으로|로)\s*(?:지불하여\s*)?)?진화할\s*수\s*있다/); // (batch4: BT12-012/013/024/025/065/066 print "패의 이 카드는 [색인] 자신의 테이머/「이름」을 …" without the comma, with a named tamer, "디지몬로" and "진화 코스트 N로")
+    if (tm) tm = [tm[0], tm[1], tm[3], tm[4], tm[5], tm[2]]; // -> [full, tamerColors, digimonColors, level, cost, namedTamer]
+    // BT7-112: "자신의 패 또는 트래시에서 테이머 카드 또는 특징으로 「하이브리드체」를 갖는 카드 합계 10장을 원하는 순서대로 덱 아래로 되돌리는 것으로, 자신의 테이머를 Lv.6의 디지몬으로서 취급하여 진화할 수 있다" (the return is paid by main.js before digivolving)
+    const t10 = (tgtC.effectKo || '').match(/패의\s*이\s*카드는,\s*자신의\s*패\s*또는\s*트래시에서\s*테이머\s*카드\s*또는\s*특징으로\s*「([^」]+)」를\s*갖는\s*카드\s*합계\s*(\d+)장을\s*원하는\s*순서대로\s*덱\s*아래로\s*되돌리는\s*것으로,\s*자신의\s*테이머를\s*Lv\.\s*(\d+)의\s*디지몬으로서\s*취급하여\s*진화할\s*수\s*있다/);
+    if (t10 && tgtC.evoNormal && ctx.state && evoRestrictionCheck(targetCardId, restriction).ok) {
+      const pl0 = ctx.state.players[ctx.p], okC = (id) => S.card(id).category === 'tamer' || (S.card(id).types || []).includes(t10[1]);
+      const pool = pl0.hand.filter((id, i) => !(id === targetCardId && i === pl0.hand.indexOf(targetCardId)) && okC(id)).length + pl0.trash.filter(okC).length;
+      if (pool >= Number(t10[2])) out.push({ id: 'tamer10', kind: 'alt', label: `${t10[2]}장을 덱 아래로 되돌리고 테이머를 Lv.${t10[3]} 디지몬으로서 취급하여 진화`, baseCost: tgtC.evoNormal.cost, conditionText: `테이머/${t10[1]} 카드 ${t10[2]}장 되돌림`, ignoresCondition: false, sideEffect: true, returnN: Number(t10[2]), returnTrait: t10[1] });
+    }
+    if (tm && tm[5] && !S.cardNames(ctx.stack.cardId).includes(tm[5])) tm = null; // named tamer (「우정훈」)
+    if (tm && tgtC.evoNormal && evoRestrictionCheck(targetCardId, restriction).ok) {
+      const cols = ((tm[1] || '').replace(/인\s*$/, '').trim().split('/').filter(Boolean)).map(w => ({ 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' })[w]).filter(Boolean);
+      const stackCols = S.stackColors(ctx.stack);
+      if (!cols.length || cols.some(c => stackCols.includes(c))) out.push({ id: 'tamer-as-digimon', kind: 'alt', label: `테이머를 Lv.${tm[3]} 디지몬으로서 취급하여 진화`, baseCost: tm[4] != null ? Number(tm[4]) : tgtC.evoNormal.cost, conditionText: `테이머를 Lv.${tm[3]} 디지몬으로 취급`, ignoresCondition: false, sideEffect: false });
+    }
+  }
   if (restriction && restriction.alt && okBase && !S.isTokenId(sourceCardId)) {
     const src = S.card(sourceCardId), tgt = S.card(targetCardId);
     restriction.alt.forEach((a, i) => { if (a.test(tgt, src)) addPlain({ id: 'alt-r' + i, kind: 'alt', label: '효과로 진화 조건 무시', baseCost: a.cost, conditionText: '진화 조건 무시', ignoresCondition: true, sideEffect: false }); });

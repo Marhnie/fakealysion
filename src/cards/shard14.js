@@ -660,4 +660,29 @@ SCRIPTS['BT25-102::메인'] = [
 // BT25-095 (서로의 턴): 레드/그린인 특징 「TS」 디지몬 전부 DP +2000 (the 《속공》 half is parsed by the static-grant reader)
 HOOKS['BT25-095'] = [{ tag: '서로의 턴', has: '레드/그린', dp: (state, hp, holder, target, tp) => (tp === hp && isDig(target.cardId) && trait(target.cardId, 'TS') && (C(target.cardId).colors || []).some(c => c === 'red' || c === 'green') ? 2000 : 0) }];
 
+// ================================================================== BT20-102 오메가몬 X항체 (docs/verify-norest-attack.md)
+// 【등장 시】【진화 시】 진화원에 「오메가몬」/「X항체」가 있다면(= 명칭이 「오메가몬」 또는 「X항체」인 카드, 〈룰〉 명칭 포함), 서로의 디지몬 1마리씩을 선택하고 선택한 디지몬 이외의 디지몬 전부를 소멸시킨다. 그 후, 상대의 디지몬 1마리를 덱 아래로 되돌린다.
+// (「그 후」 문장도 같은 조건문에 속함 — 조건 불충족이면 전부 발휘하지 않음)
+const BT20_102_ON = [X(async (ctx, run) => {
+  const me = meS(ctx); if (!me) return;
+  if (!me.sources.some(id => S.cardNameIs(id, '오메가몬') || S.cardNameIs(id, 'X항체'))) { log(ctx, `${ctx.self} ${C(me.cardId).nameKo}: 진화원에 「오메가몬」/「X항체」가 없어 효과 발휘 안 함`); return; }
+  const mine = digs(ctx), theirs = digs(ctx, 'opp');
+  const keepMine = mine.length ? await pickS(ctx, ctx.self, mine, '남길 자신의 디지몬 1마리 선택 (나머지는 소멸)') : null;
+  const keepOpp = theirs.length ? await pickS(ctx, ctx.self, theirs, '남길 상대의 디지몬 1마리 선택 (나머지는 소멸)') : null;
+  const doomed = [];
+  for (const [who, list, keep] of [[ctx.self, mine, keepMine], [ctx.opp, theirs, keepOpp]]) for (const s of list) if (s !== keep) doomed.push([who, s.uid]);
+  for (const [who, uid] of doomed) S.deleteStack(ctx.state, who, uid, 'trash', 'effect');
+  await run.runScript(compileToScript('상대의 디지몬 1마리를 덱 아래로 되돌린다.'), ctx);
+})];
+SCRIPTS['BT20-102::등장 시'] = BT20_102_ON;
+SCRIPTS['BT20-102::진화 시'] = BT20_102_ON;
+// 【자신의 턴 종료 시】[턴에 1회] 턴 종료까지 자신의 디지몬 1마리는 《속공》을 얻고, 그 디지몬으로 레스트시키지 않고 어택할 수 있다.
+SCRIPTS['BT20-102::자신의 턴 종료 시'] = [X(async (ctx) => {
+  const mine = digs(ctx); if (!mine.length) return;
+  const st = await pickS(ctx, ctx.self, mine, '《속공》을 얻고 레스트시키지 않고 어택할 자신의 디지몬 1마리 선택');
+  if (!st) return;
+  S.grantKeyword(ctx.state, ctx.self, st.uid, '속공', undefined, 'turn');
+  if (ctx.startAttack && await ask(ctx, `${C(st.cardId).nameKo}(으)로 레스트시키지 않고 어택할까요?`)) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
+})];
+
 // @@END@@

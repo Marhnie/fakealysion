@@ -514,10 +514,9 @@ OPS.s2_progress = async (instr, ctx) => { // 《진격》
 };
 OPS.s2_attackNoRest = async (instr, ctx) => {
   const { state } = ctx; const st = thisStackOf(ctx);
-  if (!st || !canDeclare(state, ctx.self, st)) return;
+  if (!st || !canDeclare(state, ctx.self, { ...st, suspended: false })) return; // an already-rested Digimon may attack: nothing is rested (11-2-1 wording)
   if (!(await confirmCtx(ctx, `${C(st.cardId).nameKo}(으)로 레스트시키지 않고 어택할까요?`))) return;
-  st.attackNoRestOnce = true;
-  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid);
+  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
 };
 // the opponent must attack with a Digimon of theirs (EX3-024: opponent chooses; BT13-077: the effect owner chooses)
 OPS.s2_forceOppAttack = async (instr, ctx) => {
@@ -584,7 +583,7 @@ OPS.s2_asDigimon = async (instr, ctx) => { // BT12-092 / BT13-008: treated as a 
   const st = instr.thisStack ? thisStackOf(ctx) : await pickStackOf(ctx, ctx.self, cands, '디지몬으로 취급할 테이머 선택');
   if (!st) return;
   st.s2AsDigimon = true; st.s2NoEvolve = true;
-  S.modifyDP(state, ctx.self, st.uid, instr.dp || 3000, 'turn');
+  (st.baseOv ||= []).push({ ts: S.stamp(), until: state.turnNumber, dp: instr.dp || 3000 }); S.refreshBaseInfo(state, st); // 원래 DP를 N으로 취급 (a Tamer has no DP: modifyDP would be refused by 2-5-3)
   S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; }, { expire: true }); // duration end, not a trigger
   S.log(state, `${C(st.cardId).nameKo}: 턴 종료까지 디지몬·DP ${instr.dp || 3000}으로도 취급, 진화할 수 없음`);
 };
@@ -671,7 +670,9 @@ OPS.s2_placeTrial = async (instr, ctx) => { // 「4대용의 시련」
   if (idx === -1) return;
   if (!(await confirmCtx(ctx, '패의 「4대용의 시련」 1장을 배틀 에어리어에 놓을까요?'))) return;
   const [id] = pl.hand.splice(idx, 1);
+  pl.trash.push(id); // pass2-b7: placeThisInBattle takes the card out of the TRASH (hand -> trash slot -> battle, like the other hand placers)
   const st = S.placeThisInBattle(state, ctx.self, id);
+  if (!st) { const ti = pl.trash.lastIndexOf(id); if (ti !== -1) { pl.trash.splice(ti, 1); pl.hand.push(id); } return; }
   S.emitGameEvent(state, 'trialPlaced', { owner: ctx.self, stack: st, cause: 'effect' });
 };
 OPS.s2_moveUnder = async (instr, ctx) => { // BT11-088 / BT12-083

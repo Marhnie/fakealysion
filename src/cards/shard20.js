@@ -50,6 +50,7 @@ OPS.stackMove = async (instr, ctx, H) => {
   if (!me || !cands.length) { S.log(state, `${ctx.self} 진화원 아래에 놓을 대상이 없음`); return; }
   const t = await pickOne(ctx, cands, instr.prompt || '진화원 아래에 놓을 대상 선택');
   if (!t) return;
+  if (instr.mode === 'thisUnderOther') ctx._lastPick = { player: ctx.self, uid: t.uid }; // "그 디지몬…" (BT22-018): even when the target was auto-picked (single candidate)
   if (instr.mode === 'otherUnderThis') putStackUnder(state, ctx.self, t, me);
   else if (instr.mode === 'thisUnderOther') putStackUnder(state, ctx.self, me, t);
   else { // sources -> under the chosen Tamer
@@ -75,10 +76,7 @@ OPS.trashFaceDown = async (instr, ctx) => {
   const hs = fdHolders(instr, ctx);
   const st = await pickOne(ctx, hs, '뒷면의 카드를 파기할 대상 선택');
   if (!st) { S.log(ctx.state, `${ctx.self} 파기할 뒷면의 카드가 부족함`); return; }
-  const out = st.sources.splice(0, n);
-  st.s5fd = Math.max(0, S.fdCount(st) - out.length);
-  ctx.state.players[ctx.self].trash.push(...out);
-  S.recomputeStackGrants(st);
+  const out = S.trashEvoSources(ctx.state, ctx.self, st.uid, n, 'bottom') || []; // b9: via the real trasher so 'sourcesTrashed' (BT26-002/048/094 …) and the face-down bookkeeping fire
   S.log(ctx.state, `${ctx.self} ${C(st.cardId).nameKo}의 뒷면 카드 ${out.length}장을 아래에서부터 파기`);
   instr._paid = true;
 };
@@ -96,7 +94,7 @@ OPS.trashLink = async (instr, ctx) => {
   const n = instr.n || 1;
   const me = await pickOne(ctx, linkHolders(instr, ctx), '링크 카드를 파기할 디지몬 선택');
   if (!me) return;
-  for (let i = 0; i < n; i++) { const lc = me.linkCards.pop(); ctx.state.players[ctx.self].trash.push(lc.cardId); S.log(ctx.state, `${ctx.self} ${C(me.cardId).nameKo}의 링크 카드 ${C(lc.cardId).nameKo} 파기`); }
+  for (let i = 0; i < n; i++) { const lc = me.linkCards.pop(); ctx.state.players[ctx.self].trash.push(lc.cardId); S.log(ctx.state, `${ctx.self} ${C(me.cardId).nameKo}의 링크 카드 ${C(lc.cardId).nameKo} 파기`); S.recomputeStackGrants(me); S.emitGameEvent(ctx.state, 'linkDiscarded', { owner: ctx.self, stack: me, cause: 'effect', cardId: lc.cardId }); } // b12: "링크 카드가 효과로 파기되었을 때" watchers (EX10-001/030/043/073 …)
   S.recomputeStackGrants(me);
   instr._paid = true;
 };
@@ -128,6 +126,7 @@ OPS.rotateSource = async (instr, ctx, H) => {
   S.recomputeStackGrants(me);
   S.log(ctx.state, `${ctx.self} ${C(me.cardId).nameKo}에 겹쳐진 카드 ${moved.length}장을 진화원 아래로 이동`);
   instr._paid = true;
+  S.emitGameEvent(ctx.state, 'sourceRotated', { owner: ctx.self, stack: me, cause: 'effect', moved }); // BT22-006 (shard38)
 };
 OPS['rotateSource$payable'] = (instr, ctx, H) => !!rotatable(instr, ctx, H);
 

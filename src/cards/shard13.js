@@ -250,7 +250,7 @@ sc('BT20-097::서로의 턴', async (ctx) => {
 });
 
 // ST20-14: Lv.5 이상의 자신의 디지몬이 배틀 에어리어를 벗어날 때(소멸) → 패의 「어드벤처」 Lv.5 이하 디지몬 1장을 등장
-hk('ST20-14', { tag: '서로의 턴', events: { delete: (state, hp, h, info) => info.owner === hp && !!info.stack && isDig(info.stack) && (C(info.stack.cardId).level || 0) >= 5 && delayReady(state, h) } });
+hk('ST20-14', { tag: '서로의 턴', events: { leaveBattle: (state, hp, h, info) => info.owner === hp && !!info.stack && isDig(info.stack) && (C(info.stack.cardId).level || 0) >= 5 && delayReady(state, h) } });
 sc('ST20-14::서로의 턴', (ctx, R) => delayOnly(ctx, () => runText(ctx, R, '자신의 패에서 특징 「어드벤처」를 가진 Lv.5 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.')));
 
 // ------------------------------------------------------------------ helpers (part 2)
@@ -383,7 +383,7 @@ SCRIPTS['BT21-012::메인'] = [{ op: 'costGroup', cost: [{ op: 'restStack' }], t
     const { state } = ctx, p = ctx.self, pl = state.players[p], lp = ctx._lastPick, mv = me(ctx);
     if (!(ctx._res && ctx._res.played > 0) || !lp || !mv) return;
     const tam = findStack(state, p, lp.uid); if (!tam || tam === mv) return;
-    pl.battle.splice(pl.battle.indexOf(mv), 1);
+    const mvi = pl.battle.indexOf(mv); if (mvi >= 0) pl.battle.splice(mvi, 1); else if (pl.raising === mv) pl.raising = null; else return; // raising-area user: indexOf -1 used to splice off the LAST battle stack = the tamer just played (fuzz)
     pl.trash.push(...(mv.linkCards || []).map(l => l.cardId));
     tam.sources.splice(S.fdCount(tam), 0, ...mv.sources, mv.cardId);
     S.recomputeStackGrants(tam);
@@ -425,7 +425,7 @@ sc('BT21-096::메인', async (ctx) => {
   const st = await pickStack(ctx, p, tams(state, p).filter(s => C(s.cardId).nameKo === '최건우'), '디지몬으로 취급할 「최건우」 선택');
   if (!st) return;
   st.s2AsDigimon = true; st.s2NoEvolve = true;
-  S.modifyDP(state, p, st.uid, 12000, 'turn');
+  (st.baseOv ||= []).push({ ts: S.stamp(), until: state.turnNumber, dp: 12000 }); S.refreshBaseInfo(state, st); // (a Tamer has no DP: modifyDP would be refused by 2-5-3)
   S.scheduleEndOfTurn(state, () => { st.s2AsDigimon = false; st.s2NoEvolve = false; }, { expire: true });
   S.grantKeyword(state, p, st.uid, '속공', undefined, 'turn');
   S.grantKeyword(state, p, st.uid, '액티브공격', undefined, 'turn');
