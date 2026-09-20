@@ -3,6 +3,8 @@
 // ctx = { h, S, E, DB, cardChip, getDraft, loadDeck(name, def), refreshDeck(), showToast(msg), openPreview(id), setIdFilter(ids, label), artUrl(id), getSavedName() }
 import * as T from './decktools.js';
 
+// rAF keeps the UI smooth; the timeout covers hidden tabs where rAF is paused
+const nextTick = (f) => { let d = false; const g = () => { if (!d) { d = true; f(); } }; requestAnimationFrame(g); setTimeout(g, 60); };
 const pct = (x) => (x * 100).toFixed(1) + '%';
 const PANELS = [['stats', '📊 통계'], ['check', '🩺 체크업'], ['sample', '🎲 샘플 핸드'], ['manage', '🗂 덱 관리']];
 const COLOR_HEX = { red: '#d85a5a', blue: '#4ea8de', yellow: '#e6c94a', green: '#57b06a', black: '#888', purple: '#a070e0', white: '#eee' };
@@ -119,9 +121,9 @@ export function createDeckAnalysis(ctx) {
         if (tok !== batchTok) return;
         const done = batch.step(1000);
         prog.firstChild.style.width = (batch.result().n / N) * 100 + '%';
-        if (done) { batchRes = { r: batch.result(), target: sel.value, N, model }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else requestAnimationFrame(chunk);
+        if (done) { batchRes = { r: batch.result(), target: sel.value, N, model }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else nextTick(chunk);
       };
-      requestAnimationFrame(chunk);
+      nextTick(chunk);
     } }, '▶ 시뮬레이션 실행');
     kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위, 1회 멀리건 가정)', h('div', { className: 'actions-row' }, [nSel, sel, runBtn]), prog, out));
     box.replaceChildren(...kids);

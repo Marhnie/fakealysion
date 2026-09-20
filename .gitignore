@@ -3,3 +3,12 @@ data/dgchub_cards_raw.json
 rulebook/general_rule_jp.pdf
 rulebook/general_rule_jp.txt
 uncovered.json
+
+# 에이전트 작업 메모/임시 파일
+b[0-9]*_todo.*
+b[0-9]*_cards.txt
+b[0-9]*_rem.json
+rest.json
+scratch/
+.tmp_fix/
+__pycache__/

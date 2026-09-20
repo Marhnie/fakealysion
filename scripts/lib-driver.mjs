@@ -6,7 +6,7 @@ import * as E from '../src/engine.js';
 import * as Fx from '../src/effects.js';
 global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url.replace(/^\.\//, './'), 'utf8')) });
 export async function init() { await S.loadData(); }
-export function makeRng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+export function makeRng(seed) { let a = seed >>> 0; const f = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; f.get = () => a; f.set = (v) => { a = v; }; return f; }
 export function makeDriver(rng) {
   const rnd = (n) => Math.floor(rng() * n), pick = (a) => a[rnd(a.length)];
   const cards = Object.values(S.CARDS);

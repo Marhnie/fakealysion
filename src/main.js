@@ -8,6 +8,7 @@ import * as DT from './decktools.js';
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
+import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
@@ -39,6 +40,98 @@ async function init() {
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
   renderSetup();
+}
+
+// ---------- vs CPU (P2 is played by src/cpu.js) ----------
+// Decisions live in cpu.js; here is only the wiring: the settings (persisted), the lock that keeps the human's hands off P2's side,
+// routing of ctx.choose() prompts by owner (uc.by), and the small `cpuApiObj` of real game actions the CPU driver performs
+// (the very same functions the UI buttons / drag-drops call: doPlayFromHand, doEvolve, runJogress, attackFlow, pa* attack steps …).
+const CPU_KEY = 'digimon_cpu_cfg_v1';
+const CPU_CFG = { mode: '2p', level: 'normal', speed: 'normal', reveal: false };
+try { Object.assign(CPU_CFG, JSON.parse(localStorage.getItem(CPU_KEY) || '{}')); } catch (e) { /* ignore */ }
+const saveCpuCfg = () => { try { localStorage.setItem(CPU_KEY, JSON.stringify(CPU_CFG)); } catch (e) { /* ignore */ } };
+const CPU_P = 'p2';
+let cpuOn = false;      // the running game is vs the CPU
+let cpuActing = false;  // the CPU driver is inside one of its own actions (its prompts / attack calls are allowed)
+let cpuDrv = null;
+const isCpuSide = (p) => cpuOn && p === CPU_P;
+// during the CPU's turn the human may not act (drag, pass, breeding…) — they still answer prompts / blocks that belong to them
+const cpuHumanLocked = () => cpuOn && !cpuActing && !!state && !state.winner && state.activePlayer === CPU_P;
+const cpuPendingOwner = () => { const t = state && runningPendingUid ? state.pending.find(x => x.uid === runningPendingUid) : null; return t ? t.player : null; };
+const uiChoiceByCpu = (uc) => cpuOn && !!uc && (uc.by ? uc.by === CPU_P : Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() }) === CPU_P);
+const cpuApiObj = {
+  getState: () => (cpuOn ? state : null),
+  busy: () => busy(),
+  pendingAttack: () => sel.pendingAttack,
+  pendingOwner: cpuPendingOwner,
+  hasScript: (t) => !t.manualOnly && scriptFor(t).length > 0,
+  closePending: (uid) => { S.resolvePending(state, uid); render(); },
+  answer: (uc, val) => { state._multiPick = []; state._orderPick = []; uc.resolve(val); },
+  fxBusyMs: () => fxBusyMs(),
+  setActing: (b) => { cpuActing = !!b; },
+  skipBreeding: () => { E.nextPhase(state); render(); },
+  hatch: (p) => { S.hatchDigitama(state, p); render(); },
+  move: (p) => { S.moveRaisingToBattle(state, p); render(); },
+  pass: () => { E.declarePass(state); render(); },
+  play: (p, idx) => doPlayFromHand(p, idx),
+  evolve: (p, uid, idx) => doEvolve(p, uid, idx),
+  jogress: async (p, a, b, cardId) => { await runJogress(p, a, b, cardId); jgCache.clear(); render(); },
+  attack: (p, uid, target) => attackFlow(p, uid, target),
+  train: (p, uid) => { S.useTraining(state, p, uid); render(); },
+  useMain: (p, uid, idx) => {
+    const st = findStack({ player: p, uid });
+    if (!st) return;
+    const ab = S.activatableMainAbilities(state, p, st, state.players[p].raising?.uid === uid ? 'raising' : 'battle')[idx];
+    if (!ab || !Effects.mainAbilityPayable(state, S, p, uid, ab.cardId, ab.tags, ab.text)) return;
+    state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: uid, tags: ab.tags, text: ab.text, resolved: false });
+    render();
+  },
+  pa: {
+    chooseTarget: (pa, tgt) => paChooseTarget(pa, tgt),
+    passRedirect: (pa) => { enterCounterTiming(pa); render(); },
+    passCounter: (pa) => { enterBlockCheck(pa); render(); },
+    useCounter: (pa, opt) => paUseCounter(pa, opt),
+    block: (pa, uid) => paBlock(pa, uid),
+    passBlock: (pa) => { resolveFinalTarget(pa); render(); },
+    pierce: (pa) => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
+    close: (pa) => { endAttack(); render(); },
+  },
+};
+function cpuStart() { // called when a new game begins
+  cpuOn = CPU_CFG.mode === 'cpu';
+  if (cpuOn) { cpuDrv = cpuDrv || Cpu.createUiDriver(cpuApiObj); cpuDrv.start(CPU_CFG.level); cpuDrv.setSpeed(CPU_CFG.speed); }
+  else if (cpuDrv) cpuDrv.stop();
+}
+let cpuMullTimer = null;
+function cpuMulliganMaybe() { // the CPU decides its opening hand (룰 5-2-1-4: after the first player) with a short pause
+  if (!cpuOn || mulliganDecided[CPU_P]) return;
+  if (CPU_P !== state.firstPlayer && !mulliganDecided[state.firstPlayer]) return;
+  const st = state;
+  clearTimeout(cpuMullTimer);
+  cpuMullTimer = setTimeout(() => {
+    if (state !== st || mulliganDecided[CPU_P]) return;
+    if (Cpu.shouldMulligan(state, CPU_P, CPU_CFG.level)) { E.mulligan(state, CPU_P); mulliganDealFlash[CPU_P] = true; state.cpuMulled = true; }
+    mulliganDecided[CPU_P] = true;
+    afterMulliganCheck();
+  }, 900);
+}
+function renderCpuBar() {
+  if (!cpuOn || !state || state.winner || !cpuDrv) return null;
+  const thinking = cpuDrv.isThinking();
+  const label = cpuDrv.paused ? '⏸ CPU 일시정지' : thinking ? '🤖 CPU 생각 중…' : (state.activePlayer === CPU_P ? '🤖 CPU 진행 중…' : '🤖 CPU 대기 (당신의 차례)');
+  return h('div', { className: 'cpu-bar' + (thinking ? ' thinking' : '') + (cpuDrv.paused ? ' paused' : '') }, [
+    h('b', {}, `${label} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`),
+    h('button', { onClick: () => { cpuDrv.setPaused(!cpuDrv.paused); render(); } }, cpuDrv.paused ? '▶ 재개' : '⏸ 일시정지'),
+    h('label', { className: 'meta' }, ['속도 ', h('select', { onchange: (e) => { CPU_CFG.speed = e.target.value; saveCpuCfg(); cpuDrv.setSpeed(CPU_CFG.speed); } },
+      Object.entries(Cpu.SPEED_LABEL).map(([v, l]) => { const o = h('option', { value: v }, l); if (v === CPU_CFG.speed) o.selected = true; return o; }))]),
+    h('label', { className: 'meta' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.reveal, onchange: (e) => { CPU_CFG.reveal = !!e.target.checked; saveCpuCfg(); render(); } }), ' CPU 패 보기']),
+  ]);
+}
+// grey out the buttons/chips of an attack panel step that the CPU decides (the human must not click for it)
+function cpuLockPanel(panel) {
+  panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  panel.querySelectorAll('.card-chip').forEach(c => { c.style.pointerEvents = 'none'; });
+  panel.insertBefore(h('div', { className: 'cpu-think-row' }, '🤖 CPU가 결정 중…'), panel.firstChild);
 }
 
 let setupPick = { p1: null, p2: null };
@@ -88,7 +181,19 @@ function renderSetup() {
     h('div', { className: 'player-panel' }, [
       h('div', { className: 'section-title' }, '새 게임'),
       h('div', { className: 'actions-row' }, [h('span', {}, 'P1 덱'), selectFor('p1')]),
-      h('div', { className: 'actions-row' }, [h('span', {}, 'P2 덱'), selectFor('p2')]),
+      h('div', { className: 'actions-row' }, [h('span', {}, CPU_CFG.mode === 'cpu' ? 'P2 덱 (CPU)' : 'P2 덱'), selectFor('p2')]),
+      h('div', { className: 'actions-row' }, [h('span', {}, '대전 방식'), (() => {
+        const s = h('select', { id: 'cpuModeSel' }, [h('option', { value: '2p' }, '2인 (한 화면)'), h('option', { value: 'cpu' }, 'CPU 대전')]);
+        s.value = CPU_CFG.mode;
+        s.addEventListener('change', (e) => { CPU_CFG.mode = e.target.value; saveCpuCfg(); renderSetup(); });
+        return s;
+      })(), CPU_CFG.mode === 'cpu' ? h('span', {}, 'CPU 강도') : null, CPU_CFG.mode === 'cpu' ? (() => {
+        const s = h('select', { id: 'cpuLevelSel' }, Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => h('option', { value: v }, l)));
+        s.value = CPU_CFG.level;
+        s.addEventListener('change', (e) => { CPU_CFG.level = e.target.value; saveCpuCfg(); });
+        return s;
+      })() : null].filter(Boolean)),
+      CPU_CFG.mode === 'cpu' ? h('div', { className: 'meta' }, 'CPU 대전: 당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
       setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
       h('div', { className: 'actions-row' }, [
         h('button', { className: 'primary', onClick: startNewGame }, '선택한 덱으로 새 게임 시작'),
@@ -551,6 +656,7 @@ function startNewGame() {
   mulliganDecided = { p1: false, p2: false };
   mulliganDealFlash = { p1: true, p2: true };
   state.firstPlayer = E.coinFlip(); // 5-2-1-3: first player is decided BEFORE hands/mulligans (rock-paper-scissors); 5-2-1-4: mulligan goes first player first
+  cpuStart(); // vs-CPU mode: P2 is played by src/cpu.js (its opening hand is hidden and decided automatically)
   renderMulliganStage();
 }
 
@@ -563,7 +669,8 @@ function renderMulliganStage() {
     mulliganDealFlash[p] = false;
     return h('div', { className: 'player-panel' }, [
       h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
-      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => cardChip(id, { owner: p }))),
+      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => (isCpuSide(p) && !CPU_CFG.reveal) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, { owner: p }))),
+      isCpuSide(p) ? h('div', { className: 'actions-row' }, [h('span', {}, mulliganDecided[p] ? ('🤖 CPU 결정 완료 ✔' + (state.cpuMulled ? ' (멀리건함)' : ' (핸드 유지)')) : '🤖 CPU가 결정 중…')]) :
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
@@ -580,6 +687,7 @@ function renderMulliganStage() {
     ]);
   });
   app.appendChild(h('div', { className: 'board' }, panels));
+  cpuMulliganMaybe();
 }
 
 function afterMulliganCheck() {
@@ -605,6 +713,7 @@ function settleTurnEndIfIdle() {
   if (state.turnEnding && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
 }
 function blockIfBusy() {
+  if (cpuHumanLocked()) return true; // vs CPU: nothing on the CPU's turn is the human's to do (silently ignored)
   if (!busy()) return false;
   S.log(state, '해결 중인 처리(효과/선택/어택)가 남아 있어 지금은 행동할 수 없음 (룰 6-5-1)');
   render();
@@ -666,6 +775,7 @@ function render() {
   app.classList.toggle('sheet-open', !!(sel.hand || sel.stack));
   try { fxSync(); } catch (e) { console.warn('fxSync', e); } // effect-visibility bookkeeping (queue, ghosts, markers)
   app.appendChild(renderTopbar());
+  { const cpuBar = renderCpuBar(); if (cpuBar) app.appendChild(cpuBar); } // vs CPU: status / pause / speed
   app.appendChild(renderBoard());
   app.appendChild(renderActions());
   const breedBar = renderBreedingBar();
@@ -2129,7 +2239,7 @@ function resolveFinalTarget(pa) {
 function enterBlockCheck(pa) {
   const attackerStack = findStack({ player: pa.attacker, uid: pa.uid });
   if (!attackerStack) { S.log(state, '어택 중인 디지몬이 배틀 에어리어에 없어 블록할 수 없고 어택이 종료 (12-1-6 / 11-2-7-4)'); endAttack(); return; }
-  const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌'));
+  const colliding = !!attackerStack && (S.hasKeyword(attackerStack, '충돌') || S.hasContinuousKeyword(state, pa.attacker, attackerStack, '충돌') || S.hookGrantedKeywords(state, pa.attacker, attackerStack).includes('충돌'));
   const blockers = eligibleBlockers(pa.opp, colliding).filter(s => s.uid !== pa.targetUid && !S.cannotBeBlockedBy(state, pa.attacker, pa.uid, s));
   if (blockers.length === 0) {
     pa.blockers = [];

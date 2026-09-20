@@ -1620,7 +1620,7 @@ function stackContributors(stack) {
     ...gained,
     // shard5: face-down (뒷면) sources sit at the bottom (index 0..fdCount-1) and lend no effects.
     // starter audit (ST22-07/ST23-*/ST24-*): 4-3-3 — only a DIGIMON gains the inherited effects of the cards under it; cards under a Tamer (《세이브》, 테이머 아래에 놓은 카드) lend nothing.
-    ...(card(stack.cardId).category === 'tamer' && !stack.s2AsDigimon ? [] : stack.sources.slice(fdCount(stack))).map(id => ({ id, own: (fullInheritName != null && card(id).nameKo.includes(fullInheritName)) || S2.fullInherit(stack, id) || (!inheritUsed && id === inheritSrc && (inheritUsed = true)) })),
+    ...(card(stack.cardId).category === 'tamer' && !stack.s2AsDigimon ? [] : stack.sources.slice(fdCount(stack))).flatMap(id => { const own = (fullInheritName != null && card(id).nameKo.includes(fullInheritName)) || S2.fullInherit(stack, id) || (!inheritUsed && id === inheritSrc && (inheritUsed = true)); return own && card(id).inheritedKo && card(id).inheritedKo !== card(id).effectKo ? [{ id, own: true }, { id, own: false }] : [{ id, own }]; }), // pass2-b1: a source whose printed effects are gained wholesale (BT10-011 …) still lends its normal inherited effect as well
     ...(stack.linkCards || []).map(l => ({ id: l.cardId, own: false })),
   ];
 }
@@ -2591,9 +2591,6 @@ export function dpDestroyCapBoost(state, p, stackUid) {
 // Returns the best (most negative) still-valid, one-time cost delta for
 // evolving INTO `targetCardId`, and marks it consumed. Call this exactly
 // once per resolved evolution.
-// Snapshot/restore of the one-time evolve-cost mods' "used" flags, so a rejected evolution/jogress (e.g. unpayable cost) does not burn the discount.
-export function snapshotEvoCostMods(state, p) { return (state.players[p].evoCostMods || []).map(m => [m, !!m.usedUp]); }
-export function restoreEvoCostMods(snap) { for (const [m, u] of snap) m.usedUp = u; }
 // Non-consuming preview of the evolve-cost modifiers (one-time mods + continuous "[턴에 N회]" discounts + hook discounts) for the method chooser:
 // the one-time discount and the per-turn use counters are put back afterwards. (Confirmed options like 흡수진화 are not included.)
 export function previewEvoCostDelta(state, p, stack, targetCardId) {
@@ -2603,6 +2600,9 @@ export function previewEvoCostDelta(state, p, stack, targetCardId) {
   try { return consumeEvoCostMod(state, p, targetCardId) + continuousEvoCostDiscount(state, p, stack, targetCardId) + hookEvoCostDiscount(state, p, stack, targetCardId); }
   finally { restoreEvoCostMods(snap); for (const [s, u] of uses) { if (u) s.turnEffectUses = u; else delete s.turnEffectUses; } }
 }
+// Snapshot/restore of the one-time evolve-cost mods' "used" flags, so a rejected evolution/jogress (e.g. unpayable cost) does not burn the discount.
+export function snapshotEvoCostMods(state, p) { return (state.players[p].evoCostMods || []).map(m => [m, !!m.usedUp]); }
+export function restoreEvoCostMods(snap) { for (const [m, u] of snap) m.usedUp = u; }
 export function consumeEvoCostMod(state, p, targetCardId) {
   if (isEvoCostLocked(state, p)) return 0;
   const pl = state.players[p];
@@ -2977,6 +2977,7 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   // 디지크로스: materials go under the new card (7-2-2-3/7-2-2-7) — hand cards by id,
   // battle-area Digimon leave the area and bring their own sources with them.
   const s2mat = state._s2PlayMat || []; state._s2PlayMat = null; // shard2: play-discount materials chosen via a hook (BT10-093)
+  if ((opts.assembly || []).length) placeXrosMaterials(state, p, stack, [...opts.assembly].reverse()); // 7-3-2-6: the card written leftmost ends up on top
   if ((opts.assembly || []).length) placeXrosMaterials(state, p, stack, [...opts.assembly].reverse()); // 7-3-2-6: the card written leftmost ends up on top
   const xrosPlaced = placeXrosMaterials(state, p, stack, [...[...(opts.materials || [])].reverse(), ...s2mat]); // 7-2-2-8: the material written LEFTMOST in the condition ends up on top (sources[] is oldest-first, so push it last)
   stack.xrosCount = xrosPlaced; // 7-2-2-9/10: number of cards placed under by DigiXros (0 = did not DigiXros); usable by "디지크로스하고 있었다면" conditions
@@ -4992,7 +4993,7 @@ export function hookAttackTargetBlocked(state, attackerP, attacker, defP, target
 // descriptor.grantKw(state, hp, holder, target) -> array of keyword names the holder's ability grants to `target`.
 export function hookGrantedKeywords(state, p, target) {
   const out = [];
-  for (const { hp, holder, d } of activeHooks(state)) if (d.grantKw && hp === p) out.push(...(d.grantKw(state, hp, holder, target) || []));
+  for (const { hp, holder, d } of activeHooks(state)) if (d.grantKw && (hp === p || d.grantKwAny)) out.push(...(d.grantKw(state, hp, holder, target) || [])); // grantKwAny: static grants that reach BOTH sides (BT18-083)
   return out;
 }
 // Static "이 디지몬은 「A」의 조그레스 진화에서 「B」·Lv.N으로도 취급한다" (descriptor.jogressAlias(targetCardId) -> [{nameKo, level}]).

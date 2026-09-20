@@ -38,8 +38,11 @@ import * as s43 from './shard43.js';
 import * as s44 from './shard44.js';
 import * as s45 from './shard45.js';
 import * as s46 from './shard46.js';
+import * as s47 from './shard47.js';
+import * as s51 from './shard51.js';
+import * as s53 from './shard53.js';
 
-const shards = [s1, s2, s3, s4, s5, s6, s7, s8, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s31, s32, s34, s35, s36, s37, s38, s39, s41, s42, s43, s44, s45, s46];
+const shards = [s1, s2, s3, s4, s5, s6, s7, s8, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s31, s32, s34, s35, s36, s37, s38, s39, s41, s42, s43, s44, s45, s46, s47, s51, s53];
 export const SCRIPTS = Object.assign({}, ...shards.map(s => s.SCRIPTS));
 export const OPS = Object.assign({}, ...shards.map(s => s.OPS));
 // Optional per-shard continuous/replacement/event hooks (consumed by state.js): { 'CARD-ID': [descriptor, ...] }.
