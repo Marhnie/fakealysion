@@ -98,7 +98,6 @@ const cpuApiObj = {
     render();
   },
   pa: {
-    chain: (pa, uid) => { if (!pa.chainUsed && S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; const a = state.players[pa.attacker].battle.find(x => x.uid === pa.uid); if (a) pa.dp = S.effectiveDP(state, pa.attacker, a); } },
     chooseTarget: (pa, tgt) => paChooseTarget(pa, tgt),
     passRedirect: (pa) => { enterCounterTiming(pa); render(); },
     passCounter: (pa) => { enterBlockCheck(pa); render(); },
@@ -214,59 +213,73 @@ function resolveDeckPick(key) {
   return key; // built-in key string, looked up inside state.newGame
 }
 
+const SETUP_COLORS = { red: ['#e0524a', '레드'], blue: ['#3f8fe0', '블루'], yellow: ['#e8c53a', '옐로'], green: ['#4cb26a', '그린'], black: ['#6b6f78', '블랙'], purple: ['#9a63d6', '퍼플'], white: ['#e8e8e6', '화이트'] };
+function setupDeckInfo(key) {
+  try {
+    const d = resolveDeckPick(key);
+    if (!d || typeof d !== 'object') return { main: 0, egg: 0, colors: [] };
+    const cnt = (o) => Object.values(o || {}).reduce((a, n) => a + n, 0);
+    const cols = new Set();
+    for (const id of [...Object.keys(d.main || {}), ...Object.keys(d.digitama || {})]) for (const c of (S.card(id).colors || [])) cols.add(c);
+    return { main: cnt(d.main), egg: cnt(d.digitama), colors: [...cols] };
+  } catch (e) { return { main: 0, egg: 0, colors: [] }; }
+}
+
 function renderSetup() {
   app.innerHTML = '';
-  app.appendChild(h('div', { className: 'topbar' }, [
-    h('b', {}, '디지몬 카드게임 시뮬레이터'),
-  ]));
   const options = deckOptionsList();
   if (!setupPick.p1 && options[0]) setupPick.p1 = options[0].key;
   if (!setupPick.p2 && options[1]) setupPick.p2 = options[1].key;
   if (!setupPick.p2 && options[0]) setupPick.p2 = options[0].key;
 
+  const hero = h('div', { className: 'su-hero' }, [
+    h('div', { className: 'su-logo' }, '⟁'),
+    h('div', {}, [h('div', { className: 'su-title' }, '디지몬 카드게임'), h('div', { className: 'su-sub' }, '시뮬레이터 · 룰 엔진 + CPU 대전')]),
+  ]);
+
   if (!options.length) {
-    app.appendChild(h('div', { className: 'board' }, [
-      h('div', { className: 'player-panel' }, [
-        h('div', { className: 'section-title' }, '새 게임'),
-        h('div', { className: 'actions-row' }, [h('span', {}, '저장된 덱이 없습니다 — 덱 빌더에서 먼저 덱을 만들어주세요.')]),
-        h('div', { className: 'actions-row' }, [h('button', { className: 'primary', onClick: openDeckBuilder }, '덱 빌더 열기')]),
-      ]),
-    ]));
+    app.appendChild(h('div', { className: 'su-wrap' }, [hero, h('div', { className: 'su-card' }, [
+      h('div', { className: 'su-h' }, '저장된 덱이 없습니다'),
+      h('div', { className: 'su-note' }, '덱 빌더에서 먼저 덱을 만들어 주세요.'),
+      h('button', { className: 'primary su-start', onClick: openDeckBuilder }, '🛠 덱 빌더 열기'),
+    ])]));
     return;
   }
 
-  const selectFor = (p) => {
-    const sel = h('select', {}, options.map(o => h('option', { value: o.key }, o.label)));
+  // deck picker card (P1 / P2): a big select + summary (card counts, colour dots)
+  const deckCard = (p, title) => {
+    const sel = h('select', { className: 'su-select' }, options.map(o => h('option', { value: o.key }, o.label)));
     sel.value = setupPick[p];
-    sel.addEventListener('change', (e) => { setupPick[p] = e.target.value; });
-    return sel;
+    const info = h('div', { className: 'su-deckinfo' });
+    const paint = () => {
+      const i = setupDeckInfo(setupPick[p]);
+      info.replaceChildren(h('span', {}, `메인 ${i.main}장 · 디지타마 ${i.egg}장`), h('span', { className: 'su-dots' }, i.colors.map(c => h('i', { className: 'su-dot', title: (SETUP_COLORS[c] || [])[1] || c, style: `background:${(SETUP_COLORS[c] || ['#888'])[0]}` }))));
+    };
+    sel.addEventListener('change', (e) => { setupPick[p] = e.target.value; paint(); });
+    paint();
+    return h('div', { className: `su-card su-${p}` }, [h('div', { className: 'su-h' }, title), sel, info]);
   };
-  const box = h('div', { className: 'board' }, [
-    h('div', { className: 'player-panel' }, [
-      h('div', { className: 'section-title' }, '새 게임'),
-      h('div', { className: 'actions-row' }, [h('span', {}, 'P1 덱'), selectFor('p1')]),
-      h('div', { className: 'actions-row' }, [h('span', {}, CPU_CFG.mode === 'cpu' ? 'P2 덱 (CPU)' : 'P2 덱'), selectFor('p2')]),
-      h('div', { className: 'actions-row' }, [h('span', {}, '대전 방식'), (() => {
-        const s = h('select', { id: 'cpuModeSel' }, [h('option', { value: '2p' }, '2인 (한 화면)'), h('option', { value: 'cpu' }, 'CPU 대전')]);
-        s.value = CPU_CFG.mode;
-        s.addEventListener('change', (e) => { CPU_CFG.mode = e.target.value; saveCpuCfg(); renderSetup(); });
-        return s;
-      })(), CPU_CFG.mode === 'cpu' ? h('span', {}, 'CPU 강도') : null, CPU_CFG.mode === 'cpu' ? (() => {
-        const s = h('select', { id: 'cpuLevelSel' }, Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => h('option', { value: v }, l)));
-        s.value = CPU_CFG.level;
-        s.addEventListener('change', (e) => { CPU_CFG.level = e.target.value; saveCpuCfg(); });
-        return s;
-      })() : null].filter(Boolean)),
-      CPU_CFG.mode === 'cpu' ? h('div', { className: 'meta' }, 'CPU 대전: 당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
-      setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
-      h('div', { className: 'actions-row' }, [
-        h('button', { className: 'primary', onClick: startNewGame }, '선택한 덱으로 새 게임 시작'),
-        h('button', { onClick: openDeckBuilder }, '덱 빌더 열기'),
-      ]),
-      PR.startScreenExtras(),
+  const cpu = CPU_CFG.mode === 'cpu';
+  const seg = (items, cur, onPick) => h('div', { className: 'su-seg', role: 'group' }, items.map(([v, l, tip]) => h('button', { className: 'su-segbtn' + (v === cur ? ' on' : ''), title: tip || '', onClick: () => onPick(v) }, l)));
+  const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
+  const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
+
+  const ext = PR.startScreenExtras();
+  app.appendChild(h('div', { className: 'su-wrap' }, [
+    hero,
+    h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : 'P1 덱'), deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : 'P2 덱')]),
+    h('div', { className: 'su-card' }, [
+      h('div', { className: 'su-h' }, '대전 방식'), modeSeg,
+      cpu ? h('div', { className: 'su-h su-h2' }, 'CPU 강도') : null, lvSeg,
+      cpu ? h('div', { className: 'su-note' }, '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
+    ].filter(Boolean)),
+    setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
+    h('button', { className: 'primary su-start', onClick: startNewGame }, '⚔ 새 게임 시작'),
+    h('div', { className: 'su-more' }, [
+      h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
+      ext,
     ]),
-  ]);
-  app.appendChild(box);
+  ].filter(Boolean)));
 }
 
 // ---------- deck builder ----------
@@ -2515,15 +2528,36 @@ function enterRedirectTiming(pa) {
     if (aSt0 && dSt0) S.emitGameEvent(state, 'attackOnDigimon', { owner: pa.attacker, stack: aSt0, cause: null, target: dSt0 });
     if (dSt0 && !findStack({ player: pa.opp, uid: pa.targetUid })) { S.log(state, '어택 대상이 사라져 어택 종료'); endAttack(); return; }
   }
+  settleRedirectTiming(pa);
+}
+
+// 11-1-4: the attack declaration timing ends only when everything it triggered (【어택 시】, 「레스트했을 때」, ≪연계≫, ≪돌진≫ … — turn player first, 4-3-2) has resolved.
+// The opponent's "change the target" chances are computed AFTER that, from the board the effects left behind.
+function settleRedirectTiming(pa) {
+  const busy = () => state.pending.some(t => !t.resolved && scriptFor(t).length) || !!state.uiChoice;
+  if (busy()) {
+    pa.stage = 'redirectTiming'; pa.declWait = true; pa.redirectOptions = []; pa.chargeTarget = null; pa.chargeTargets = [];
+    const token = pa.token = (pa.token || 0) + 1;
+    const tick = () => {
+      if (sel.pendingAttack !== pa || pa.token !== token) return;
+      if (busy()) { setTimeout(tick, 150); return; }
+      settleRedirectTiming(pa); render();
+    };
+    setTimeout(tick, 150);
+    return;
+  }
+  pa.declWait = false;
+  if (!findStack({ player: pa.attacker, uid: pa.uid }) || (pa.targetKind === 'digimon' && !findStack({ player: pa.opp, uid: pa.targetUid }))) { // effects removed the attacker / the target: 11-2-6, 11-2-7-4 — the attack is established nowhere; it goes through the remaining timings and ends
+    pa.redirectOptions = [];
+    stepPause(pa, 'redirectTiming', '어택 선언 — 어택 중인 디지몬 또는 대상이 사라졌습니다', () => enterCounterTiming(pa));
+    return;
+  }
   const options = S.findRedirectOptions(state, pa.opp, pa.attacker, pa.uid)
     .concat(S.hookRedirectOptions(state, pa.opp, pa.attacker, findStack({ player: pa.attacker, uid: pa.uid })))
     .concat(pa.targetKind === 'digimon' ? S.hookAttackerRedirectOptions(state, pa.attacker, findStack({ player: pa.attacker, uid: pa.uid }), pa.targetUid) : []);
   // 11-2-7-3: the target can't be redirected to the target it already has.
   for (let i = options.length - 1; i >= 0; i--) { const o = options[i]; if (o.endsAttack) continue; if (o.toPlayer ? pa.targetKind === 'player' : (pa.targetKind === 'digimon' && (o.targetUid || o.stackUid) === pa.targetUid)) options.splice(i, 1); }
-  pa.chargeTargets = S.chargeRedirectTargets(state, pa.attacker, pa.uid).filter(u => !(pa.targetKind === 'digimon' && u === pa.targetUid)); // DP tie -> the player picks
-  pa.chargeTarget = pa.chargeTargets[0] || null;
-  const chainAvail = !pa.chainUsed && S.chainOptions(state, pa.attacker, pa.uid).length > 0;
-  if (options.length === 0 && !pa.chargeTarget && !chainAvail) {
+  if (options.length === 0) {
     pa.redirectOptions = [];
     stepPause(pa, 'redirectTiming', '어택 선언 — 어택 대상을 바꿀 수 있는 효과가 없습니다', () => enterCounterTiming(pa));
   } else {
@@ -2666,19 +2700,15 @@ function renderPendingAttack() {
     ]));
   }
 
-  // ≪연계≫ — optional, offered until the battle actually resolves.
-  if (attackerStackNow && pa.stage !== 'digimonResult' && pa.stage !== 'result' && !pa.chainUsed && !isCpuSide(pa.attacker)) {
-    const chainUids = S.chainOptions(state, pa.attacker, pa.uid);
-    if (chainUids.length) {
-      rows.push(h('div', { className: 'zone-label' }, '《연계》 — 다른 디지몬 1마리를 레스트시켜 DP 합산 + S 어택 +1:'));
-      rows.push(h('div', { className: 'stack-list' }, chainUids.map(uid => {
-        const st = state.players[pa.attacker].battle.find(x => x.uid === uid);
-        return cardChip(st.cardId, { owner: pa.attacker, onClick: () => { if (S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; pa.dp = S.effectiveDP(state, pa.attacker, attackerStackNow); } render(); } });
-      })));
-    }
-  }
+  // ≪연계≫ / ≪돌진≫ are triggered effects (16-23-2 / 16-24-2): they wait in the normal pending queue with the 【어택 시】 effects (src/cards/shard96.js), not in this panel.
+  // 11-1-4: the attack does not move on while triggered effects are still waiting / resolving.
+  const fxBusy = state.pending.some(t => !t.resolved && scriptFor(t).length) || !!state.uiChoice;
+  const gate = (fxBusy || pa.declWait) && ['redirectTiming', 'counterTiming', 'blockCheck'].includes(pa.stage);
+  if (gate) rows.push(h('div', { className: 'effect-box step-info' }, '발동 대기 중인 효과를 처리하고 있습니다… (모든 효과의 처리가 끝나야 다음 타이밍으로 진행합니다, 룰 11-1-4)'));
 
-  if (pa.stage === 'targetChoice') {
+  if (gate) {
+    // waiting for the queued effects (message above)
+  } else if (pa.stage === 'targetChoice') {
     const attackerStack = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
     const blockedByDynamic = blockedFromDigimonTarget(pa.attacker, attackerStack);
     if (pa.canHitPlayer) {
@@ -2708,15 +2738,6 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { pa.terminate(); } }, '어택 종료 (대상 없음)')]));
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
-    if (pa.chargeTarget) {
-      for (const cuid of (pa.chargeTargets && pa.chargeTargets.length ? pa.chargeTargets : [pa.chargeTarget])) {
-        const ct = state.players[pa.opp].battle.find(s => s.uid === cuid);
-        if (ct) rows.push(h('div', { className: 'actions-row' }, [
-          h('span', {}, `《돌진》 — 가장 DP가 높은 액티브 ${S.card(ct.cardId).nameKo}(으)로 어택 대상 변경`),
-          h('button', { onClick: () => { pa.targetKind = 'digimon'; pa.targetUid = ct.uid; pa.chargeTarget = null; pa.chargeTargets = []; pa.redirectOptions = []; noteRedirect(pa); enterCounterTiming(pa); render(); } }, '변경'),
-        ]));
-      }
-    }
     if (pa.redirectOptions.length) rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
     pa.redirectOptions.forEach(opt => {
       const tUid = opt.targetUid || opt.stackUid;
@@ -2738,7 +2759,7 @@ function renderPendingAttack() {
         }, '변경'),
       ]));
     });
-    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, pa.redirectOptions.length || pa.chargeTarget ? '넘기기' : '진행 (카운터 단계로)'));
+    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, pa.redirectOptions.length ? '넘기기' : '진행 (카운터 단계로)'));
   } else if (pa.stage === 'counterTiming' && !pa.paused) {
     rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {
