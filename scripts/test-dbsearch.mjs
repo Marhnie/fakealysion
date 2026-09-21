@@ -25,6 +25,12 @@ assert.ok(has(run('진화원 4장', 'inherited'), 'ST1-01'));
 const yp = run('옐로 퍼플'); assert.ok(yp.some(id => cards[id].colors.includes('yellow') && cards[id].colors.includes('purple')), 'multi-color words');
 const mono = run('', 'all', { colors: ['red'], mono: true }); assert.ok(mono.length && mono.every(id => cards[id].colors.length === 1 && cards[id].colors[0] === 'red'));
 assert.ok(run('', 'all', { cats: ['tamer'] }).every(id => cards[id].category === 'tamer'));
+// 색 AND/OR: colorAnd 켜면 선택한 색을 전부 가진 카드만, 끄면 하나라도 가진 카드
+{ const orR = run('', 'all', { colors: ['red', 'blue'] }), andR = run('', 'all', { colors: ['red', 'blue'], colorAnd: true });
+  assert.ok(andR.length > 0 && andR.length < orR.length, 'AND is narrower than OR');
+  assert.ok(andR.every(id => cards[id].colors.includes('red') && cards[id].colors.includes('blue')), 'AND: every card has both');
+  assert.ok(orR.every(id => cards[id].colors.includes('red') || cards[id].colors.includes('blue')), 'OR: any of'); }
+
 assert.ok(run('', 'all', { levels: [3, 4], cost: { min: '2', max: '5' } }).every(id => [3, 4].includes(cards[id].level) && cards[id].cost >= 2 && cards[id].cost <= 5));
 assert.ok(has(run('', 'all', { keywords: ['블로커'], packs: ['ST'] }), 'ST1-06'));
 assert.ok(has(run('', 'all', { tags: ['어택시'] }), 'ST1-06'));

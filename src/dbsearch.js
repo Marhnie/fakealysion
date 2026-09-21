@@ -144,7 +144,7 @@ export function splitHighlight(text, terms) {
 // ---- filters ----
 export function defaultFilter() {
   return {
-    q: '', scope: 'all', cats: [], colors: [], mono: false, levels: [],
+    q: '', scope: 'all', cats: [], colors: [], colorAnd: false, mono: false, levels: [],
     cost: { min: '', max: '' }, dp: { min: '', max: '' }, evo: { min: '', max: '' },
     traits: [], keywords: [], tags: [], packs: [], setKey: '', rarities: [],
     inDeck: false, hideMax: false, hasPar: false, sort: 'id', pageSize: 60,
@@ -167,7 +167,7 @@ export function activeFilterCount(f) {
 // ctx = { copies(id) -> copies in deck, max(id) -> limit }
 export function matchFilters(f, c, b, ctx) {
   if (f.cats.length && !f.cats.includes(c.category)) return false;
-  if (f.colors.length && !f.colors.some(col => (c.colors || []).includes(col))) return false;
+  if (f.colors.length && !(f.colorAnd ? f.colors.every(col => (c.colors || []).includes(col)) : f.colors.some(col => (c.colors || []).includes(col)))) return false; // colorAnd: 선택한 색을 전부 가진 카드(AND) / 아니면 하나라도(OR)
   if (f.mono && (c.colors || []).length !== 1) return false;
   if (f.levels.length && !f.levels.includes(c.level)) return false;
   if (!inRange(c.cost, f.cost) || !inRange(c.dp, f.dp) || !inRange(b.evoCost, f.evo)) return false;

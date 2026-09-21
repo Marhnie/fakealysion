@@ -498,7 +498,8 @@ function renderDeckBuilderScreen() {
   els.panel = h('div', { className: 'db-panel', style: dbPanelOpen ? '' : 'display:none' }, [
     sect('종류', ...DBS.CATS.map(([v, l]) => dbChip(l, () => dbFilter.cats.includes(v), () => toggleIn(dbFilter.cats, v)))),
     sect('색', ...DBS.COLORS.map(([v, l]) => dbChip(l, () => dbFilter.colors.includes(v), () => toggleIn(dbFilter.colors, v), '', 'col-' + v)),
-      dbChip('단색만', () => dbFilter.mono, () => { dbFilter.mono = !dbFilter.mono; }, '체크 해제 = 다색 포함')),
+      dbChip('단색만', () => dbFilter.mono, () => { dbFilter.mono = !dbFilter.mono; }, '체크 해제 = 다색 포함'),
+      dbChip('모두 포함 (AND)', () => dbFilter.colorAnd, () => { dbFilter.colorAnd = !dbFilter.colorAnd; }, '켜면 선택한 색을 전부 가진 카드만 (예: 레드+블루 = 두 색을 모두 가진 카드). 끄면 선택한 색 중 하나라도 가진 카드 (OR)')),
     sect('Lv', ...[2, 3, 4, 5, 6, 7].map(n => dbChip('Lv.' + n, () => dbFilter.levels.includes(n), () => toggleIn(dbFilter.levels, n)))),
     dbRange('cost', '등장·사용 코스트', 1), dbRange('dp', 'DP', 1000), dbRange('evo', '진화 코스트', 1),
     sect('특징', traitInput, traitList, els.traitChips),
