@@ -7,6 +7,7 @@ import * as DB from './deckbuilder.js';
 import * as DBS from './dbsearch.js'; // deck-builder search/filter (pure)
 import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup / sample hand / deck management (logic: decktools.js)
 import * as DT from './decktools.js';
+import * as CD from './cpudeck.js'; // CPU-evolved decks (data/cpu-decks.json, optional) + 'CPU가 덱 짜주기'
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
 import { peekWrap, peekNone, peekIdOf } from './peek.js'; // 👁 필드 보기: fold any prompt into a pill
@@ -43,6 +44,7 @@ function h(tag, attrs = {}, children = []) {
 async function init() {
   await S.loadData();
   try { await Cpu.loadParams(); } catch (e) { /* data/cpu-params.json is optional: the 전문가 level falls back to built-in params */ }
+  try { await CD.loadCpuDecks('./data/cpu-decks.json'); } catch (e) { /* optional data file: no CPU decks offered */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
   PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
@@ -71,7 +73,7 @@ const uiChoiceByCpu = (uc) => cpuOn && !!uc && (uc.by ? uc.by === CPU_P : Cpu.de
 const cpuApiObj = {
   getState: () => (cpuOn && !PR.isReplay() ? state : null), // (never play inside the replay viewer's scratch state)
   busy: () => busy(),
-  pendingAttack: () => sel.pendingAttack,
+  pendingAttack: () => (attackActive() ? sel.pendingAttack : null), // (룰상 끝난 어택의 결과 패널은 CPU/구동기에 보이지 않는다)
   pendingOwner: cpuPendingOwner,
   hasScript: (t) => !t.manualOnly && scriptFor(t).length > 0,
   closePending: (uid) => { S.resolvePending(state, uid); render(); },
@@ -214,7 +216,15 @@ function deckOptionsList() {
   return Object.keys(saved).map(name => ({ key: 'saved:' + name, label: name }));
 }
 
+let cpuRandomDeck = null; // the '🎲 랜덤 CPU 덱' pick, rolled once per game start
+function cpuDeckByKey(key) {
+  if (key === 'cpu:__random') return cpuRandomDeck;
+  const nm = key.slice(4);
+  const d = (CD.getLoadedDecks() || []).find(x => x.name === nm);
+  return d ? { name: d.name, main: { ...d.main }, digitama: { ...d.digitama } } : null;
+}
 function resolveDeckPick(key) {
+  if (key.startsWith('cpu:')) return cpuDeckByKey(key);
   if (key.startsWith('saved:')) {
     const saved = DB.loadSavedDecks();
     return saved[key.slice(6)];
@@ -257,10 +267,19 @@ function renderSetup() {
 
   // deck picker card (P1 / P2): a big select + summary (card counts, colour dots)
   const deckCard = (p, title) => {
-    const sel = h('select', { className: 'su-select' }, options.map(o => h('option', { value: o.key }, o.label)));
+    const cpuDecks = (p === 'p2' && CPU_CFG.mode === 'cpu') ? (CD.getLoadedDecks() || []) : [];
+    const savedOpts = options.map(o => h('option', { value: o.key }, o.label));
+    let selKids = savedOpts;
+    if (cpuDecks.length) {
+      const wr = (d) => d.winrate != null ? ' · ' + Math.round(d.winrate * 100) + '%' : '';
+      const dot = (d) => (d.colors || []).map(c => ({ red: '🔴', blue: '🔵', yellow: '🟡', green: '🟢', black: '⚫', purple: '🟣', white: '⚪' }[c] || '')).join('');
+      selKids = [h('optgroup', { label: '내 덱' }, savedOpts), h('optgroup', { label: 'CPU 추천/진화 덱' }, [h('option', { value: 'cpu:__random' }, '🎲 랜덤 CPU 덱'), ...cpuDecks.map(d => h('option', { value: 'cpu:' + d.name }, dot(d) + ' ' + d.name + wr(d)))])];
+    } else if (p === 'p2' && setupPick.p2 && setupPick.p2.startsWith('cpu:')) setupPick.p2 = options[1] ? options[1].key : options[0].key;
+    const sel = h('select', { className: 'su-select' }, selKids);
     sel.value = setupPick[p];
     const info = h('div', { className: 'su-deckinfo' });
     const paint = () => {
+      if (setupPick[p] === 'cpu:__random') { info.replaceChildren(h('span', {}, '진화된 CPU 덱 중 무작위 (시작할 때 정해집니다)')); return; }
       const i = setupDeckInfo(setupPick[p]);
       info.replaceChildren(h('span', {}, `메인 ${i.main}장 · 디지타마 ${i.egg}장`), h('span', { className: 'su-dots' }, i.colors.map(c => h('i', { className: 'su-dot', title: (SETUP_COLORS[c] || [])[1] || c, style: `background:${(SETUP_COLORS[c] || ['#888'])[0]}` }))));
     };
@@ -332,6 +351,24 @@ function loadDbFilter() {
   } catch { return def; }
 }
 function saveDbFilter() { try { localStorage.setItem(DBS_KEY, JSON.stringify({ ...dbFilter, pageSize: 60 })); } catch { /* storage unavailable */ } }
+
+// 🤖 CPU가 덱 짜주기: colour (or auto) + optional set -> CD.buildDeckFromCollection fills the draft; the checkup panel shows the result and the user can tweak.
+function cpuBuildRow() {
+  const colSel = h('select', { className: 'db-scope', title: '색' }, [h('option', { value: '' }, '색: 자동'), ...Object.entries(SETUP_COLORS).map(([k, v]) => h('option', { value: k }, '색: ' + v[1]))]);
+  const setSel = h('select', { className: 'db-scope', title: '세트' }, [h('option', { value: '' }, '세트: 전체/자동'), ...(dbOpts ? dbOpts.sets : []).map(x => h('option', { value: x }, '세트: ' + x))]);
+  const btn = h('button', { className: 'primary', title: '진화로 다듬어진 CPU 덱/생성기로 40+5장 합법 덱을 채웁니다', onClick: () => {
+    btn.disabled = true; btn.textContent = '🤖 짜는 중…';
+    setTimeout(() => {
+      try {
+        const r = CD.buildDeckFromCollection({ colors: colSel.value ? [colSel.value] : undefined, sets: setSel.value ? [setSel.value] : undefined });
+        if (!r || !r.deck) { dbLastError = 'CPU 덱 짜기 실패 — ' + ((r && r.reason) || '알 수 없음'); }
+        else { dbDraft = { name: r.deck.name || 'CPU 덱', main: { ...r.deck.main }, digitama: { ...r.deck.digitama }, art: {} }; dbSavedName = r.deck.name || 'CPU 덱'; if (dbEls && dbEls.name) dbEls.name.value = dbSavedName; dbLastError = ''; showToast(r.source === 'evolved' ? '진화 덱을 불러왔습니다 — 체크업을 확인하고 자유롭게 고치세요' : 'CPU가 덱을 짰습니다 — 체크업을 확인하고 자유롭게 고치세요'); }
+      } catch (e) { dbLastError = 'CPU 덱 짜기 오류: ' + (e.message || e); }
+      btn.disabled = false; btn.textContent = '🤖 CPU가 덱 짜주기'; dbRefreshDeck();
+    }, 30);
+  } }, '🤖 CPU가 덱 짜주기');
+  return h('div', { className: 'actions-row' }, [btn, colSel, setSel]);
+}
 
 function openDeckBuilder() {
   dbDraft = DB.newDraft();
@@ -555,6 +592,7 @@ function renderDeckBuilderScreen() {
       h('button', { onClick: () => { const t = deckToText(dbDraft, S); if (!t) { dbLastError = '내보낼 카드가 없습니다'; dbRefreshDeck(); return; } (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => { dbLastError = ''; showToast('덱 리스트를 복사했습니다'); }).catch(() => { openDeckImport(t); }); } }, '덱 복사(내보내기)'),
       h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; dbLastError = ''; dbRefreshDeck(); } }, '새로 만들기(초기화)'),
     ]),
+    cpuBuildRow(),
     dbDA.el,
   ]);
 
@@ -745,6 +783,8 @@ try { const v = JSON.parse(localStorage.getItem('digimon_last_pick_v1') || 'null
 // 🎲 restart the same decks with a fresh shuffle / opening hand (solo practice)
 function restartHand() { if (lastStartPick) setupPick = { ...lastStartPick }; if (!setupPick.p1 || !setupPick.p2) { state = null; render(); return; } startNewGame(); }
 function startNewGame() {
+  cpuRandomDeck = null;
+  if (setupPick.p2 === 'cpu:__random') { try { cpuRandomDeck = CD.pickCpuDeck({ style: 'random' }); } catch (e) { /* ignore */ } if (!cpuRandomDeck) { setupError = 'CPU 덱 데이터를 불러오지 못했습니다.'; renderSetup(); return; } }
   // 1-4-1: refuse to start with an illegal deck (previously-saved decks may predate the save check).
   for (const p of ['p1', 'p2']) {
     const def = resolveDeckPick(setupPick[p]);
@@ -812,12 +852,12 @@ function afterMulliganCheck() {
 // 6-5-1: main-phase actions (play / evolve / use / link / attack / activate / pass) may only be
 // taken while NOTHING is left unresolved — no waiting effect, open choice, or attack in progress.
 function busy() {
-  return !!state.uiChoice || !!sel.pendingAttack || !!sel.atkQueued || !!state.turnEnding || state.pending.some(t => !t.resolved);
+  return !!state.uiChoice || attackActive() || !!sel.atkQueued || !!state.turnEnding || state.pending.some(t => !t.resolved);
 }
 // 6-6-2/6-6-3: a begun turn end finishes only once nothing is left to resolve (no waiting effect, choice, or
 // attack — including one an end-of-turn effect has queued to start).
 function settleTurnEndIfIdle() {
-  if (state.turnEnding && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
+  if (state.turnEnding && !state.uiChoice && !attackActive() && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
 }
 function blockIfBusy() {
   if (cpuHumanLocked()) return true; // vs CPU: nothing on the CPU's turn is the human's to do (silently ignored)
@@ -853,6 +893,7 @@ function pumpReplacementPrompt() {
 // 화면 그리기 중 예외가 나도 빈 화면으로 멈추지 않게: 오류 내용을 화면에 보여 주고 복구 버튼을 준다 (폰에서는 콘솔을 볼 수 없으므로)
 let renderErrCount = 0;
 function render() {
+  { const pa0 = sel && sel.pendingAttack; if (pa0 && pa0.rulesEnded && state && (state.turnNumber !== pa0.turn0 || state.phase !== 'main')) sel.pendingAttack = null; }
   try { renderInner(); renderErrCount = 0; }
   catch (e) {
     console.error('render failed', e);
@@ -888,7 +929,7 @@ function healLeakedFxState() {
 let rcIdleSince = 0;
 function healIdleLeak() {
   if (!state || !(state._rcDepth > 0)) { rcIdleSince = 0; return; }
-  const idle = !pendingRunner && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved) && !(state.pendingReplacements || []).length && fxBusyMs() <= 0;
+  const idle = !pendingRunner && !state.uiChoice && !attackActive() && !sel.atkQueued && !state.pending.some(t => !t.resolved) && !(state.pendingReplacements || []).length && fxBusyMs() <= 0;
   if (!idle) { rcIdleSince = 0; return; }
   if (!rcIdleSince) { rcIdleSince = Date.now(); setTimeout(() => { if (state) render(); }, 3200); return; }
   if (Date.now() - rcIdleSince > 3000) { rcIdleSince = 0; healLeakedFxState(); }
@@ -909,7 +950,7 @@ function renderInner() {
   // shifted by a card effect (e.g. an "어택 시 메모리 -2" effect) finishing
   // resolution, not just the direct memory-spending actions that already
   // called checkAutoEndTurn themselves.
-  if (state.phase === 'main' && !state.pending.length && !sel.pendingAttack && !state.uiChoice && !state.turnEnding) {
+  if (state.phase === 'main' && !state.pending.length && !attackActive() && !state.uiChoice && !state.turnEnding) {
     if (E.checkAutoEndTurn(state)) { // turn end begun (6-6-1): start resolving its effects / finish right away when none
       settleTurnEndIfIdle();
       E.autoAdvance(state);
@@ -2510,6 +2551,7 @@ function doSecurityStep(pa) {
       if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, pa.attacker, pa.uid, 'trash', 'battle');
     }
     pa.secDone = true;
+    finishAttackRules(pa);
   } else {
     stepPause(pa, 'result', `시큐리티 체크 ${ctl.i}/${ctl.total} 완료 — 다음 체크로 넘어갑니다`, () => doSecurityStep(pa));
   }
@@ -2534,7 +2576,7 @@ function resolveFinalTarget(pa) {
     stepPause(pa, 'digimonResult', '배틀! 양쪽 DP를 비교해 결과를 확인합니다', () => {
       const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
       if (!res) { S.log(state, '배틀 직전 어택 중인 디지몬/대상이 사라져 어택이 성립하지 않고 종료 (11-2-6)'); endAttack(); return; }
-      pa.stage = 'digimonResult'; pa.battleRes = res;
+      pa.stage = 'digimonResult'; pa.battleRes = res; finishAttackRules(pa);
     });
   }
 }
@@ -2640,14 +2682,22 @@ function settleRedirectTiming(pa) {
 
 // 【어택 종료 시】 (82 printed segments) — was never queued anywhere. Fires for
 // the attacker's stack (own + inherited text) once the attack panel is closed.
-function endAttack() {
-  const pa = sel.pendingAttack;
-  sel.pendingAttack = null;
-  if (!pa) return;
+// 어택이 룰적으로 끝나는 시점(결과 확정: 시큐리티 체크/배틀이 끝났거나 어택이 성립하지 않아 종료)에 바로 처리한다.
+// 결과 패널(sel.pendingAttack)을 닫는 것과는 무관하다 — 패널은 결과를 보여 주는 표시일 뿐이고, 어택 종료 시 효과·어택 중 상태 정리는 여기서 일어난다.
+function finishAttackRules(pa) {
+  if (!pa || pa.rulesEnded) return;
+  pa.rulesEnded = true;
   if (state.attackCtx === pa) state.attackCtx = null;
   const st = findStack({ player: pa.attacker, uid: pa.uid });
   if (st) S.s8AttackEnded(state, pa.attacker, pa.uid); // s8
   if (st) { S.queueTriggersForStack(state, pa.attacker, st, 'attackEnd'); S.emitGameEvent(state, 'attackEnd', { owner: pa.attacker, stack: st, cause: null }); }
+}
+// 진행 중인(룰상 아직 안 끝난) 어택이 있는가 — 결과만 남은 패널은 게임 진행을 막지 않는다
+const attackActive = () => !!sel.pendingAttack && !sel.pendingAttack.rulesEnded;
+function endAttack() {
+  const pa = sel.pendingAttack;
+  if (pa) finishAttackRules(pa);
+  sel.pendingAttack = null;
 }
 
 // Attack-step actions shared by the buttons in renderPendingAttack and the CPU driver (cpuApiObj.pa) — one code path for both.
@@ -2702,7 +2752,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   const canHitPlayer = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); // b9: digimonOnly = "상대의 디지몬에게 어택할 수 있다" (RB1-025)
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
   pa.fireDeclare = fireDeclare;
-  sel.pendingAttack = pa;
+  pa.turn0 = state.turnNumber; sel.pendingAttack = pa;
   state.attackCtx = pa; // read by card scripts ("어택 중인 대상…"); pa.terminate() ends this attack ("그 어택을 종료한다")
   pa.terminate = () => { if (sel.pendingAttack === pa) { endAttack(); render(); } };
 
@@ -3089,7 +3139,7 @@ function fxRecView(rec, full) {
     rec.src.kind === 'effect' && c.imgUrl ? artImg(S.artUrl(state, so, rec.src.cardId) || c.imgUrl, c.imgUrl, { className: 'fx-src-img', alt: c.nameKo, onClick: () => { fxUI.info = rec.src.cardId; render(); } }) : null,
     h('div', {}, [
       h('div', { className: 'fx-src-name' }, rec.src.kind === 'effect'
-        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited ? h('span', { className: 'fx-tag' }, ' 상속') : null]
+        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited ? h('span', { className: 'fx-tag' }, ' 진화원 효과') : null]
         : `⚙ ${rec.src.label}`),
       h('div', { className: 'meta' }, `턴 ${rec.turn}`),
     ]),
