@@ -16,7 +16,8 @@ const DATA = ['cards', 'cards_full', 'decks', 'dgchub_keywords', 'dgchub_tokens'
 for (const extra of ['data/cpu-decks.json', 'data/cpu-params.json']) { try { sh(`git cat-file -e HEAD:${extra}`, { cwd: root }); DATA.push(extra); } catch { /* optional */ } }
 
 sh('git fetch -q origin gh-pages', { cwd: root });
-const W = fs.mkdtempSync(path.join(os.tmpdir(), 'ghp-'));
+const TMPROOT = path.join(root, 'scratch', 'tmp'); fs.mkdirSync(TMPROOT, { recursive: true }); // C: 드라이브는 쓰지 않는다 (사용자 지시)
+const W = fs.mkdtempSync(path.join(TMPROOT, 'ghp-'));
 fs.rmSync(W, { recursive: true, force: true });
 sh('git worktree prune', { cwd: root });
 sh(`git worktree add -q -f "${W}" origin/gh-pages`, { cwd: root });
