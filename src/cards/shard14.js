@@ -68,7 +68,7 @@ OPS.n5_jogressPair = async (i, ctx) => {
   const digis = pl.battle.filter(s => isDig(s.cardId));
   const pairs = [];
   pl.hand.forEach((id, k) => {
-    if (!isDig(id) || !S.parseJogress(id) || (i.cardName && !S.cardNameIs(C(id), i.cardName))) return;
+    if (!isDig(id) || !S.parseJogress(id) || (i.cardName && !S.cardNameIs(C(id), i.cardName)) || (i.pred && !i.pred(id))) return;
     for (let a = 0; a < digis.length; a++) for (let b = a + 1; b < digis.length; b++) if (S.canJogress(digis[a], digis[b], id).ok) pairs.push({ k, a: digis[a], b: digis[b] });
   });
   if (!pairs.length) { log(ctx, `${p} 조그레스 진화 가능한 조합이 없음`); return; }

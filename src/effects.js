@@ -430,7 +430,7 @@ function candidateStacks(ctx, who, instr) {
   let arr = state.players[who].battle.filter(s => (f?.category || instr.anyKind ? true : S.card(s.cardId).category === 'digimon') && (!instr.excludeSelf || s.uid !== ctx.sourceStackUid) && matchesFilter(S, s, f, state));
   const ex = f?.extreme;
   if (ex && arr.length) {
-    const val = (s) => ex.stat === 'level' ? (S.card(s.cardId).level || 0) : ex.stat === 'cost' ? S.effectiveCost(state, s) : S.effectiveDP(state, who, s);
+    const val = (s) => ex.stat === 'sources' ? s.sources.length : ex.stat === 'level' ? (S.card(s.cardId).level || 0) : ex.stat === 'cost' ? S.effectiveCost(state, s) : S.effectiveDP(state, who, s);
     const best = ex.dir === 'min' ? Math.min(...arr.map(val)) : Math.max(...arr.map(val));
     arr = arr.filter(s => val(s) === best);
   }
@@ -1381,7 +1381,7 @@ async function runOneCore(instr, ctx) {
       // 8-x-2-5: continuous evolve-cost effects also apply to effect-driven evolution (not when "no cost is paid").
       const costAdj = instr.cost.mode === 'free' ? 0 : S.continuousEvoCostDiscount(state, who, src, cardId) + S.hookEvoCostDiscount(state, who, src, cardId);
       if (instr.zone === 'trash') zoneArr.splice(idx, 1);
-      S.digivolve(state, who, src.uid, cardId, Math.max(0, cost + costAdj), instr.zone === 'trash' ? 'trash' : 'hand');
+      if (S.digivolve(state, who, src.uid, cardId, Math.max(0, cost + costAdj), instr.zone === 'trash' ? 'trash' : 'hand')) ctx._evolvedByEffect = true; // "이 효과로 진화했다면" (EX13-004)
       break;
     }
     case 'destroySum': {
@@ -1628,11 +1628,13 @@ async function runOneCore(instr, ctx) {
         for (const s of matching()) S.preventRest(state, targetPlayer, s.uid, expiresAfterTurn);
         break;
       }
+      const pickedNR = []; // "N마리(명)": N DIFFERENT targets (EX13-016 "디지몬/테이머 2마리(명)는 레스트할 수 없다")
       for (let i = 0; i < (instr.n || 1); i++) {
-        const uids = matching().map(s => s.uid);
+        const uids = matching().map(s => s.uid).filter(u => !pickedNR.includes(u));
         if (!uids.length) break;
         const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '레스트 불가로 만들 디지몬 선택' });
         if (!targetUid) break;
+        pickedNR.push(targetUid);
         S.preventRest(state, targetPlayer, targetUid, expiresAfterTurn);
       }
       break;
@@ -1995,7 +1997,7 @@ function parseEvolveEffect(text) {
   else if ((m = sent.match(/(?:진화\s*)?코스트\s*(\d+)\s*(?:을\s*지불하여|으로|를\s*지불하여)|(\d+)\s*코스트\s*지불하여/))) cost = { mode: 'fixed', n: Number(m[1] ?? m[2]) };
   const ignoreCond = /진화\s*조건을\s*무시/.test(sent), ignoreLevel = /Lv\.\s*을\s*무시/.test(sent);
   // zone + card descriptor: "<zone>의 <desc>(으)로"
-  const zm = sent.match(/(패\/트래시|패|트래시)의\s*(.+?)\s*(?:으로|로)\s*(?:(?:진화\s*조건을\s*무시하고|Lv\.을\s*무시하고|코스트를\s*지불하지\s*않고|지불하는\s*진화\s*코스트\s*-\d+\s*하여|진화\s*코스트\s*\d+\s*(?:을\s*지불하여|으로)|\d+\s*코스트\s*지불하여|코스트를\s*지불하여|진화\s*코스트를\s*지불하여)\s*)*(?:진화시킬|진화할|진화시킨다)/);
+  const zm = sent.match(/(패\/트래시|패|트래시)의\s*(.+?)\s*(?:으로|로)\s*(?:(?:진화\s*조건을\s*무시하고|Lv\.을\s*무시하고|코스트를\s*지불하지\s*않고|지불하는\s*(?:진화\s*)?코스트\s*-\d+\s*하여|진화\s*코스트\s*\d+\s*(?:을\s*지불하여|으로)|\d+\s*코스트\s*지불하여|코스트를\s*지불하여|진화\s*코스트를\s*지불하여)\s*)*(?:진화시킬|진화할|진화시킨다)/);
   if (!zm) return null;
   const zone = zm[1] === '패' ? 'hand' : zm[1] === '트래시' ? 'trash' : 'handTrash'; // "패/트래시의 X로 진화" (BT16-071): zone chosen at run time
   const subjText = sent.slice(0, zm.index).replace(/[,\s]+$/, '').replace(/(?:을|를|은|는)$/, '').replace(/\s*자신의$/, '').replace(/(?:을|를|은|는)$/, '').trim();
@@ -3742,14 +3744,14 @@ function tailLink(s0) {
   return null;
 }
 function tailSentenceOps(raw, next, idx) {
-  let s = raw.replace(/\([^()]*\)/g, '').replace(/[.。]\s*$/, '').trim().replace(/^그\s*후,?\s*/, '');
+  let s = raw.replace(/\([^()]*\)/g, '').replace(/[.。]\s*$/, '').trim().replace(/^[\[〔]턴\s*\d+\s*회[\]〕]\s*/, '').replace(/^그\s*후,?\s*/, '');
   let cond = null, m;
   if ((m = s.match(/^((?:자신|상대)의\s*턴)\s*이라면,?\s*(.+)$/s))) { cond = m[1]; s = m[2]; }
   let ops = null, used = 1;
   if (/링크\s*(?:시킬|할)\s*수\s*있다$/.test(s) && !/마인드|것으로/.test(s)) ops = tailLink(s);
   else if ((m = s.match(/^자신의\s*디지몬\s*2\s*마리로\s*패의\s*「([^」]+)」(?:으로|로|에)\s*조그레스\s*진화할\s*수\s*있다$/))) ops = [{ op: 'n5_jogressPair', cardName: m[1] }];
   else if (/^이\s*디지몬(?:과\s*상대의\s*디지몬\s*1\s*마리로|으로\s*상대의\s*디지몬\s*1\s*마리와)\s*배틀할\s*수\s*있다$/.test(s)) ops = [{ op: 'n5_battle' }];
-  else if ((m = s.match(/^자신의\s*(패|트래시)에서,?\s*(.*?)\s*카드\s*1\s*장을\s*(?:지불하는\s*)?(?:등장\s*)?코스트\s*-\s*(\d+)\s*(?:으로|로|하여)\s*(등장\s*\/\s*사용|등장)(?:시킬|할)?\s*수\s*있다$/s))) {
+  else if ((m = s.match(/^자신의\s*(패|트래시)에서,?\s*(.*?)\s*카드\s*1\s*장을\s*(?:지불하는\s*)?(?:등장\s*)?코스트\s*-\s*(\d+)\s*(?:으로|로|하여)\s*(등장\s*\/\s*사용|등장시키거나\s*사용|등장)(?:시킬|할)?\s*수\s*있다$/s))) {
     const f = tailFilter(m[2]);
     if (f.ok) ops = [{ op: 'n5_playPaid', zone: m[1] === '패' ? 'hand' : 'trash', filter: f.filter, delta: -Number(m[3]), kinds: /사용/.test(m[4]) ? ['digimon', 'tamer', 'option'] : ['digimon', 'tamer'], optional: true }];
   } else if ((m = s.match(/^자신의\s*(패\s*\/\s*트래시|패\s*또는\s*트래시|패|트래시)에서,?\s*(.*?)\s*카드를\s*등장\s*코스트\s*합계\s*(\d+)\s*까지\s*코스트를\s*지불하지\s*않고\s*등장시킬\s*수\s*있다$/s))) {
