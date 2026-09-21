@@ -13,3 +13,4 @@ scratch/
 .tmp_fix/
 __pycache__/
 data/rulings/
+*.stackdump
