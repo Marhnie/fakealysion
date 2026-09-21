@@ -38,7 +38,7 @@ export const PARAM_RANGES = {
 export function makeParams(partial) { return { ...TUNE, ...(partial || {}) }; }
 const tp = (cfg) => (cfg && cfg.params) || TUNE;
 // 'expert' = level hard's logic + tuned params (data/cpu-params.json, loaded by loadParams()) + a deeper search inside the time budget
-export const EXPERT = { params: null, meta: null, search: { depth: 5, budgetMs: 1100, hardCapMs: 1500, rootBeam: 10, beam: 6, samples: 2 }, headlessNodes: 400 };
+export const EXPERT = { params: null, meta: null, search: { depth: 4, budgetMs: 1250, hardCapMs: 1400, rootBeam: 8, beam: 5, samples: 2 }, headlessNodes: 60 }; // 1.3 s soft / 1.5 s hard wall-clock per decision (hard: 0.9 s / 2.5 s)
 export const isHardLike = (level) => level === 'hard' || level === 'expert';
 // level name -> decision config { level: internal logic level, params }.  'expert' is hard logic + tuned params.
 export function levelCfg(level) { return level === 'expert' ? { level: 'hard', params: EXPERT.params } : { level, params: null }; }

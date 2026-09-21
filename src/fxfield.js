@@ -167,7 +167,7 @@ function srcLabelText(rec) {
   const s = rec.src;
   if (s.kind !== 'effect') return `⚙ ${s.label || '룰'}`;
   const nm = s.cardId ? cardOf(s.cardId).nameKo : '';
-  return `${P(s.owner)} 「${nm}」${s.tag ? '【' + s.tag + '】' : ''}${s.inherited ? ' 진화원 효과' : ''} 발동`;
+  return `${P(s.owner)} 「${nm}」${s.tag ? '【' + s.tag + '】' : ''}${s.inherited && s.tag !== '시큐리티' ? ' 진화원 효과' : ''} 발동`;
 }
 const shortSrc = (rec) => rec.src.kind === 'effect' ? `${P(rec.src.owner)} 「${cardOf(rec.src.cardId).nameKo}」${rec.src.tag ? '【' + rec.src.tag + '】' : ''}` : (rec.src.label || '룰');
 function gist(rec) {
