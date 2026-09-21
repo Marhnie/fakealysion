@@ -93,7 +93,7 @@ T(685, 'ST7-06 plays at battle end even when the attacker wins', async () => {
   ok('ST7-06 in p2 battle area', st.players.p2.battle.some(s => s.cardId === 'ST7-06'));
 });
 T(685, 'ST7-06 plays even when the attacker loses', async () => {
-  const st = mk(); const a = put(st, 'p1', vanilla(2000)); setSec(st, 'p2', ['ST7-06', LOW]); await atkSec(st, 'p1', a.uid);
+  const st = mk(); const a = put(st, 'p1', Object.values(S.CARDS).find(c => c.category === 'digimon' && c.dp === 2000).id); setSec(st, 'p2', ['ST7-06', LOW]); /* 아무 DP 2000 디지몬 */ await atkSec(st, 'p1', a.uid);
   ok('ST7-06 in p2 battle area', st.players.p2.battle.some(s => s.cardId === 'ST7-06'));
 });
 // Q686: the security digimon appears before the next check of the same attack
