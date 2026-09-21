@@ -42,3 +42,23 @@ export function stepTitle(list, i) {
   const m = e.snap.meta;
   return `${i + 1}/${list.length} · 턴 ${m.turn} (${m.active}) · ${PHASE[m.phase] || m.phase} · 메모리 ${m.memory > 0 ? '+' : ''}${m.memory}`;
 }
+
+// ---------- 전체 리플레이 파일 (대전이 끝난 뒤 저장 → 나중에 불러와서 처음부터 다시 볼 수 있음) ----------
+// format 'digimon-sim-replay' v2: 모든 스텝의 스냅샷(+ 그 스텝에서 생긴 로그 줄)을 담는다. v1(logJSON)은 로그만 있어 화면 재생은 불가.
+export function replayFileJSON(state, list = SN.TL.list) {
+  const obj = {
+    format: 'digimon-sim-replay', v: 2, exportedAt: Date.now(),
+    decks: list[0] ? list[0].snap.meta.decks : null, firstPlayer: state && state.firstPlayer, winner: (state && state.winner) || null, turns: state && state.turnNumber,
+    steps: list.map((e) => ({ label: e.label, lines: e.lines, snap: SN.snapToObject(e.snap) })),
+  };
+  return SN.stringify(obj, false);
+}
+// text -> timeline list [{snap,label,lines,dig}] (throws when it is not a v2 replay file)
+export function parseReplayFile(text) {
+  const o = SN.parse(text);
+  if (!o || o.format !== 'digimon-sim-replay') throw new Error('디지몬 시뮬레이터 리플레이 파일이 아닙니다');
+  if (o.v !== 2 || !Array.isArray(o.steps) || !o.steps.length) throw new Error('화면 재생이 가능한 리플레이(v2)가 아닙니다 — 이 파일은 로그만 담고 있습니다');
+  const scratch = {};
+  const list = o.steps.map((s) => ({ snap: SN.snapFromObject(s.snap, scratch), label: s.label || '', lines: s.lines || [], dig: '' }));
+  return { list, meta: { decks: o.decks, winner: o.winner, firstPlayer: o.firstPlayer, turns: o.turns, exportedAt: o.exportedAt } };
+}

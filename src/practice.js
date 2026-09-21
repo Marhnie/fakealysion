@@ -150,6 +150,7 @@ function fmtSlot(i) {
 }
 function loadText(text, label) {
   try {
+    if (/"format"\s*:\s*"digimon-sim-replay"/.test(text.slice(0, 400))) { loadReplayText(text, label); return; }
     const { state, eotLost } = SG.stateFromText(text);
     P.autoFor = null; SN.resetTimeline(null);
     api.setState(state); api.resetSel(); closeModal(); api.render();
@@ -205,6 +206,8 @@ export function startScreenExtras() {
   const kids = [];
   if (last) kids.push(h('button', { className: 'primary', title: fmtSlot(last), onClick: () => { const t = SG.readSlot(last.slot); if (t) loadText(t, ''); } }, `▶ 마지막 게임 이어하기 (${last.slot === 'auto' ? '자동' : '슬롯 ' + last.slot} · 턴 ${last.turn})`));
   kids.push(h('button', { onClick: () => openModal('save') }, '📂 저장한 게임 불러오기'));
+  const rf = h('input', { type: 'file', accept: '.json,application/json', style: 'display:none', onchange: async (e) => { const f = e.target.files && e.target.files[0]; if (f) { try { loadReplayText(await f.text(), f.name); } catch (er) { toast('파일 읽기 실패'); } } e.target.value = ''; } });
+  kids.push(h('button', { title: '대전 종료 후 저장한 리플레이 파일을 불러와 처음부터 다시 봅니다', onClick: () => rf.click() }, '🎞 리플레이 불러오기'), rf);
   return h('div', { className: 'pr-start' }, kids);
 }
 
@@ -220,6 +223,32 @@ function replayEnter() {
   document.body.classList.add('pr-replay');
   replayGo(P.replay.idx);
 }
+// 대전 종료 후 저장: 모든 스텝의 스냅샷을 담은 리플레이 파일(.json)을 내려받는다
+export function saveReplayFile() {
+  const live = ST(); if (!live) { toast('저장할 게임이 없습니다'); return false; }
+  try { if (!reason()) SN.sync(live, '', true); } catch (e) { /* ignore */ }
+  if (!SN.TL.list.length) { toast('기록된 스텝이 없습니다'); return false; }
+  try {
+    const text = RP.replayFileJSON(live);
+    const w = live.winner ? (live.winner === 'draw' ? 'draw' : live.winner + '-win') : 'game';
+    SG.downloadText(`digimon-replay-t${live.turnNumber}-${w}.json`, text);
+    toast(`리플레이를 저장했습니다 (${SN.TL.list.length}스텝, ${(text.length / 1048576).toFixed(1)}MB) — 시작 화면의 "리플레이 불러오기"로 다시 볼 수 있습니다`);
+    return true;
+  } catch (e) { toast('리플레이 저장 실패: ' + (e && e.message)); return false; }
+}
+// 저장한 리플레이 파일을 열어 처음부터 재생 (진행 중인 게임 없이도 가능)
+export function loadReplayText(text, label) {
+  try {
+    const { list, meta } = RP.parseReplayFile(text);
+    if (P.replay) return;
+    P.live = ST() || null;
+    P.replay = { list, idx: 0, scratch: {}, standalone: !P.live, meta };
+    closeModal();
+    document.body.classList.add('pr-replay');
+    replayGo(0);
+    toast('리플레이를 불러왔습니다' + (label ? ': ' + label : '') + ` (${list.length}스텝)`);
+  } catch (e) { P.msg = '리플레이 불러오기 실패: ' + (e && e.message); toast(P.msg); fillSaveModal(); }
+}
 function replayGo(i) {
   const R = P.replay; if (!R) return;
   i = Math.max(0, Math.min(R.list.length - 1, i)); R.idx = i;
@@ -230,15 +259,23 @@ function replayGo(i) {
 }
 function replayExit(resumeHere) {
   const R = P.replay; if (!R) return;
-  const live = P.live; P.replay = null; P.live = null;
+  const live = P.live; const standalone = !!R.standalone; P.replay = null; P.live = null;
   document.body.classList.remove('pr-replay');
   const bar = document.getElementById('pr-replay-bar'); if (bar) bar.remove();
+  if (standalone) { SN.resetTimeline(null); api.setState(null); api.resetSel(); api.render(); toast('리플레이를 종료했습니다'); return; }
   if (resumeHere) {
     SN.restoreState(live, R.list[R.idx].snap);
     SN.TL.list = R.list; SN.TL.cur = R.idx; SN.TL.owner = live; SN.TL.head = null;
     S.log(live, `(리플레이) 스텝 ${R.idx + 1}에서 이어서 진행`); SN.TL.head = live.log[0] || null;
   } else S.rebindState(live);
   api.setState(live); api.resetSel(); api.render(); toast(resumeHere ? '해당 시점에서 이어서 진행합니다' : '리플레이를 종료했습니다');
+}
+function replayContinueStandalone() {
+  const R = P.replay; if (!R) return;
+  const live = {}; SN.restoreState(live, R.list[R.idx].snap); live.log = R.scratch.log || []; live.fxHistory = [];
+  P.replay = null; P.live = null; document.body.classList.remove('pr-replay');
+  const bar = document.getElementById('pr-replay-bar'); if (bar) bar.remove();
+  SN.resetTimeline(null); api.setState(live); api.resetSel(); api.render(); toast('해당 스텝에서 이어서 진행합니다');
 }
 function renderReplayBar() {
   const R = P.replay; if (!R) return;
@@ -253,7 +290,7 @@ function renderReplayBar() {
       h('button', { disabled: R.idx >= R.list.length - 1, onClick: () => replayGo(R.idx + 1) }, '다음 ▶'),
       h('button', { disabled: R.idx >= R.list.length - 1, onClick: () => replayGo(R.list.length - 1) }, '⏭'),
       h('span', { className: 'pr-rp-title' }, RP.stepTitle(R.list, R.idx)),
-      h('button', { title: '이 시점 상태로 게임을 이어서 진행', onClick: () => replayExit(true) }, '여기서 이어하기'),
+      R.standalone ? h('button', { title: '이 스텝의 상태로 새 게임처럼 이어서 진행', onClick: () => replayContinueStandalone() }, '여기서 이어하기') : h('button', { title: '이 시점 상태로 게임을 이어서 진행', onClick: () => replayExit(true) }, '여기서 이어하기'),
       h('button', { className: 'primary', onClick: () => replayExit(false) }, '종료'),
     ]),
     slider,

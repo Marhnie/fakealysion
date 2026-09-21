@@ -67,6 +67,10 @@ export function restoreState(state, snap, opts = {}) {
   Object.assign(state, data);
   state.endOfTurnEffects = (snap.eot || []).map(e => ({ ...e }));
   state.uiChoice = null; state.pendingReplacements = []; state._replWaiters = []; state._leavePending = []; state._fxRec = null;
+  // Transient effect-runner bookkeeping never survives a load/undo: no script is running in a freshly restored state. A save taken while a
+  // parked effect run had leaked _rcDepth (investigate-fragment-save: DP<=0 rule checks were deferred forever, a DP -10000 Digimon lived on)
+  // would otherwise stay "mid-effect" for good (17-1-2-2 defers every rule check while _rcDepth > 0).
+  if (state._rcDepth) state._rcDepth = 0; if (state._fxSrc) state._fxSrc = null; if (state._caster) state._caster = null; if (state._fxOp) state._fxOp = null; if (state._ownBusy) state._ownBusy = false; if (state._dp0Delete) state._dp0Delete = false; // (키가 없던 상태를 새로 만들지 않도록 truthy 일 때만 정리)
   if (!state.log) state.log = [];
   if (!state.fxHistory) state.fxHistory = [];
   S.setCounters(snap.counters, !!opts.exactCounters);
