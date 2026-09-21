@@ -1213,7 +1213,7 @@ function stackActionList(p, stack, zoneKind) {
   const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
   mainAbilities.forEach((ab, i) => {
     const payable = Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text);
-    out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인', disabled: !payable, // 15-8-4-4-1
+    out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1} · ${S.card(ab.cardId).nameKo}${ab.cardId === stack.cardId ? '' : '(진화원)'}` : '⚡메인', disabled: !payable, // 여러 개일 때 어느 카드의 효과인지(진화원 효과 포함) 이름으로 구분 // 15-8-4-4-1
       title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
       run: () => {
         if (blockIfBusy()) return;
