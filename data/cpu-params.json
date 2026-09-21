@@ -1,0 +1,38 @@
+{
+ "version": 1,
+ "level": "hard",
+ "trainedGames": 93000,
+ "winrateVsBaseline": 0.567,
+ "winrateVsBaselineHeldOutDecks": 0.53,
+ "note": "sep-CMA-ES self-play (scripts/cpu-evolve.mjs), policy params only; see docs/cpu-play-evolution.md",
+ "params": {
+  "hardReserve": 3.6724,
+  "hardThrA": -1.861,
+  "hardThreshold": 2.8693,
+  "hardLimit": 7.0836,
+  "hardGw": 0.4108,
+  "secDpMid": 4915.9283,
+  "pSecDig": 0.3386,
+  "hardGain2": 2.6229,
+  "hardChump": 1.0913,
+  "gainBase": 2.2788,
+  "pBlockHi": 0.8699,
+  "pBlockLo": 0.4606,
+  "cThr": 1.0499,
+  "baitBonus": 0.793,
+  "dangerLim": 4.2212,
+  "tieBlockSec": 3.6042,
+  "chumpVal": 4.8395,
+  "mullCost": 4.3374,
+  "mullHiCost": 5.8081
+ },
+ "search": {
+  "depth": 4,
+  "budgetMs": 1250,
+  "hardCapMs": 1400,
+  "rootBeam": 8,
+  "beam": 5,
+  "samples": 2
+ },
+ "headlessNodes": 60
+}

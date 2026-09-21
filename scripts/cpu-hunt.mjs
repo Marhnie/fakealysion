@@ -6,7 +6,7 @@
 // Also collects per-card exposure (top / source / hand / trigger) -> blind-spot list.
 //
 // Usage: node scripts/cpu-hunt.mjs --mode starters|focus|theme|mech|random|mix [--minutes 8] [--seed N] [--shard i/n] [--games N]
-//          [--levels easy,normal,hard,hard4] [--per 2] [--out file.json] [--from IDX] < /dev/null
+//          [--levels easy,normal,hard,hard4,expert] [--per 2] [--out file.json] [--from IDX] < /dev/null
 // Replay one game: node scripts/cpu-hunt.mjs --spec '<json spec printed in a finding>' --verbose < /dev/null
 import * as fs from 'fs';
 import * as S from '../src/state.js';
@@ -17,6 +17,7 @@ import * as CpuSearch from '../src/cpusearch.js';
 import { createSim } from '../src/cpusim.js';
 global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url.replace(/^\.\//, './'), 'utf8')) });
 await S.loadData();
+await Cpu.loadParams(); // data/cpu-params.json for the 'expert' level (missing file -> built-in defaults)
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 ? (argv[i + 1] === undefined || argv[i + 1].startsWith('--') ? true : argv[i + 1]) : d; };
@@ -286,7 +287,7 @@ function onTrigger(g, t) {
 }
 
 // ---------- game ----------
-const parseLv = (name) => (name === 'hard4' ? { level: 'hard', search: true } : { level: name, search: false });
+const parseLv = (name) => (name === 'hard4' ? { level: 'hard', search: true } : name === 'expert' ? { ...Cpu.levelCfg('expert'), search: true } : { level: name, search: false }); // 'expert' = hard logic + tuned params (data/cpu-params.json) + search
 const actKey = (a) => a ? [a.type, a.cardId, a.uid, a.target, a.idx].join('|') : 'none';
 async function playGame(spec) {
   seedRng(spec.seed);
@@ -304,7 +305,7 @@ async function playGame(spec) {
   try {
     E.drawOpeningHand(state, 'p1'); E.drawOpeningHand(state, 'p2');
     const first = E.coinFlip();
-    for (const p of [first, S.opponentOf(first)]) if (Cpu.shouldMulligan(state, p, cfgs[p].level)) E.mulligan(state, p);
+    for (const p of [first, S.opponentOf(first)]) if (Cpu.shouldMulligan(state, p, cfgs[p].level, cfgs[p].params)) E.mulligan(state, p);
     E.setSecurityStacks(state); E.beginGame(state, first);
   } catch (e) { noteErr('setup', e); return { err: true, decksOk }; }
   g.init = census(state);

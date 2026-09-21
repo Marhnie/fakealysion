@@ -758,7 +758,7 @@ function dbRefreshPreview() {
       line('특징', [...(c.types || []), c.attribute, c.form && /^[가-힣]/.test(c.form) ? c.form : null].filter(Boolean).join(' / ')),
       line('진화', evo),
       textBox('효과', c.effectKo),
-      textBox('진화원 효과', c.inheritedKo),
+      textBox('진화원 효과', (c.inheritedKo || '').split('\n').filter(l => !/^\s*【시큐리티】/.test(l)).join('\n')), // (【시큐리티】 줄은 진화원 효과가 아니라 아래 시큐리티 효과)
       textBox('시큐리티 효과', security),
       textBox('링크 / 크로스 / 조그레스', linkish),
     ]),
@@ -2436,7 +2436,7 @@ function describeSelectedEffects() {
     const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} 코스트${c.cost ?? "-"} DP${c.dp ?? '-'}`];
     if (c.evoNormal) bits.push(`진화: ${(c.evoNormal.colors||[]).join('/')} Lv.${c.evoNormal.level}→코스트${c.evoNormal.cost}`);
     if (c.effectKo) bits.push(c.effectKo);
-    if (c.inheritedKo) bits.push('[진화원효과] ' + c.inheritedKo);
+    { const inhLines = (c.inheritedKo || '').split('\n'); const inh = inhLines.filter(l => !/^\s*【시큐리티】/.test(l)).join('\n'), secL = inhLines.filter(l => /^\s*【시큐리티】/.test(l)).join('\n'); if (inh) bits.push('[진화원효과] ' + inh); if (secL) bits.push('[시큐리티효과] ' + secL); } // 시큐리티 효과는 진화원 효과가 아니다
     parts.push(bits.join('\n'));
   };
   if (sel.hand) showCard(sel.hand.cardId);
@@ -3139,7 +3139,7 @@ function fxRecView(rec, full) {
     rec.src.kind === 'effect' && c.imgUrl ? artImg(S.artUrl(state, so, rec.src.cardId) || c.imgUrl, c.imgUrl, { className: 'fx-src-img', alt: c.nameKo, onClick: () => { fxUI.info = rec.src.cardId; render(); } }) : null,
     h('div', {}, [
       h('div', { className: 'fx-src-name' }, rec.src.kind === 'effect'
-        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited ? h('span', { className: 'fx-tag' }, ' 진화원 효과') : null]
+        ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited && rec.src.tag !== '시큐리티' ? h('span', { className: 'fx-tag' }, ' 진화원 효과') : null]
         : `⚙ ${rec.src.label}`),
       h('div', { className: 'meta' }, `턴 ${rec.turn}`),
     ]),
