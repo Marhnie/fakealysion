@@ -79,7 +79,7 @@ const cpuApiObj = {
   fxBusyMs: () => fxBusyMs(),
   setActing: (b) => { cpuActing = !!b; },
   dbgPending: () => JSON.stringify({ runner: !!pendingRunner, run: runningPendingUid, att: [...autoRunAttempted], sameState: attemptedFor === state }), // (opt-in diagnostics: window.__cpuDebug = true)
-  retryPending: () => { syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runnerTok = null; runningPendingUid = null; render(); }, // watchdog: re-arm a parked effect runner
+  retryPending: () => { syncAttempted(); for (const t of state.pending) if (!t.resolved) autoRunAttempted.delete(t.uid); pendingRunner = null; runnerTok = null; runningPendingUid = null; healLeakedFxState(); render(); }, // watchdog: re-arm a parked effect runner (the abandoned run may still hold _rcDepth/_fxSrc: without healing, 17-1-3 rule checks would be deferred forever)
   thinkUpdate: () => { try { const bar = document.querySelector('.cpu-bar'); if (!bar || !cpuDrv) return; const b = bar.querySelector('b'); if (b) b.textContent = `${cpuBarLabel()} · ${Cpu.LEVEL_LABEL[CPU_CFG.level]}`; bar.classList.toggle('thinking', cpuDrv.isThinking()); } catch (e) { /* ignore */ } },
   skipBreeding: () => { E.nextPhase(state); render(); },
   hatch: (p) => { S.hatchDigitama(state, p); render(); },
@@ -875,8 +875,26 @@ function render() {
     } catch (e4) { /* nothing more we can do */ }
   }
 }
+// Effect-runner bookkeeping (state._rcDepth = 17-1-2-2 "no rule check while an effect resolves", _fxSrc, _caster) is restored by runScript's finally.
+// A run that is parked forever and then orphaned (watchdog retry / replaced game) never gets there: _rcDepth stays >0 and EVERY later rule check
+// (DP<=0 deletion, 17-1-3-1) is deferred for the rest of the game (save c8f45ab9: a DP -10000 Magnetdramon lived on). Heal it.
+function healLeakedFxState() {
+  if (!state || !(state._rcDepth > 0)) return;
+  S.log(state, '효과 처리 상태 복구: 멈춘 효과의 잔여 상태를 정리하고 룰체크를 수행합니다');
+  state._rcDepth = 0; state._fxSrc = null; state._caster = null; state._fxOp = null; state._fxRec = null;
+  try { S.flushLeaves(state); S.flushRuleChecks(state); } catch (e) { /* never block */ }
+}
+let rcIdleSince = 0;
+function healIdleLeak() {
+  if (!state || !(state._rcDepth > 0)) { rcIdleSince = 0; return; }
+  const idle = !pendingRunner && !state.uiChoice && !sel.pendingAttack && !sel.atkQueued && !state.pending.some(t => !t.resolved) && !(state.pendingReplacements || []).length && fxBusyMs() <= 0;
+  if (!idle) { rcIdleSince = 0; return; }
+  if (!rcIdleSince) { rcIdleSince = Date.now(); setTimeout(() => { if (state) render(); }, 3200); return; }
+  if (Date.now() - rcIdleSince > 3000) { rcIdleSince = 0; healLeakedFxState(); }
+}
 function renderInner() {
   if (!state) return renderSetup();
+  healIdleLeak();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();
   if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // 17-1-3-1 (rule-oracle): a recorded DP penalty that took effect lazily while no effect was resolving (15-15-5-2) is rule-checked at the next safe point
@@ -2231,6 +2249,7 @@ function renderGameOverModal() {
       h('div', { className: 'go-btns' }, [
         (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
         h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+        h('button', { title: '이 대전의 모든 스텝을 파일로 저장 — 시작 화면의 "리플레이 불러오기"로 처음부터 다시 볼 수 있습니다', onClick: () => { PR.saveReplayFile(); } }, '🎞 리플레이 저장'),
         h('button', { onClick: close }, '필드 확인 (닫기)'),
       ]),
     ]),

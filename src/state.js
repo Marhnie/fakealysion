@@ -4225,7 +4225,9 @@ function trySurviveByKeyword(state, p, stack, cause) {
     rec(M - 1, []);
     for (const combo of idxCombos) {
       if (opt(() => {
-        const ids = combo.slice().sort((x, y) => y - x).map(i => stack.sources.splice(i, 1)[0]);
+        const fd0 = fdCount(stack); let fdGone = 0; // keep the face-down bottom block (s5fd) in sync when face-down sources are among the chosen ones (4-7-9: they are still evolution cards)
+        const ids = combo.slice().sort((x, y) => y - x).map(i => { if (i < fd0) fdGone++; return stack.sources.splice(i, 1)[0]; });
+        if (fd0) stack.s5fd = Math.max(0, fd0 - fdGone);
         pl.trash.push(...ids);
         log(state, `${p} ${card(stack.cardId).nameKo} 《프래그먼트 ${frag}》 — 진화원 ${ids.map(id => card(id).nameKo).join(', ')} 파기하여 소멸하지 않음`);
         recomputeStackGrants(stack);
@@ -4311,13 +4313,14 @@ function surviveCost(text) {
       holderCost: true,
       pick: (h) => {
         if (sameLv) { const fd = fdCount(h), by = {}; h.sources.forEach((id, i) => { const lv = i >= fd ? card(id).level : null; if (lv != null) (by[lv] ||= []).push({ id, i }); }); const lvs = Object.keys(by).filter(k => by[k].length >= n).sort((a, b) => a - b); return lvs.length ? by[lvs[0]].slice(-n) : []; }
-        return h.sources.map((id, i) => ({ id, i })).filter(x => match(x.id, h)).slice(-n);
+        const fd = fdCount(h); // 4-7-9: a face-down source has no card information, so a name/Lv./trait filter can never match it
+        return h.sources.map((id, i) => ({ id, i })).filter(x => x.i >= fd && match(x.id, h)).slice(-n);
       },
       can(st, p, h) { return this.pick(h).length >= n; },
       pay(st, p, h) {
         const idxs = this.pick(h).map(x => x.i).sort((a, b) => b - a);
         const ids = [];
-        for (const i of idxs) ids.push(...h.sources.splice(i, 1));
+        for (const i of idxs) ids.push(...h.sources.splice(i, 1)); // (only face-up sources are picked, which sit above the face-down block: s5fd is unchanged)
         (toDeck ? st.players[p].deck : st.players[p].trash).push(...ids);
         recomputeStackGrants(h);
         if (toDeck && ids.length) emitGameEvent(st, 'b4SourceToDeckBottom', { owner: p, stack: h, cause: 'effect', ids }); // batch4: BT11-065 "이 디지몬의 진화원에서 「벰몬」이 덱 아래로 되돌아갔을 때"
@@ -4761,7 +4764,7 @@ export function retreat(state, p, uid, stages) {
   const trashed = [];
   for (let i = 0; i < stages; i++) {
     if (i > 0 && (effectBlocked(state, p, stack, 'retreat') || effectBlocked(state, p, stack, 'srcTrash'))) break; // 16-12-8: the state is re-checked before EACH stage (an immunity gained mid-way stops the rest)
-    if (stack.sources.length === 0) break; // nothing left to peel
+    if (stack.sources.length - fdCount(stack) <= 0) break; // nothing left to peel (a face-down source (4-7-9) has no card information and can't become the top card)
     if (card(stack.cardId).level != null && card(stack.cardId).level <= 3) break; // 《퇴화》 can't peel below Lv.3
     trashed.push(stack.cardId);
     stack.cardId = stack.sources.pop(); stack.turnEffectUses = {}; /* 15-14-1-5-2: new card resets [턴에 N회] */
@@ -4772,6 +4775,13 @@ export function retreat(state, p, uid, stages) {
     log(state, `${p} ${trashed.map(id=>card(id).nameKo).join(',')} 퇴화(트래시), 현재 최상단: ${card(stack.cardId).nameKo}`);
     applyOverflowBatch(state, p, trashed);
     recomputeStackGrants(stack);
+    // Q&A(BT9-109 X항체 등): 《퇴화》로 DP를 가질 수 없는 카드(옵션 카드)가 최상단이 되면, 그 카드는 단독으로 배틀 에어리어에 있을 수 없어 아래 진화원과 함께 파기된다 (소멸로 취급하지 않음)
+    { const bi = pl.battle.indexOf(stack); if (bi !== -1 && card(stack.cardId).category === 'option' && !isAsDigimon(stack)) {
+      pl.battle.splice(bi, 1);
+      pl.trash.push(...[...stack.sources, stack.cardId, ...(stack.linkCards || []).map(l => l.cardId)].filter(x => !CARDS[x]?.isToken));
+      log(state, `${p} ${card(stack.cardId).nameKo}가 최상단이 되어 단독으로 존재할 수 없으므로 진화원과 함께 파기 (소멸 아님)`);
+      return trashed;
+    } }
     ruleCheckDP(state, p, stack);
     for (const tid of trashed) emitGameEvent(state, 'topTrashed', { owner: p, stack, cause: state._fxSrc ? 'effect' : null, cardId: tid, whole: false }); // each peeled card was the top stacked card (BT21-094)
   } else {
