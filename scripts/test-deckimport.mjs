@@ -38,14 +38,6 @@ const t = deckToText({ main: r.main, digitama: r.digitama }, S); const r2 = pars
 assert.deepEqual(r2.main, r.main); assert.deepEqual(r2.digitama, r.digitama);
 const leg = S.deckLegality({ main: r.main, digitama: r.digitama }); console.log('legality', JSON.stringify(leg).slice(0, 300));
 // DCGO 덱 파일 형식: "N 이름   ID(_Pn)" + 머리말(Name:/Key Card:/Sort Index:)
-{ const d = parseDeckText('Name: NewDeck
-Key Card: -1
-Sort Index: 0
-
-// DeckList
-
-4 Minomon   BT3-004_P1 
-3 KoKabuterimon   BT16-037 
-', S);
+{ const d = parseDeckText(['Name: NewDeck', 'Key Card: -1', 'Sort Index: 0', '', '// DeckList', '', '4 Minomon   BT3-004_P1 ', '3 KoKabuterimon   BT16-037 '].join('\n'), S);
   assert.equal(d.errors.length, 0); assert.equal(d.digitama['BT3-004'], 4); assert.equal(d.main['BT16-037'], 3); }
 console.log('deckimport tests OK');
