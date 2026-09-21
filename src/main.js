@@ -98,6 +98,7 @@ const cpuApiObj = {
     render();
   },
   pa: {
+    chain: (pa, uid) => { if (!pa.chainUsed && S.useChain(state, pa.attacker, pa.uid, uid)) { pa.chainUsed = true; const a = state.players[pa.attacker].battle.find(x => x.uid === pa.uid); if (a) pa.dp = S.effectiveDP(state, pa.attacker, a); } },
     chooseTarget: (pa, tgt) => paChooseTarget(pa, tgt),
     passRedirect: (pa) => { enterCounterTiming(pa); render(); },
     passCounter: (pa) => { enterBlockCheck(pa); render(); },

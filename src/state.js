@@ -1125,8 +1125,12 @@ export function useChain(state, p, attackerUid, otherUid) {
   restStack(state, p, otherUid);
   if (!o.suspended) return false; // 16-24-3: rest is the (optional) cost — if it didn't happen, no DP/S 어택 bonus
   emitGameEvent(state, 'chainRest', { owner: p, stack: o, cause: 'effect' }); // shard2
+  // 16-24-1: 그 어택의 종료까지 — the DP bonus and the 《S 어택 +1》 last only for this attack (undone in revertAtkEndBuffs)
+  const dp0 = a.tempDP || 0, sa0 = Number(a.keywords['시큐리티어택']) || 0;
   modifyDP(state, p, attackerUid, dp, 'turn');
   grantKeyword(state, p, attackerUid, '시큐리티어택', 1, 'turn');
+  const rv = (a.chainRevert ||= { dp: 0, sa: 0 });
+  rv.dp += (a.tempDP || 0) - dp0; rv.sa += (Number(a.keywords['시큐리티어택']) || 0) - sa0;
   log(state, `${p} ${card(a.cardId).nameKo} 《연계》 — ${card(o.cardId).nameKo} 레스트, DP+${dp}, S 어택 +1`);
   return true;
 }
@@ -5323,6 +5327,12 @@ export function effectBlocked(state, tp, target, kind, causeHint = null) {
 // s8: buffs applied for a single effect-triggered attack ("~한 후 그 디지몬으로 어택") are undone when that attack ends.
 export function revertAtkEndBuffs(state, p, uid) {
   const st = findStackAny(state, p, uid);
+  if (st && st.chainRevert) { // ≪연계≫ (16-24-1): 어택 종료까지만 유효
+    const rv = st.chainRevert; st.chainRevert = null;
+    if (rv.dp) st.tempDP = (st.tempDP || 0) - rv.dp;
+    if (rv.sa) { const left = (Number(st.keywords['시큐리티어택']) || 0) - rv.sa; if (left > 0) st.keywords['시큐리티어택'] = left; else { delete st.keywords['시큐리티어택']; if (st.keywordExpiry) delete st.keywordExpiry['시큐리티어택']; } }
+    log(state, `${p} ${card(st.cardId).nameKo} 《연계》 효과 종료 — 어택 종료`);
+  }
   if (!st || !st.s8AtkRevert) return;
   const a = st.s8AtkRevert; st.s8AtkRevert = 0;
   modifyDP(state, p, uid, -a, 'turn');

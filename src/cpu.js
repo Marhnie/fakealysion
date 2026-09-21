@@ -745,6 +745,20 @@ export function createUiDriver(api) {
     if (pa.stage === 'targetChoice') {
       const tgt = force ? (pa.canHitPlayer ? 'PLAYER' : pa.digimonTargets[0]) : chooseAttackTarget(st, pa, cfg());
       if (tgt == null) { api.pa.close(pa); return true; }
+      if (!pa.chainUsed && api.pa.chain && !force) { // ≪연계≫: 플레이어 어택이면 가장 DP 낮은 액티브 디지몬으로, 디지몬 어택이면 이기기 위해 필요한 만큼의 디지몬으로 사용
+        try {
+          const opts = S.chainOptions(st, pa.attacker, pa.uid);
+          if (opts.length) {
+            const dpOf = (u) => S.effectiveDP(st, pa.attacker, st.players[pa.attacker].battle.find(x => x.uid === u));
+            const sorted = opts.slice().sort((x, y) => dpOf(x) - dpOf(y));
+            const atk = st.players[pa.attacker].battle.find(x => x.uid === pa.uid);
+            let pick = null;
+            if (tgt === 'PLAYER') pick = sorted[0];
+            else { const td = S.effectiveDP(st, pa.opp, st.players[pa.opp].battle.find(x => x.uid === tgt)); const need = td - S.effectiveDP(st, pa.attacker, atk); if (need >= 0) pick = sorted.find(u => dpOf(u) > need) || null; }
+            if (pick != null) api.pa.chain(pa, pick);
+          }
+        } catch (e) { /* 연계는 선택 사항 */ }
+      }
       api.pa.chooseTarget(pa, tgt);
     } else if (pa.stage === 'redirectTiming') {
       api.pa.passRedirect(pa);
