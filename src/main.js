@@ -1417,7 +1417,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
     keywordBadges: [...activeKeywordBadges(stack), ...(jgMat ? ['🧬재료'] : [])],
     jogress: jgMat,
-    draggable: isOwnActiveBattle && !isCpuSide(p),
+    draggable: isOwnActiveBattle && !isCpuSide(p) && S.card(stack.cardId).category === 'digimon', // 테이머는 어택할 수 없으므로 드래그 어택 없음
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
     target: !!handTargetKind(p, stack, zoneKind),
@@ -1549,7 +1549,7 @@ function renderPlayerPanel(p) {
   // on the board — the player and each attackable Digimon — as a second,
   // more discoverable way to attack besides dragging.
   const selectedEnemyAttacker = (sel.stack && sel.stack.player !== p && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer && state.phase === 'main')
-    ? findStack(sel.stack) : null;
+    ? findStack(sel.stack) : null; // (테이머는 canAttackPlayer가 false라 대상 강조가 나오지 않는다)
   const canAttackThisPlayerByClick = selectedEnemyAttacker && !selectedEnemyAttacker.suspended && S.canAttackPlayer(state, sel.stack.player, sel.stack.uid);
   const canAttackThisPlayer = canAttackThisPlayerByDrag || canAttackThisPlayerByClick;
   const legalClickTargets = canAttackThisPlayerByClick ? new Set(S.legalDigimonTargets(state, sel.stack.player, sel.stack.uid)) : new Set();
@@ -1838,6 +1838,7 @@ async function runPendingScript(trigger, opts = {}) {
     render();
     return;
   }
+  if (S.waitingDestroyEffectGone(state, trigger)) { S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo}의 【소멸 시】 효과: 카드가 이미 트래시를 벗어나 발휘하지 못함`); S.resolvePending(state, trigger.uid); render(); return; }
   // 15-4-4-3: a waiting effect can't resolve if its card left the area or turned into a NEW card
   // (evolved / fused) before its turn came. 【소멸 시】 effects are meant to wait after leaving.
   if (trigger.stackUid && trigger.topId && !trigger.evt?.leaving && !trigger.tags.some(t => t.includes('소멸 시'))) {
@@ -1855,6 +1856,12 @@ async function runPendingScript(trigger, opts = {}) {
       render();
       return;
     }
+  }
+  if (S.pendingCardLeftZone(state, trigger)) { // Q5230/5593/5758/5905: the deleted card left the trash before this 【소멸 시】 effect resolved
+    S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 소멸한 카드가 트래시를 벗어나 발휘하지 못함`);
+    S.resolvePending(state, trigger.uid);
+    render();
+    return;
   }
   const limit = parseOnceLimit(trigger.text);
   let onceMark = null;

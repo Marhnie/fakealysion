@@ -449,6 +449,10 @@ export function parseWatcherTrigger(body) {
       who = 'any'; if (/다른/.test(rest)) other = true;
     } else if ((mm = rest.match(/^(다른\s*)?자신의\s*패$/)) && kind === 'discard') {
       who = 'own'; subjPred = () => true;
+    } else if (kind === 'discard' && /^패$/.test(rest)) { // slice6 G275 (BT26-059 "패가 파기되었을 때"): either player's hand
+      who = 'any'; subjPred = () => true;
+    } else if (kind === 'discard' && /^상대의\s*패$/.test(rest)) {
+      who = 'opp'; subjPred = () => true;
     } else return null;
   }
   // effect text, optionally gated by "그 디지몬이 <desc>를 가진다면,"
@@ -491,11 +495,11 @@ export function parseEventWatcher(body) {
     const selfOnly = /^이\s*디지몬이$/.test(m[1].trim());
     let pr = null;
     if (!selfOnly) { const desc = m[1].replace(/자신의\s*디지몬이$/, '').trim(); if (desc) { pr = evoTargetPredicate(desc); if (!pr) return null; } }
-    return { limit, kinds: ['battleWin'], test: (s, hp, h, i) => i.owner === hp && !!i.stack && (selfOnly ? i.stack === h : (!pr || pr(card(i.stack.cardId)))), effect: m[2].trim() };
+    return { limit, kinds: ['battleWin'], test: (s, hp, h, i) => i.owner === hp && !!i.stack && !!i.loser && (selfOnly ? i.stack === h : (!pr || pr(card(i.stack.cardId)))), effect: m[2].trim() };
   }
   // "(자신의|상대의) 덱이 파기되었을 때" / "자신이 옵션 카드를 사용했을 때" / "자신의 효과로 이 디지몬의 진화원이 늘어났을 때"
-  if ((m = b.match(/^(자신의|상대의)\s*덱이\s*(?:효과로\s*)?파기되었을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['deckDiscard'], test: (s, hp, h, i) => (m[1] === '자신의' ? i.owner === hp : i.owner !== hp), effect: m[2].trim() };
-  if ((m = b.match(/^덱이\s*(자신의|상대의)\s*효과로\s*늘어났을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['deckIncrease'], test: (s, hp, h, i) => i.owner === hp && (m[1] === '자신의' ? i.srcPlayer === hp : i.srcPlayer !== hp), effect: m[2].trim() }; // b9: BT26-015 (the deck = the holder's own; "자신의 효과로" = caused by its controller's effect)
+  if ((m = b.match(/^(자신의|상대의)\s*덱이\s*(?:효과로\s*)?파기되었을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['deckDiscard'], test: (s, hp, h, i) => !i.viaOpen && (m[1] === '자신의' ? i.owner === hp : i.owner !== hp), effect: m[2].trim() }; // official Q&A (BT8-074/BT8-079 source effect): trashing the leftover of an "open top N ... discard the rest" effect is not "the deck was trashed"
+  if ((m = b.match(/^덱이\s*(자신의|상대의)\s*효과로\s*늘어났을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['deckIncrease'], test: (s, hp, h, i) => (m[1] === '자신의' ? i.srcPlayer === hp : i.srcPlayer !== hp), effect: m[2].trim() }; // b9/slice6 G226: "자신의 효과로" = caused by its controller's effect; the increased deck may be either player's (official Q&A: 自分の効果で相手のデッキが増えたときも誘発)
   if ((m = b.match(/^자신이\s*옵션\s*카드를\s*사용했을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['optionUsed'], test: (s, hp, h, i) => i.owner === hp, effect: m[1].trim() };
   if ((m = b.match(/^(?:자신의\s*효과로\s*이\s*디지몬의\s*진화원이|이\s*디지몬의\s*진화원이\s*자신의\s*효과로)\s*늘어났을\s*때,?\s*(.+)$/s))) return { /* b9: + RB1-001 word order */ limit, kinds: ['sourcesAdded'], test: (s, hp, h, i) => i.stack === h && i.srcPlayer === hp, effect: m[1].trim() };
   // "(<조건> 자신의 디지몬)의 진화원이 (효과로) 늘어났을 때" / "자신의 디지몬의 진화원에 뒷면의 카드가 놓였을 때" / "…가 육성 에어리어에서 (배틀 에어리어로) 이동했을 때" / "자신의 패가 자신의 디지몬의 효과로 늘어났을 때"
@@ -536,7 +540,7 @@ export function parseEventWatcher(body) {
   // "자신이 사용 코스트 N 이상의 옵션 카드를 사용했을 때"
   if ((m = b.match(/^자신이\s*사용\s*코스트\s*(\d+)\s*이상의\s*옵션\s*카드를\s*사용했을\s*때,?\s*(.+)$/s))) {
     const n = Number(m[1]);
-    return { limit, kinds: ['optionUsed'], test: (s, hp, h, i) => i.owner === hp && (i.useCost ?? card(i.cardId).cost ?? 0) >= n, effect: m[2].trim() };
+    return { limit, kinds: ['optionUsed'], test: (s, hp, h, i) => i.owner === hp && (i.baseCost ?? card(i.cardId).cost ?? 0) >= n, effect: m[2].trim() }; // Q5449-5515: 「사용 코스트」 = printed cost (or the hand card's own lowered cost, i.baseCost); a reduced PAID cost / free effect use still counts
   }
   // "자신의 디지몬의 어택의 대상이 변경되었을 때"
   if ((m = b.match(/^자신의\s*디지몬의\s*어택의\s*대상이\s*변경되었을\s*때,?\s*(.+)$/s))) return { limit, kinds: ['redirect'], test: (s, hp, h, i) => i.owner === hp, effect: m[1].trim() };
@@ -587,6 +591,11 @@ export function emitGameEvent(state, kind, info) {
     if (state._secDecBatch.has(info.owner)) return;
     state._secDecBatch.add(info.owner);
   }
+  // 15-5-2 (slice6 G41): several hand cards discarded by ONE effect instruction trigger a "자신의 패가 파기되었을 때" condition once; each card still fires its own "이 카드가 …파기되었을 때".
+  if (kind === 'discard' && info.cause === 'effect' && state._discardBatch) {
+    if (state._discardBatch.has(info.owner)) { queueOwnDiscardTriggers(state, kind, info); return; }
+    state._discardBatch.add(info.owner);
+  }
   for (const hook of EVENT_HOOKS) hook(state, kind, info);
   queueOwnDiscardTriggers(state, kind, info); // 옵션의 "이 카드가 <영역>에서 [효과로] 파기되었을 때" (덱/패/시큐리티/진화원/배틀 에어리어)
   queueTrashZoneEventTriggers(state, kind, info); // "[트래시]【자신의/서로의 턴】 자신의 디지몬이 「N」로 진화했을 때, 이 카드를 덱 아래로 되돌리는 것으로 …" (세븐스 옵션)
@@ -632,6 +641,7 @@ export function emitGameEvent(state, kind, info) {
               if (ab.condPred && !ab.condPred(subjCard)) continue;
             }
           }
+          if (kind === 'delete' && state._delBatch && !/마다/.test(seg.body)) { const bk = `${hp}|${holder.uid}|${id}|${seg.tags.join()}|${own ? 'e' : 'i'}`; if (state._delBatch.has(bk)) continue; state._delBatch.add(bk); } // 15-5-2 (official Q&A 909/910, BT1-049): several digimon deleted at the SAME time by one instruction / one rule check satisfy a "소멸했을 때" watcher once (unless it says 1마리마다)
           if (ab.limit != null && turnUsesRemaining(holder, onceLimitKey(id, seg.tags), ab.limit) <= 0) continue;
           // Leading conditions/costs we can evaluate here: "이 디지몬이 레스트|액티브 상태라면," and
           // the very common "이 테이머를 레스트시키는 것으로," (rest the holder Tamer as the cost).
@@ -683,7 +693,7 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, evt: { kind: eventKind } });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, delToZone: state._deleteToZone || null, evt: { kind: eventKind } });
     }
   }
 }
@@ -730,7 +740,7 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
     if (applied) {
       log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, evt: { kind: eventKind } });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, delToZone: state._deleteToZone || null, evt: { kind: eventKind } });
     }
   }
 }
@@ -804,7 +814,7 @@ export function activateCounter(state, p, opt, pa = null) {
       if (cost > 0) spendMemory(state, cost);
       pl.trash.push(opt.cardId);
       log(state, `${p} ${card(opt.cardId).nameKo} 카운터로 사용 (코스트${cost})`);
-      emitGameEvent(state, 'optionUsed', { owner: p, stack: null, cause: null, cardId: opt.cardId, useCost: cost });
+      emitGameEvent(state, 'optionUsed', { owner: p, stack: null, cause: null, cardId: opt.cardId, useCost: cost, baseCost: cost });
     }
   }
   if (at) at.counterUsed = true;
@@ -1060,6 +1070,20 @@ export function markRedirectUsed(state, p, stackUid, cardId) {
   if (stack) markTurnEffectUsed(stack, onceLimitKey(cardId, ['어택대상변경']));
 }
 
+// Q5230/5593/5758/5905/5913: a waiting 【소멸 시】 effect (its own or a source's) belongs to the deleted DIGIMON CARD; if that card has left the trash (returned to hand/deck, put under something...) before the effect's turn to resolve,
+// the effect can no longer be resolved. Approximation: another copy of the same card id in that trash still counts (instances are not tracked); tokens have no zone to leave.
+export function pendingCardLeftZone(state, t) {
+  if (!t || !t.delStack || t.evt?.kind !== 'delete' || t.delToZone !== 'trash' || !t.tags.some(x => x.includes('소멸 시'))) return false;
+  const id = t.delStack.cardId; if (!id || CARDS[id]?.isToken) return false;
+  return !['p1', 'p2'].some(q => state.players[q].trash.includes(id));
+}
+// slice6 G179/G239 (official Q6819, Q6977; Q6815 《천승》): a waiting 【소멸 시】 effect cannot be used once its card has left the trash (returned to deck/hand, played, ...) before its turn came.
+export function waitingDestroyEffectGone(state, t) {
+  if (!t || !t.evt || t.evt.kind !== 'delete' || !(t.tags || []).some((x) => x.includes('소멸 시')) || t.watcher || t.trashZone || t.schedFn || !t.cardId || isTokenId(t.cardId)) return false;
+  const pl = state.players[t.player], c = card(t.cardId);
+  if (!pl || !c || !['digimon', 'tamer'].includes(c.category)) return false;
+  return !pl.trash.includes(t.cardId);
+}
 export function resolvePending(state, uid) {
   const t = state.pending.find(x => x.uid === uid);
   if (t && !t.resolved) {
@@ -1202,7 +1226,7 @@ export function resolveReveal(state, p, n, keepIdx, toHandIdxs, restTo = 'bottom
   });
   if (restOrder && restOrder.length === rest.length && restOrder.every(i => Number.isInteger(i) && i >= 0 && i < rest.length)) rest = restOrder.map(i => rest[i]);
   pl.hand.push(...toHand);
-  if (restTo === 'trash') { pl.trash.push(...rest); if (rest.length) emitGameEvent(state, 'deckDiscard', { owner: p, stack: null, cause: 'effect', ids: rest.slice() }); } else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
+  if (restTo === 'trash') { pl.trash.push(...rest); if (rest.length) emitGameEvent(state, 'deckDiscard', { owner: p, stack: null, cause: 'effect', ids: rest.slice(), viaOpen: true }); } else if (restTo === 'bottom') pl.deck.push(...rest); else pl.deck.unshift(...rest);
   log(state, `${p} 공개 처리: 핸드로 ${toHand.map(id=>card(id).nameKo).join(',')||'없음'} / 나머지 덱 ${restTo === 'bottom' ? '밑' : '위'}로`);
   return { toHand, rest };
 }
@@ -1821,6 +1845,12 @@ export function evolveTargetRestriction(state, p, stack) {
     if (!g || (g[1] && !evoStateGate(state, p, `자신의 「${g[1]}」가 있는 동안`))) continue;
     alt.push({ cost: Number(g[4]), test: (t, s) => t.id === tid && (g[2] ? cardNameIs(s, g[2]) : cardNameHas(s, g[3])) });
   }
+  // slice-4 QA (RB1-009, Q4080): "진화원에 명칭에 「X」를 포함하는 카드가 있는 자신의 「Y」는 패의 이 카드로 진화 조건을 무시하고 진화 코스트 N으로 진화할 수 있다" — only an exact-name 「Y」 whose evolution cards include an X-named card
+  for (const tid of new Set(state.players[p].hand)) {
+    const g = (card(tid).effectKo || '').match(/(?:^|\n)진화원에\s*명칭에\s*「([^」]+)」(?:을|를)\s*포함하는\s*카드가\s*있는\s*자신의\s*「([^」]+)」(?:은|는)\s*패의\s*이\s*카드로\s*진화\s*조건을\s*무시하고\s*진화\s*코스트\s*(\d+)(?:으로|로)\s*진화할\s*수\s*있다/);
+    if (!g) continue;
+    alt.push({ cost: Number(g[3]), test: (t, s) => t.id === tid && cardNameIs(s, g[2]) && stack.sources.some(id => cardNameHas(id, g[1])) });
+  }
   return { ...(base || {}), ...(alt.length ? { alt } : {}), ...(stack.s39MaxEvoLevel != null ? { maxLevel: stack.s39MaxEvoLevel } : {}), evoGate: (txt) => evoStateGate(state, p, txt) }; // b10: maxLevel (EX3-069 "Lv.7로 진화할 수 없다")
 }
 // State-dependent printed 〔진화〕 gates ("자신의 「X」가 있는 동안, 「Y」 : 코스트 N"): true when the prefix clause holds now. Unknown clauses stay permissive.
@@ -2209,7 +2239,14 @@ function applyDeferred(state, p, stack, e) {
 // 2-5-3: a card that has no DP can't have DP added to or subtracted from it (unless an effect gave it an original DP).
 export function stackHasDP(state, stack) {
   const ov = stack.dpBaseOverride;
-  return card(stack.cardId).dp != null || !!(ov && state.turnNumber <= ov.until);
+  if (card(stack.cardId).dp != null || !!(ov && state.turnNumber <= ov.until)) return true;
+  // slice-4 QA (BT22-007 마더 이터): "[육성] 배틀 에어리어의 자신의 「X」 전부는 DP N으로 취급한다" — the raising-area holder gives a DP-less 「X」 in the battle area a DP (so 17-1-3-2-1 does not discard it)
+  for (const q of ['p1', 'p2']) {
+    const r = state.players[q].raising; if (!r || !state.players[q].battle.includes(stack)) continue;
+    const m = String(card(r.cardId).effectKo || '').match(/배틀 에어리어의 자신의 「([^」]+)」 전부는 DP\s*\d+\s*(?:으로|로)\s*취급한다/);
+    if (m && card(stack.cardId).nameKo === m[1]) return true;
+  }
+  return false;
 }
 export function modifyDP(state, p, uid, amount, duration = 'turn') {
   const pl = state.players[p];
@@ -2240,6 +2277,7 @@ export function flushRuleChecks(state) {
   beginCause(state); // a rule check is its own cause
   const seen = new Set();
   const known = new Set(state.pending.map(x => x.uid));
+  const prevDelBatch = state._delBatch; state._delBatch = new Set(); // simultaneous rule-check deletions (see emitGameEvent 'delete' dedupe)
   for (const { p, uid } of list || []) {
     if (seen.has(p + uid)) continue; seen.add(p + uid);
     const pl = state.players[p];
@@ -2249,6 +2287,7 @@ export function flushRuleChecks(state) {
   // 17-1-3-1 (rule-oracle R-dp0): conditional DP bonuses that depend on the game state (own security count, rest state, …) can lapse when ANY effect changes that state
   // without a modifyDP call announcing it — sweep every Digimon once the outermost effect has finished.
   if (state.players.p1.battle.length + state.players.p2.battle.length) ruleSweepDP(state, null);
+  state._delBatch = prevDelBatch;
   // 15-4-3-3: 【소멸 시】 etc. triggered by a rule-check deletion trigger simultaneously with the effects already waiting
   // (they are not "derived" triggers of the effect that just resolved, so they stay in the same resolution tier).
   for (const x of state.pending) if (!known.has(x.uid)) x.rcSim = true;
@@ -2315,10 +2354,19 @@ export function unsuspendStack(state, p, uid) {
 }
 
 // 11-2-5 / 12-1-4: a Digimon that can't be rested can't declare an attack or block. (Rule-driven rest, so effect-immunity doesn't apply.)
+// BT23-024 (Q5247-5252, 6025): "가장 등장 코스트가 높은 디지몬 이외는 레스트할 수 없다" — re-evaluated on every check (a digimon that stops/starts being the costliest changes status); no costed digimon at all -> nobody is exempt
+export function restExceptTopLocked(state, p, stack) {
+  if (card(stack.cardId).category !== 'digimon' || !(state.timedLocks || []).some(l => l.player === p && l.kind === 'restExceptTop' && state.turnNumber <= l.until)) return false;
+  const noCost = (s) => !!card(s.cardId).isToken || /TOKEN/i.test(String(s.cardId)) || typeof card(s.cardId).cost !== 'number'; // tokens have no play cost (Q6025/6026)
+  const costs = state.players[p].battle.filter(s => card(s.cardId).category === 'digimon' && !noCost(s)).map(s => card(s.cardId).cost);
+  const top = costs.length ? Math.max(...costs) : null;
+  return !(top !== null && !noCost(stack) && card(stack.cardId).cost === top);
+}
 export function canRestByRule(state, p, stack) {
   if (!stack) return false;
-  if (hookCannotRest(state, p, stack) || hookNoRest(state, p, stack)) return false;
+  if (hookCannotRest(state, p, stack) || hookNoRest(state, p, stack) || s3RestLocked(state, p, stack)) return false;
   if (stack.cannotBeRestedUntil === 'permanent' || (typeof stack.cannotBeRestedUntil === 'number' && state.turnNumber <= stack.cannotBeRestedUntil)) return false;
+  if (restExceptTopLocked(state, p, stack)) return false; // BT23-024 (Q5247-5252)
   return true;
 }
 
@@ -2327,7 +2375,8 @@ export function restStack(state, p, uid, cause = 'effect') {
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return;
   if (cause !== 'block' && effectBlocked(state, p, stack, 'rest')) { log(state, `${p} ${card(stack.cardId).nameKo}는 상대의 효과를 받지 않아 레스트되지 않음`); return; }
-  if (hookCannotRest(state, p, stack) || hookNoRest(state, p, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 효과로 레스트할 수 없음`); return; }
+  if (hookCannotRest(state, p, stack) || hookNoRest(state, p, stack) || s3RestLocked(state, p, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 효과로 레스트할 수 없음`); return; }
+  if (restExceptTopLocked(state, p, stack)) { log(state, `${p} ${card(stack.cardId).nameKo}는 효과로 레스트할 수 없음 (최고 코스트 이외)`); return; }
   if (stack.cannotBeRestedUntil === 'permanent' || (typeof stack.cannotBeRestedUntil === 'number' && state.turnNumber <= stack.cannotBeRestedUntil)) {
     log(state, `${p} ${card(stack.cardId).nameKo}는 레스트 불가 상태라 레스트되지 않음`);
     return;
@@ -3165,6 +3214,8 @@ function placeXrosMaterials(state, p, stack, mats) {
 
 export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const pl = state.players[p];
+  // slice6 (official Q&A: 「効果でデジモンを登場できない」 field ban): the card effect can be activated, but the digimon is not played
+  if ((opts.byEffect != null ? !!opts.byEffect : !!state._fxSrc) && (s1HookAny(state, 's1cannotPlay', { p }) || timedLocked(state, p, 'effectPlay'))) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
@@ -3209,10 +3260,10 @@ export function queueAfterBattle(state) {
 
 export function playFreeFromZone(state, p, zone, index, opts = {}) {
   const pl = state.players[p];
-  if (zone === 'trash' && state.s6TrashLock && state.s6TrashLock[p] != null && state.turnNumber <= state.s6TrashLock[p] && ['digimon', 'tamer'].includes(card(pl.trash[index])?.category)) { log(state, `${p} 효과로 트래시에서 디지몬/테이머를 등장시킬 수 없음`); return null; } // s6 (BT23-014)
+  if (zone === 'trash' && state.s6TrashLock && state.s6TrashLock[state._fxSrc?.player ?? p] != null && state.turnNumber <= state.s6TrashLock[state._fxSrc?.player ?? p] && ['digimon', 'tamer'].includes(card(pl.trash[index])?.category)) { /* Q5227/5228: the lock restrains the EFFECT CONTROLLER on whom BT23-014 put it, not the player whose trash is used */ log(state, `${p} 효과로 트래시에서 디지몬/테이머를 등장시킬 수 없음`); return null; } // s6 (BT23-014)
   if (s1HookAny(state, 's1cannotPlay', { p }) || timedLocked(state, p, 'effectPlay')) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; } // shard1
   if (pl[zone][index] && isPlayRestricted(state, p, pl[zone][index])) { log(state, `${p} ${card(pl[zone][index]).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); return null; }
-  if (pl[zone][index] && card(pl[zone][index])?.category === 'digitama' && card(pl[zone][index]).dp == null) { log(state, `${p} ${card(pl[zone][index]).nameKo}: 디지타마 카드는 효과로 등장시킬 수 없음 (부화로만 육성 에어리어에 놓임)`); return null; } // fuzz: "등장 코스트 N 이하의 카드"-style filters matched cost-less digitama, which then stood in the battle area with no DP
+  if (pl[zone][index] && card(pl[zone][index])?.category === 'digitama' && card(pl[zone][index]).dp == null && !/【등장 시】/.test(card(pl[zone][index]).effectKo || '')) { /* slice-4 QA 4859/4860: a Digi-Egg that prints its own 【등장 시】 (BT22-007 마더 이터) is meant to be played by effects */ log(state, `${p} ${card(pl[zone][index]).nameKo}: 디지타마 카드는 효과로 등장시킬 수 없음 (부화로만 육성 에어리어에 놓임)`); return null; } // fuzz: "등장 코스트 N 이하의 카드"-style filters matched cost-less digitama, which then stood in the battle area with no DP
   const [id] = pl[zone].splice(index, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
@@ -3274,17 +3325,19 @@ export function optionColorOk(state, p, cardId) {
   const have = new Set(stacks.flatMap(st => stackColors(st)));
   if (need.every(col => have.has(col))) return true;
   const txt = `${c.effectKo || ''}\n${c.inheritedKo || ''}`;
+  // slice-4 QA (LM-033..038, official Q&A 4063-4074): "이 카드는 블랙으로도 색 조건을 만족시킬 수 있다" — an area digimon/tamer of the named extra color also satisfies the color condition (incl. the raising area)
+  for (const am of txt.matchAll(/이\s*카드는\s*(레드|블루|옐로우?|그린|블랙|퍼플|화이트)(?:으)?로도\s*색\s*조건을\s*만족시킬\s*수\s*있다/g)) { if (have.has(KOR_COLOR_NAME[am[1]])) return true; }
   // 16-42: 《사용조건《<지정 카드>》》 — a Digimon/Tamer in the area matching the designated card lets this option ignore its color condition.
   const uc = txt.match(/[《≪]\s*사용\s*조건\s*[《≪]\s*([^》≫]+?)\s*[》≫]\s*[》≫]/) || txt.match(/<\s*사용\s*조건\s*\(\s*([^)]+?)\s*\)\s*>/); // 2nd spelling: "<사용 조건(특징 「CS」)>(지정된 카드로 색 조건을 무시할 수 있다)" (P-238)
   if (uc) { const pr = evoTargetPredicate(uc[1].trim()); if (pr && stacks.some(st => st !== pl.raising && pr(card(st.cardId)))) return true; }
   if (/(?:^|\n)\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/.test(txt)) return true; // unconditional (P-206 …)
-  const ig = txt.replace(/있다면\s*색\s*조건을/g, '있는 동안, 이 카드는 색 조건을').match(/((?:Lv\.|[^.\n])*?)(?:동안|때),?\s*이\s*카드는\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/); // P-225: "…자신의 디지몬/테이머가 있다면 색 조건을 무시하고 사용할 수 있다"
+  const ig = txt.replace(/있다면\s*색\s*조건을/g, '있는 동안, 이 카드는 색 조건을').match(/((?:Lv\.|[^.\n])*?)(?:동안|때),?\s*이\s*카드(?:는|의)\s*색\s*조건을\s*무시(?:하고\s*사용)?할\s*수\s*있다/); // slice6 G71: BT25-097 prints "이 카드의 색 조건을". P-225: "…자신의 디지몬/테이머가 있다면 색 조건을 무시하고 사용할 수 있다"
   if (!ig) return false;
   const cond = ig[1].trim();
   if (!cond) return true;
   { const nm2 = cond.match(/^(?:배틀\s*)?에어리어에\s*자신의\s*「([^」]+)」(?:이|가)\s*없는$/); if (nm2) return !pl.battle.some(st => card(st.cardId).nameKo === nm2[1]); } // LM-054/055/056: "배틀 에어리어에 자신의 「X」가 없는 동안"
   { const fm = cond.match(/^자신의\s*시큐리티에\s*앞면의\s*「([^」]+)」(?:이|가)\s*없는$/); if (fm) return !Object.entries(pl.secUp || {}).some(([id, n]) => n > 0 && card(id).nameKo === fm[1] && pl.security.includes(id)); } // ST20-15/ST21-15: 자신의 시큐리티에 앞면의 「X」가 없는 동안 (a face-up copy blocks the color waiver)
-  if (/앞면(?:인|의)?\s*시큐리티가\s*없는/.test(cond)) return secFaceUpCount(pl) === 0; // EX9-072: face-up security cards are modelled (s5)
+  if (/앞면(?:인|의)?\s*시큐리티(?:\s*카드)?(?:가|이)\s*없는/.test(cond)) return secFaceUpCount(pl) === 0; // slice6 G71: also "앞면인 시큐리티 카드가 없는 동안" (BT24-090, BT25-097, BT26-100). EX9-072: face-up security cards are modelled (s5)
   { // pass2-b1 (BT10-101/104, …): "자신의 「A」 (또는 진화원에 「A」를 가진 자신의 디지몬)이 있는 동안" — a NAMED card in the battle area (or in a Digimon's evolution cards); it used to fall through to `return true` (color condition always ignored)
     const nmC = cond.match(/^자신의\s*「([^」]+)」(?:\s*(?:또는|\/)\s*진화원에\s*「([^」]+)」(?:을|를)\s*가진\s*자신의\s*디지몬)?(?:이|가)\s*있는$/);
     if (nmC) return pl.battle.some(st => cardNameIs(card(st.cardId), nmC[1]) || (nmC[2] && card(st.cardId).category === 'digimon' && st.sources.some(id => cardNameIs(card(id), nmC[2]))));
@@ -3330,12 +3383,13 @@ export function useOptionCard(state, p, handIndex, opts = {}) {
   }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
+  const baseCostOpt = Math.max(0, optionBaseCost(state, p, id)); // printed use cost incl. the card's OWN lowering (BT2-099/BT8-097), before payment reductions
   const cost = Math.max(0, optionBaseCost(state, p, id) + (opts.costDelta || 0)); // 옵션 자체의 사용 코스트 문구(상대 시큐리티/트래시, 자신의 테이머 등) 반영. s8: hook play-cost discounts (BT25-090 …)
   if (cost > 0) spendMemory(state, cost);
   pl.trash.push(id);
   log(state, `${p} ${card(id).nameKo} 사용 (코스트${cost})`);
   queueTriggersFor(state, p, id, 'use');
-  emitGameEvent(state, 'optionUsed', { owner: p, stack: null, cause: null, cardId: id, useCost: cost });
+  emitGameEvent(state, 'optionUsed', { owner: p, stack: null, cause: null, cardId: id, useCost: cost, baseCost: baseCostOpt });
   return id;
 }
 
@@ -3527,7 +3581,7 @@ export function digivolve(state, p, stackUid, newCardId, cost, source = 'hand') 
   discardLinkCardsOnNewCard(state, p, stack); // 10-4-1: this stack is about to become a new card
   S2.beforeDigivolve(state, p, stack); // shard2 (BT14-018 tokens)
   stack.viaFusion = false;
-  noteDigivolved(state, p);
+  if (pl.raising?.uid !== stackUid) noteDigivolved(state, p); // official Q&A (BT1-007, Q870): evolving in the RAISING area is not "이 턴에 디지몬을 진화시키고 있는" (text names no 육성 에어리어)
   stack.byEffect = { kind: 'digivolve', effect: !!state._fxSrc, turn: state.turnNumber, from: source }; // s8: "효과로 진화했다면" (from: 'hand'|'trash'|… for "트래시에서 진화하고 있었다면")
   stack.sources.push(stack.cardId);
   stack.cardId = newCardId; resetUsesForNewTop(stack); /* 15-14-1-5-2: only the NEW card's [턴에 N회] resets; cards that were already in the stack keep theirs (3-1-3-1-3) */
@@ -4422,8 +4476,8 @@ function deleteStackCore(state, p, uid, toZone, cause) {
   hookLeaveTriggers(state, p, stack, cause);
   stack.s7DelCause = cause; // s7
   if (linkIds.length && (cause === 'effect' || cause === 'ownEffect')) emitGameEvent(state, 's7LinkTrashed', { owner: p, stack: null, cause: 'effect', ids: linkIds }); // s7
-  state._deleteCause = cause; state._deleteStack = stack;
-  try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; state._deleteStack = null; }
+  state._deleteCause = cause; state._deleteStack = stack; state._deleteToZone = toZone;
+  try { queueTriggersForStack(state, p, stack, 'delete'); } finally { state._deleteCause = null; state._deleteStack = null; state._deleteToZone = null; }
   emitGameEvent(state, 'delete', { owner: p, stack, cause, dp0: !!state._dp0Delete }); // dp0: deleted by the DP-0 rule check ("DP가 0이 되어 소멸했을 때", ST3-01/ST3-04)
   // s8: ≪천승≫ "이 디지몬이 소멸했을 때, 이 카드를 시큐리티의 위에 놓을 수 있다."
   if (toZone === 'trash' && card(stack.cardId).category === 'digimon' && (hasKeyword(stack, '천승') || hookGrantedKeywords(state, p, stack).includes('천승'))) {
@@ -4562,6 +4616,7 @@ export function canAttackPlayer(state, p, uid) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return true;
+  if (card(stack.cardId).category !== 'digimon') return false; // 테이머/옵션은 어택 대상 선택 자체가 나오지 않는다
   if (stack.deferred) settleDeferred(state, stack, p);
   if (stack.cannotAttackPlayerUntil === 'permanent' || (typeof stack.cannotAttackPlayerUntil === 'number' && state.turnNumber <= stack.cannotAttackPlayerUntil)) return false;
   if (s1CannotAttackPlayer(state, p, stack)) return false; // shard1
@@ -4578,6 +4633,7 @@ export function legalDigimonTargets(state, attackerP, attackerUid) {
   const opp = opponentOf(attackerP);
   const apl = state.players[attackerP];
   const aStack = apl.raising?.uid === attackerUid ? apl.raising : apl.battle.find(s => s.uid === attackerUid);
+  if (aStack && card(aStack.cardId).category !== 'digimon') return []; // 테이머/옵션은 어택하지 않는다
   const canHitActiveNoSource = aStack && (hasKeyword(aStack, '무진화원액티브공격') || canAttackActiveNoSource(state, attackerP, aStack));
   // Unconditional variant — no "no evolution sources" restriction at all
   // (e.g. "이 디지몬은 액티브 상태의 상대 디지몬에게도 어택할 수 있다."),
@@ -4693,6 +4749,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
   const stack = pl.battle.find(s => s.uid === stackUid);
   // 11-2-1 normally needs an active attacker (it is rested by the declaration); 「레스트시키지 않고 어택」 skips that resting, so an already-rested Digimon may attack too.
   if (!stack || (stack.suspended && !opts.allowSuspended && !opts.noRest)) return { ok: false, reason: 'invalid or suspended attacker' };
+  if (card(stack.cardId).category !== 'digimon') return { ok: false, reason: 'only Digimon can attack (11-2-1)' }; // 테이머/옵션은 어택할 수 없다
   state._raidUid = opts.raid ? stackUid : null; // 16-16: this attack was declared by 《진격》
   if (attackerP !== state.activePlayer) return { ok: false, reason: 'not the turn player (11-2-1)' }; // 11-2-1: only the turn player declares attacks
   if (!opts.noRest && !canRestByRule(state, attackerP, stack)) { log(state, `${attackerP} ${card(stack.cardId).nameKo}는 레스트할 수 없어 어택할 수 없음`); return { ok: false, reason: 'attack restricted' }; } // s5
@@ -4781,6 +4838,7 @@ export function stepSecurityCheck(ctl) {
   pl.trash.push(id);
   const wasFaceUp = secFaceUpTake(pl, id); // s5
   state.secReveal = { p: defenderP, cardId: id, up: wasFaceUp }; // s6: lets 【시큐리티】 effects ask "이 카드가 앞면이었다면"
+  const secPendBefore = state.pending.length; // slice6 G53: the checked card's 【시큐리티】 effect is resolved FIRST, before any other trigger this check caused
   emitGameEvent(state, 'securityDecrease', { owner: defenderP, stack: null, cause: 'check' }); // s5
   ruleSweepDP(state, null); // 17-1-3-1: a "while my security is N or fewer" DP bonus may lapse right now (rule-oracle R-dp0)
   emitGameEvent(state, 'securityDiscard', { owner: defenderP, stack: null, cause: 'check', cardId: id }); // b9: "이 카드가 시큐리티에서 파기되었을 때" (BT25-034/040): a checked security card is trashed from security
@@ -4796,6 +4854,7 @@ export function stepSecurityCheck(ctl) {
     // stackUid=null.
     queueTriggersFor(state, defenderP, id, 'security');
     queueInheritedTriggersFor(state, defenderP, id, 'security', null);
+    { const added = state.pending.slice(secPendBefore), secs = added.filter((t) => (t.tags || []).includes('시큐리티')); if (secs.length && secs.length < added.length) state.pending.splice(secPendBefore, added.length, ...secs, ...added.filter((t) => !secs.includes(t))); }
   } else {
     log(state, `${attackerP} 효과로 이번 체크의 【시큐리티】 효과 무효화`);
   }
@@ -4833,6 +4892,7 @@ export function battleSecurityCheck(ctl, id) {
   ctl.total = 1 + hookSecurityAttackBonus(state, attackerP, attackerStack);
   // attacker died (unless saved) — remaining checks don't happen
   if (result === 'defenderWins' || result === 'tie' || ctl.i >= ctl.total) ctl.done = true;
+  if (result === 'attackerWins' && apl.battle.includes(attackerStack)) emitGameEvent(state, 'battleWin', { owner: attackerP, stack: attackerStack, cause: null, loser: null, secBattle: true }); // slice6 G182: "バトルに勝ったとき" also fires when the security digimon loses
   queueAfterBattle(state); // 14-2-5: 【시큐리티】 "배틀 종료 시" effects fire now
   return r;
 }
@@ -5066,8 +5126,10 @@ export function dispatchHookEvents(state, kind, info) {
   for (const { hp, holder, id, d } of [...activeHooks(state)]) {
     const fn = d.events && d.events[kind];
     if (!fn) continue;
+    if (kind === 'battleWin' && info.secBattle && !/승리|이겼/.test(String(d.has || ''))) continue; // slice6 G182: only "배틀에서 승리했을 때/이겼을 때" reacts to beating a SECURITY digimon; "…소멸시켰을 때" (BT1-077, official Q928) does not
     if (subjRaising && kind !== 'hatch' && !hookMarkedRaising(id, d)) continue; // 3-4-7-6: a breeding-area card can't satisfy the trigger of an effect that doesn't name the breeding area
     if (!fn(state, hp, holder, info)) continue;
+    if (kind === 'delete' && state._delBatch && !/마다/.test((d.src === 'inheritedKo' ? card(id).inheritedKo : card(id).effectKo) || '')) { const bk = `H|${hp}|${holder?.uid}|${id}|${d.tag}|${d.has}`; if (state._delBatch.has(bk)) continue; state._delBatch.add(bk); } // 15-5-2 (Q&A 909/910): simultaneous deletions from one instruction / rule check satisfy a bespoke "소멸했을 때" watcher once
     if (d.limit != null && holder && !hookUseOnce(holder, id, d, d.limit)) continue;
     queueHookSegment(state, hp, holder, id, d, { kind, ...info, stack: undefined, stackUid: info.stack?.uid });
   }
@@ -5226,7 +5288,7 @@ export function secFlipTopFaceUp(state, p) {
   const pl = state.players[p];
   for (const id of pl.security) {
     const up = (pl.secUp && pl.secUp[id]) || 0;
-    if (up < pl.security.filter(x => x === id).length) { (pl.secUp ||= {})[id] = up + 1; log(state, `${p} 시큐리티 위에서 ${card(id).nameKo} 앞면으로`); return id; }
+    if (up < pl.security.filter(x => x === id).length) { (pl.secUp ||= {})[id] = up + 1; log(state, `${p} 시큐리티 위에서 ${card(id).nameKo} 앞면으로`); emitGameEvent(state, 'faceUpSecurityFlipped', { owner: p, stack: null, cause: 'effect', cardId: id }); return id; } // Q5789: turning a face-down card face-up (not a placement)
   }
   return null;
 }
@@ -5238,6 +5300,11 @@ export function secAddFaceUp(state, p, cardId, position = 'top') {
 }
 function hookOwnerOf(state, stack) { return ['p1', 'p2'].find(pp => state.players[pp].raising === stack || state.players[pp].battle.includes(stack)) || null; }
 // descriptor.noRest(state, hp, holder, target) -> the holder's own ability forbids `target` (same player) from resting.
+// QA-S3 Q3586/3587 (EX5-025): dynamic 'cannot rest' lock over a CLASS of Digimon (evaluated at rest time, so later arrivals are covered and a Digimon that gains a source is released).
+export function s3RestLocked(state, p, stack) {
+  for (const l of (state.s3RestLocks || [])) if (l.owner === p && state.turnNumber <= l.until && l.kind === 'noSources' && !(stack.sources || []).length && card(stack.cardId).category === 'digimon') return true;
+  return false;
+}
 export function hookNoRest(state, p, target) {
   for (const { hp, holder, d } of activeHooks(state)) if (d.noRest && hp === p && d.noRest(state, hp, holder, target)) return true;
   return false;
@@ -5616,6 +5683,7 @@ function s7ContSAttack(stack) {
   const p = hookOwnerOf(state, stack);
   if (!p) return 0;
   let n = 0;
+  if (stack.s71SAtkIf && state.turnNumber <= stack.s71SAtkIf.until) n += (stack.s71SAtkIf.kws.some(k => hasKeyword(stack, k)) ? 1 : 0); // BT3-106 (Q&A 1143/1144): 《S 어택 +1》 only while it still has 《블로커》/《재기동》 (once, even with both)
   S7_KW_GUARD = true;
   try {
     n += genericContGrants(state, p, stack).sAtk;
@@ -5720,7 +5788,9 @@ export function s1SecIncreaseBlocked(state, who) {
   const src = state._fxSrc;
   return !!src && s1Rules(state, 'noSecurityIncrease').some(r => r.blocked === src.player);
 }
-export function s1CannotAttack(state, p, stack) { return s1Flag(state, stack, 'noAttack') || s1HookAny(state, 's1cannotAttack', { p, stack }); }
+export function s1CannotAttack(state, p, stack) { return s1Flag(state, stack, 'noAttack') || s1HookAny(state, 's1cannotAttack', { p, stack }) || s71NoSrcAtkBanned(state, p, stack); }
+// BT1-100 (Q&A 965): player-level "진화원을 갖지 않은 디지몬으로는 어택할 수 없다" (state.s71NoSrcAtkBan[p] = last turn it applies)
+function s71NoSrcAtkBanned(state, p, stack) { const t = state.s71NoSrcAtkBan && state.s71NoSrcAtkBan[p]; return !!t && state.turnNumber <= t && !!stack && (stack.sources || []).length === 0 && card(stack.cardId).category === 'digimon'; }
 export function s1CannotAttackPlayer(state, p, stack) {
   if (s1HookAny(state, 's1cannotAttackPlayer', { p, stack })) return true;
   return s1Rules(state, 'noPlayerAttack').some(r => r.owner === p && (card(stack.cardId).cost ?? 0) <= r.maxCost);
