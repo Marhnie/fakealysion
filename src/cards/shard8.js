@@ -97,12 +97,19 @@ function payTamerUnderAuto(state, p, n, hint) {
   if (!t) return false;
   return withFx(state, p, 'tamer', () => S.trashEvoSources(state, p, t.uid, n, 'bottom').length === n);
 }
+// r2 (Q6212): "테이머 아래의 뒷면 카드를 아래에서부터 N장 파기" may be paid with cards from SEVERAL tamers (total N); each card is taken from the bottom of the tamer picked for it.
+const underTotal = (state, p, pred) => ownTamers(state, p).filter(t => !pred || pred(t)).reduce((a, t) => a + S.fdCount(t), 0);
 async function payTamerUnder(ctx, n, pred) {
-  const list = tamersWithUnder(ctx.state, ctx.self, n).filter(t => !pred || pred(t));
-  if (!list.length) return false;
-  const uid = list.length === 1 ? list[0].uid : await pickOne(ctx, ctx.self, list.map(t => t.uid), `아래의 카드를 ${n}장 파기할 테이머 선택`);
-  if (!uid) return false;
-  return S.trashEvoSources(ctx.state, ctx.self, uid, n, 'bottom').length === n;
+  if (underTotal(ctx.state, ctx.self, pred) < n) return false;
+  let done = 0;
+  for (let k = 0; k < n; k++) {
+    const list = ownTamers(ctx.state, ctx.self).filter(t => (!pred || pred(t)) && S.fdCount(t) >= 1);
+    if (!list.length) return false;
+    const uid = list.length === 1 ? list[0].uid : await pickOne(ctx, ctx.self, list.map(t => t.uid), `아래의 카드를 파기할 테이머 선택 (${k + 1}/${n})`);
+    if (!uid) return false;
+    if (S.trashEvoSources(ctx.state, ctx.self, uid, 1, 'bottom').length === 1) done++; else return false;
+  }
+  return done === n;
 }
 async function putDeckTopUnder(ctx, tamer, n = 1) {
   const pl = ctx.state.players[ctx.self];
@@ -262,7 +269,7 @@ const COST = {
     pay: async (ctx) => { const st = stackOf(ctx); S.restStack(ctx.state, ctx.self, st.uid); return !!st.suspended; },
   },
   tamerUnder: {
-    can: (ctx, c) => tamersWithUnder(ctx.state, ctx.self, c.n || 1).filter(t => !c.pred || c.pred(t)).length > 0,
+    can: (ctx, c) => underTotal(ctx.state, ctx.self, c.pred) >= (c.n || 1),
     pay: (ctx, c) => payTamerUnder(ctx, c.n || 1, c.pred),
   },
   trashHand: {
@@ -412,7 +419,7 @@ OPS.s8_evolve = async (i, ctx) => {
     const id = pl[z][k];
     const chk = ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(ctx.state, null, st), null);
     const printed = chk.ok ? chk.cost : (C(id).evoNormal?.cost ?? 0);
-    const cost = i.free ? 0 : Math.max(0, printed + (i.delta || 0));
+    const cost = i.free ? 0 : Math.max(0, printed + ((i.delta || 0) < 0 && S.isEvoCostLocked(state, ctx.self) ? 0 : (i.delta || 0))); // QA-S6 Q6869: cost-minus lock
     if (z !== 'hand') pl[z].splice(k, 1);
     S.digivolve(state, ctx.self, st.uid, id, cost, z === 'hand' ? 'hand' : 'trash');
     const ns = findStack(state, ctx.self, st.uid);
@@ -470,8 +477,8 @@ OPS.s8_link = async (i, ctx) => {
   const me = stackOf(ctx);
   let host = null;
   if (i.target === 'this') host = me;
-  else { const uid = await pickOne(ctx, ctx.self, pl.battle.filter(s => isDigi(s.cardId)).map(s => s.uid), '링크할 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
-  if (!host || !pl.battle.includes(host)) return;
+  else { const rz = pl.raising && ['digimon', 'digitama'].includes(C(pl.raising.cardId).category) ? [pl.raising] : []; /* QA-S6 Q6441/6443: 「에어리어의 자신의 디지몬」 includes the breeding-area digimon (also one without DP) */ const uid = await pickOne(ctx, ctx.self, [...pl.battle.filter(s => isDigi(s.cardId)), ...rz].map(s => s.uid), '링크할 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
+  if (!host || !(pl.battle.includes(host) || pl.raising === host)) return;
   const names = [];
   for (let n = 0; n < (i.max || 1); n++) {
     const opts = [];
@@ -1105,7 +1112,7 @@ OPS.s8_jogress = async (i, ctx) => {
   if (k == null) return;
   const id = pl.hand[k];
   const j = S.parseJogress(id);
-  const fused = S.fuseStacks(state, ctx.self, a.uid, b.uid, id, j ? j.cost : 0, 'hand');
+  const fused = S.fuseJogress(state, ctx.self, a, b, id);
   if (fused) S8(ctx).fused = fused.uid;
 };
 
@@ -1285,15 +1292,18 @@ const saberLeave = (id, nameTerm) => { const d = leaveHook(id, { src: 'inherited
 saberLeave('ST24-06', '샤인그레이몬');
 saberLeave('ST24-10', '로제몬');
 leaveHook('BT26-033', { has: '벗어나지', preventLeave: (state, hp, h, target, tp) => {
-  if (tp !== hp || !['digimon', 'tamer'].includes(catOf(target.cardId)) || !trait(target.cardId, 'TS') || !h.sources.length) return false;
-  const id = h.sources.pop(); state.players[hp].security.push(id); S.recomputeStackGrants(h);
-  S.log(state, `${hp} ${C(h.cardId).nameKo}의 겹쳐진 카드 ${C(id).nameKo}을(를) 시큐리티 아래에 놓아 ${C(target.cardId).nameKo}이(가) 벗어나지 않음`);
+  if (tp !== hp || !['digimon', 'tamer'].includes(catOf(target.cardId)) || !trait(target.cardId, 'TS') || h.sources.length - S.fdCount(h) < 1) return false;
+  const old = C(h.cardId).nameKo;
+  const id = S.moveTopStackCard(state, hp, h, 'secBottom', { cause: 'ownEffect', checkBlock: false }); // 최상단 카드(top stacked card) -> bottom of security; the next card becomes the Digimon
+  if (id == null) return false;
+  S.log(state, `${hp} ${old}의 최상단 카드 ${C(id).nameKo}을(를) 시큐리티 아래에 놓아 벗어나지 않음`);
   return true;
 } });
 leaveHook('BT26-058', { has: '벗어나지', preventLeave: (state, hp, h, target, tp) => {
-  if (tp !== hp || !isDigi(target.cardId) || !trait(target.cardId, 'CS') || !h.sources.length) return false;
-  const id = h.sources.pop(); h.sources.unshift(id); S.recomputeStackGrants(h);
-  S.log(state, `${hp} ${C(h.cardId).nameKo}의 겹쳐진 카드 1장을 진화원 아래에 놓아 ${C(target.cardId).nameKo}이(가) 벗어나지 않음`);
+  if (tp !== hp || !isDigi(target.cardId) || !trait(target.cardId, 'CS') || h.sources.length - S.fdCount(h) < 1) return false;
+  const old = C(h.cardId).nameKo;
+  if (S.rotateTopStackToBottom(state, hp, h, 'effect') == null) return false; // 최상단 카드(top stacked card) -> bottom of its own sources; the next card becomes the Digimon
+  S.log(state, `${hp} ${old}의 최상단 카드를 진화원 아래에 놓아 벗어나지 않음`);
   return true;
 } });
 
@@ -1348,7 +1358,7 @@ OPS.s8_jogressOrLeave = async (i, ctx) => {
   let done = false;
   if (b) {
     const k = await pickZone(ctx, 'hand', legalFor(b), '조그레스 진화할 패의 특징 「ME」 디지몬 카드 선택');
-    if (k != null) { const id = pl.hand[k]; const j = S.parseJogress(id); done = !!S.fuseStacks(state, ctx.self, a.uid, b.uid, id, j ? j.cost : 0, 'hand'); }
+    if (k != null) { const id = pl.hand[k]; const j = S.parseJogress(id); done = !!S.fuseJogress(state, ctx.self, a, b, id); }
   }
   if (!done && findStack(state, ctx.self, a.uid)) { state._s8NoSurvive = true; try { S.deleteStack(state, ctx.self, a.uid, 'trash', ev0.cause || 'effect'); } finally { state._s8NoSurvive = false; } }
 };

@@ -219,7 +219,7 @@ for (const id of ['EX5-012', 'EX5-020']) {
 
 // EX5-064 코우＆사요 【등장 시】【메인】 이 테이머를 레스트시키고, 특징으로 「라이트 팽」/「나이트 클로」를 가진 자신의 디지몬에 겹쳐져 있는 카드를 위에서부터 1장 그 디지몬의 진화원 아래에 놓는 것으로, 자신의 디지몬 1마리를 패의 디지몬 카드로 코스트를 지불하지 않고 진화시킬 수 있다.
 // "이 디지몬에 겹쳐져 있는 카드" = the cards under the Digimon (진화원; BT13-058/BT9-044/BT16-056 use the same phrase for the sources) — same reading as shard20 rotateSource (EX5-007/016).
-// shard3's version moved the TOP (Digimon) card itself under its sources; that contradicts the printed phrase and EX5-007/016. Both events are emitted so EX5-001 (topPlaced) and BT22-006 (sourceRotated) keep working.
+// (수정) 위 해석은 틀렸다: 공식 영문은 "top stacked card as its bottom digivolution card" — 최상단 카드 자신이 진화원 맨 아래로 간다 (shard3 방식이 맞음). Both events are emitted so EX5-001 (topPlaced) and BT22-006 (sourceRotated) keep working.
 sc('EX5-064::등장 시', async (ctx, R) => {
   const { state, self } = ctx; const t = me(ctx);
   if (!t || C(t.cardId).category !== 'tamer' || t.suspended) return;
@@ -230,11 +230,14 @@ sc('EX5-064::등장 시', async (ctx, R) => {
   const d = cands.find(s => s.uid === uid); if (!d) return;
   S.restStack(state, self, t.uid);
   if (!t.suspended) return;
-  const fd = S.fdCount(d);
-  const moved = d.sources.splice(d.sources.length - 1, 1);
-  d.sources.splice(fd, 0, ...moved);
+  const oldTop = d.cardId; // 최상단 카드(디지몬 자신)를 진화원 맨 아래로, 다음 카드가 최상단이 된다 (공식 영문: "top card ... as bottom digivolution card")
+  d.cardId = d.sources.pop();
+  d.sources.splice(S.fdCount(d), 0, oldTop);
+  const moved = [oldTop];
+  S._s4.discardLinkCardsOnNewCard(state, self, d);
   S.recomputeStackGrants(d);
-  S.log(state, `${self} ${C(d.cardId).nameKo}에 겹쳐진 카드 ${C(moved[0]).nameKo}을(를) 진화원 아래로 이동`);
+  S._s4.ruleCheckDP(state, self, d);
+  S.log(state, `${self} ${C(oldTop).nameKo}을(를) 진화원 아래로 이동 (현재 최상단 ${C(d.cardId).nameKo})`);
   S.emitGameEvent(state, 'sourceRotated', { owner: self, stack: d, cause: 'effect', moved });
   S.emitGameEvent(state, 'topPlaced', { owner: self, stack: d, cause: 'effect' });
   await R.runOne({ op: 'evolveEffect', who: 'self', subject: { thisStack: false, other: false, desc: null, name: null }, zone: 'hand', cardFilter: { category: 'digimon' }, cost: { mode: 'free' }, ignoreCond: false, ignoreLevel: false }, ctx);

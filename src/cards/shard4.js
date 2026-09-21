@@ -593,7 +593,7 @@ OPS.s4_jogress = async (instr, ctx) => {
   if (ti == null) return;
   const tid = pl.hand[ti];
   const cost = S.parseJogress(tid).cost;
-  if (mode === 'two') { S.fuseStacks(st, p, a.uid, m.b.uid, tid, cost, 'hand'); }
+  if (mode === 'two') { S.fuseJogress(st, p, a, m.b, tid); }
   else {
     const matId = pl[zone][m.i];
     const removeIdx = [[zone, m.i], ['hand', ti]].sort((x, y) => (x[0] === y[0] ? y[1] - x[1] : 0));

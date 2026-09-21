@@ -919,8 +919,8 @@ const freePlayThenJogress = (names, after) => async (ctx, R) => {
   if (fused) await after(ctx, fused);
 };
 sc('BT16-091::메인', freePlayThenJogress(['아큐라몬', '가트몬'], async (ctx, f) => {
-  S.grantKeyword(ctx.state, ctx.self, f.uid, '시큐리티어택', 1, 'turn');
-  if (ctx.startAttack && await ask(ctx, `${C(f.cardId).nameKo}(으)로 플레이어에게 어택할까요?`)) ctx.startAttack(ctx.self, f.uid, 'PLAYER');
+  // slice2 r2 (official Q&A 2691): 《S 어택 +1》 is only gained together with the attack on the player -- declining the attack means neither
+  if (ctx.startAttack && await ask(ctx, `${C(f.cardId).nameKo}(으)로 플레이어에게 어택할까요?`)) { S.grantKeyword(ctx.state, ctx.self, f.uid, '시큐리티어택', 1, 'turn'); ctx.startAttack(ctx.self, f.uid, 'PLAYER'); }
 }));
 sc('BT16-092::메인', freePlayThenJogress(['엑스브이몬', '스팅몬'], async (ctx, f) => {
   S.grantKeyword(ctx.state, ctx.self, f.uid, '블로커', undefined, 'opponentTurn');

@@ -106,6 +106,14 @@ export function createSim(state, opts = {}) {
     S.queueTriggersForStack(state, p, dec.stack, 'attack');
     S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
     await drain(); await drainRepl();
+    { // UI parity (main.js enterRedirectTiming): once the target is fixed, 'attackTarget' (+ 'attackOnDigimon') fire so ST15-05 / ST16-05 / BT2-084 style triggers work headlessly (slice1 r2, Q810/Q822/Q1036)
+      const aT = find(p, uid);
+      if (aT && !pa.ended && !state.winner) {
+        S.s1AttackTargeted(state, p, aT, pa.targetKind, pa.targetUid);
+        if (pa.targetKind === 'digimon') { const dT = find(op, pa.targetUid); const aT2 = find(p, uid); if (aT2 && dT) S.emitGameEvent(state, 'attackOnDigimon', { owner: p, stack: aT2, cause: null, target: dT }); }
+        await drain(); await drainRepl();
+      }
+    }
     const end = async () => { H.attackEnd && H.attackEnd({ p, op, uid, pa }); const st = find(p, uid); state.attackCtx = null; if (st) { S.s8AttackEnded(state, p, uid); S.queueTriggersForStack(state, p, st, 'attackEnd'); S.emitGameEvent(state, 'attackEnd', { owner: p, stack: st, cause: null }); } await drain(); };
     if (state.winner || pa.ended || !find(p, uid) || (pa.targetKind === 'digimon' && !find(op, pa.targetUid))) { await end(); return true; }
     // counter timing (defender)

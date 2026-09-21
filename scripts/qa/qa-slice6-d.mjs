@@ -30,7 +30,7 @@ scenario('G0', 'a debuff already applied is switched off once the digimon become
   immune(w, 'p2', b);
   w.eq(w.dp('p2', b) - base, 0, 'debuff no longer in effect while unaffected');
   return w;
-}, { xfail: 'DP/keyword grants are stored as aggregated values (tempDP / keywords) without their source, so a grant that was already applied cannot be switched off when the digimon LATER gains immunity (only "grant while immune -> recorded/deferred" exists, 15-15-5-2). Needs per-grant provenance in effectiveDP/hasKeyword.' });
+});
 scenario('G1', 'a debuff applies again once the digimon stops being unaffected (Q6355)', async () => {
   const w = W({ p1: {}, p2: { battle: [plain(3, 0)] } });
   const b = w.p2.stacks[0]; const base = w.dp('p2', b);

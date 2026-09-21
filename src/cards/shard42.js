@@ -123,7 +123,7 @@ async function evolveFromHand(ctx, stack, pred, delta, free, prompt) {
   const id = pl.hand[idx];
   const chk = E.canEvolveAny(stack.cardId, id, S.evoExtraArg(state, null, stack), restr);
   const printed = chk.ok ? chk.cost : (C(id).evoNormal?.cost ?? 0);
-  const cost = free ? 0 : Math.max(0, printed + (delta || 0));
+  const cost = free ? 0 : Math.max(0, printed + ((delta || 0) < 0 && S.isEvoCostLocked(state, ctx.self) ? 0 : (delta || 0))); // QA-S6 Q6869: cost-minus lock (BT5-021 …)
   return S.digivolve(state, ctx.self, stack.uid, id, cost, 'hand') || null;
 }
 const nameHas = (state, p, st, n) => { const c = C(st.cardId); if (c.nameKo.includes(n)) return true; try { const i = S.effectiveInfo(state, st, p); return i.names.some(x => x.includes(n)) || (i.inclNames || []).some(x => x.includes(n)); } catch { return false; } };
@@ -154,7 +154,7 @@ SCRIPTS['EX12-002::자신의 턴'] = [fn(async (ctx) => { await evolveFromHand(c
 // EX12-064 【서로의 턴】[턴 1회] 특징 「머신형」/「사이보그형」/「ME」를 가진 자신의 디지몬이 등장했을 때, 이 디지몬의 【진화 시】 효과 1개를 발휘할 수 있다.
 sc('EX12-064::서로의 턴@진화 시】 효과 1개', async (ctx, R) => {
   const h = me(ctx);
-  if (!h) return;
+  if (!h || S.evoTrigSuppressed(ctx.state, ctx.self, h)) return; // QA-S6 Q6792: 【진화 시】 suppressed
   const segs = S.parseEffectSegments(C(h.cardId).effectKo).segments.filter(s => s.tags.some(t => t.includes('진화 시')));
   if (!segs.length) return;
   if (!(await ask(ctx, '이 디지몬의 【진화 시】 효과를 발휘할까요?'))) return;

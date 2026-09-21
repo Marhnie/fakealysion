@@ -26,6 +26,7 @@ export async function drain(st, ch) {
   let guard = 0; const ran = [];
   while (guard++ < 60) {
     const t = st.pending.find(x => !x.resolved); if (!t) break;
+    { const pl_ = st.players[t.player]; if (t.stackUid && t.topId && !t.evt?.leaving && !t.tags.some(x => x.includes('소멸 시'))) { const n = [pl_.raising, ...pl_.battle].filter(Boolean).find(x => x.uid === t.stackUid); if (!n || n.cardId !== t.topId || (t.inherited && !n.sources.includes(t.cardId) && !(n.linkCards || []).some(l => l.cardId === t.cardId))) { S.resolvePending(st, t.uid); continue; } } } // same 'stack/source left before it resolved' guard as the real UI drain
     try {
       if (t.schedFn) { t.schedFn(); S.resolvePending(st, t.uid); continue; }
       const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
@@ -33,7 +34,7 @@ export async function drain(st, ch) {
       const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
       if (om && t.stackUid) { const pl0 = st.players[t.player]; const st1 = [pl0.raising, ...pl0.battle].filter(Boolean).find(x => x.uid === t.stackUid); if (st1) { const key = S.onceLimitKey(t.cardId, t.tags); if (S.turnUsesRemaining(st1, key, Number(om[1])) <= 0) { S.resolvePending(st, t.uid); continue; } S.markTurnEffectUsed(st1, key); } } // same once-per-turn gate as main.js / cpusim.js
       ran.push(t.cardId + ':' + (t.tags || []).join(','));
-      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {},
+      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, attack: () => st.attackCtx, endAttack() { if (st.attackCtx && st.attackCtx.terminate) st.attackCtx.terminate(); },
         choose: async (k, o) => { let r; if (ch) r = await ch(k, o, t); if (r !== undefined) return r;
           if (k === 'pickStack') return o.uids?.[0] ?? null; if (k === 'pickStackAnySide') return o.entries?.[0] ?? null; if (k === 'pickFromZoneIndex') return o.eligibleIdxs?.[0] ?? null;
           if (k === 'pickFromHandIndexes') return (o.eligibleIdxs || []).slice(0, o.n || 1); if (k === 'pickFromRevealed') return o.eligible?.slice(0, o.max || 1).map(x => x.i) || []; if (k === 'confirmEffect') return true; return null; } };

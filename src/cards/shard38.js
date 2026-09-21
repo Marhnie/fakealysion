@@ -35,7 +35,7 @@ hk('BT22-001', { tag: '자신의 턴', src: 'inheritedKo', has: '진화원에 �
 // BT22-044 / BT22-054 (effect text): 이 디지몬의 진화원에 특징 「CS」를 가진 디지몬 카드가 효과로 놓였을 때, …
 for (const id of ['BT22-044', 'BT22-054']) hk(id, { tag: '자신의 턴', has: '진화원에 특징 「CS」를 가진 디지몬 카드가 효과로', limit: 1, events: { sourcesAdded: onSelfSrcAdded((x) => C(x).category === 'digimon' && hasT(x, 'CS')) } });
 // BT22-027: 【서로의 턴】[턴 1회] 이 디지몬의 진화원이 효과로 늘어났을 때 (either player's effect)
-hk('BT22-027', { tag: '서로의 턴', has: '진화원이 효과로 늘어났을 때', limit: 1, events: { sourcesAdded: (state, hp, h, info) => info.stack === h && info.owner === hp } });
+hk('BT22-027', { tag: '서로의 턴', has: '진화원이 효과로 늘어났을 때', limit: 1, events: { sourcesAdded: (state, hp, h, info) => info.stack === h && info.owner === hp && !info.rotated } }); // (순환은 진화원 수가 늘지 않는다)
 // BT22-006 (inherited): 이 디지몬에 겹쳐져 있는 카드가 위에서부터 1장 이 디지몬의 진화원 아래에 효과로 놓였을 때 (shard20 rotateSource emits 'sourceRotated')
 hk('BT22-006', { tag: '자신의 턴', src: 'inheritedKo', has: '진화원 아래에 효과로 놓였을 때', limit: 1, events: { sourceRotated: (state, hp, h, info) => info.stack === h && info.owner === hp } });
 // "이 디지몬이 링크했을 때" (【자신의 턴】[턴 1회])

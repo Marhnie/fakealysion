@@ -50,5 +50,5 @@ scenario('G100', 'BT25-104 own-turn effect: the tamer 최건우 is treated as a 
   const tam = w.p1.stacks[1];
   w.eq(w.dp('p1', tam), 12000, 'DP 12000'); w.ok(S.effectiveInfo(w.st, tam, 'p1').categories.includes('digimon'), 'also a digimon');
   return w;
-}, { xfail: 'BT25-104 【자신의 턴】 continuous "「최건우」는 모두 DP 12000의 디지몬으로도 취급하며 《속공》을 얻는다" is not implemented (only the one-shot s2_asDigimon exists); Q6499-6507/6947 groups depend on this feature and are therefore NOT verified.' });
+});
 await run('slice6-g');

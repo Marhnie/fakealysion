@@ -147,7 +147,7 @@ export function xrosSub(state, p, stack) {
 }
 // granted effects ("…의 효과를 얻는다"): stack.s2Granted = [{ trigger, label, until }]; queued at the matching engine event
 export function grantEffect(state, stack, { trigger, label, until }) {
-  (stack.s2Granted = stack.s2Granted || []).push({ trigger, label, until });
+  (stack.s2Granted = stack.s2Granted || []).push({ trigger, label, until, fxSrc: state._fxSrc ? { player: state._fxSrc.player, category: state._fxSrc.category, alsoDigimon: state._fxSrc.alsoDigimon } : null }); // r2 (Q5329): remember the granter; an immune holder does not trigger
   S.log(state, `${C(stack.cardId).nameKo}에게 효과 부여: ${label}`);
 }
 let pendSeq = 1;
@@ -160,6 +160,7 @@ export function queueGranted(state, p, stack, eventKind) {
   if (!stack.s2Granted) return;
   for (const g of stack.s2Granted) {
     if (g.trigger !== eventKind || state.turnNumber > g.until) continue;
+    if (g.fxSrc && (() => { const prev = state._fxSrc; state._fxSrc = g.fxSrc; try { return S.effectBlocked(state, p, stack, 'other'); } finally { state._fxSrc = prev; } })()) continue; // r2 (Q5329)
     state.pending.push({ uid: 's2g' + (pendSeq++), player: p, cardId: g.cardId || 'S2-GRANT', stackUid: stack.uid, tags: ['부여:' + g.label], text: g.label, resolved: false, watcher: true });
   }
 }

@@ -73,6 +73,12 @@ function fdHolders(instr, ctx) {
 OPS.trashFaceDown = async (instr, ctx) => {
   instr._paid = false;
   const n = instr.n || 1;
+  if (instr.target === 'ownTamer' && n > 1) { // r2 (Q6212): the N cards may come from several tamers (total N), one card per pick
+    const held = () => stacksOf(ctx.state, ctx.self).filter(s => C(s.cardId).category === 'tamer' && s.sources.length >= 1);
+    if (held().reduce((a, t) => a + t.sources.length, 0) < n) { S.log(ctx.state, `${ctx.self} 파기할 뒷면의 카드가 부족함`); return; }
+    for (let k = 0; k < n; k++) { const h = held(); const t = h.length === 1 ? h[0] : await pickOne(ctx, h, '뒷면의 카드를 파기할 테이머 선택'); if (!t) return; S.trashEvoSources(ctx.state, ctx.self, t.uid, 1, 'bottom'); }
+    instr._paid = true; return;
+  }
   const hs = fdHolders(instr, ctx);
   const st = await pickOne(ctx, hs, '뒷면의 카드를 파기할 대상 선택');
   if (!st) { S.log(ctx.state, `${ctx.self} 파기할 뒷면의 카드가 부족함`); return; }
@@ -80,7 +86,7 @@ OPS.trashFaceDown = async (instr, ctx) => {
   S.log(ctx.state, `${ctx.self} ${C(st.cardId).nameKo}의 뒷면 카드 ${out.length}장을 아래에서부터 파기`);
   instr._paid = true;
 };
-OPS['trashFaceDown$payable'] = (instr, ctx) => fdHolders(instr, ctx).length > 0;
+OPS['trashFaceDown$payable'] = (instr, ctx) => (instr.target === 'ownTamer' && (instr.n || 1) > 1) ? stacksOf(ctx.state, ctx.self).filter(s => C(s.cardId).category === 'tamer').reduce((a, t) => a + t.sources.length, 0) >= instr.n : fdHolders(instr, ctx).length > 0;
 
 // trashLink { n, target?:'own' }  "이 디지몬의(자신의 디지몬의) 링크 카드 N장을 파기한다"
 function linkHolders(instr, ctx) {
@@ -120,13 +126,24 @@ OPS.rotateSource = async (instr, ctx, H) => {
   instr._paid = false;
   const me = rotatable(instr, ctx, H);
   if (!me) { S.log(ctx.state, `${ctx.self} 진화원 아래로 옮길 겹쳐진 카드가 없음 (또는 조건 불충족)`); return; }
-  const fd = S.fdCount(me);
-  const moved = me.sources.splice(me.sources.length - (instr.n || 1), instr.n || 1); // top-most = end of the array
-  me.sources.splice(fd, 0, ...moved);
+  // "이 디지몬에 겹쳐져 있는 카드를 위에서부터 N장 이 디지몬의 진화원 아래에 놓는다" = the TOP stacked card(s) (official English: "top stacked card as its bottom
+  // digivolution card"): the current top card goes to the bottom of the sources and the next card becomes the Digimon.
+  const moved = [];
+  for (let i = 0; i < (instr.n || 1); i++) {
+    if (me.sources.length - S.fdCount(me) < 1) break;
+    const oldTop = me.cardId;
+    me.cardId = me.sources.pop(); // top-most source = end of the array
+    me.sources.splice(S.fdCount(me), 0, oldTop);
+    S._s4.discardLinkCardsOnNewCard(ctx.state, ctx.self, me);
+    moved.push(oldTop);
+  }
   S.recomputeStackGrants(me);
-  S.log(ctx.state, `${ctx.self} ${C(me.cardId).nameKo}에 겹쳐진 카드 ${moved.length}장을 진화원 아래로 이동`);
+  S._s4.ruleCheckDP(ctx.state, ctx.self, me);
+  S.log(ctx.state, `${ctx.self} ${C(moved[0]).nameKo} 등 최상단 카드 ${moved.length}장을 진화원 아래로 이동 (현재 최상단 ${C(me.cardId).nameKo})`);
   instr._paid = true;
   S.emitGameEvent(ctx.state, 'sourceRotated', { owner: ctx.self, stack: me, cause: 'effect', moved }); // BT22-006 (shard38)
+  S.emitGameEvent(ctx.state, 'topPlaced', { owner: ctx.self, stack: me, cause: 'effect' }); // EX5-001 (shard3)
+  S.emitGameEvent(ctx.state, 'sourcesAdded', { owner: ctx.self, stack: me, cause: 'effect', added: moved, rotated: true, srcPlayer: ctx.self, srcCategory: 'digimon' }); // "진화원에 … 카드가 효과로 놓였을 때" (BT22-044 등)
 };
 OPS['rotateSource$payable'] = (instr, ctx, H) => !!rotatable(instr, ctx, H);
 
@@ -171,7 +188,7 @@ for (const id of ['EX6-045', 'EX6-048', 'EX7-052', 'EX7-054', 'EX9-024', 'EX9-02
         if (!uid) return false;
         S.markTurnEffectUsed(h, k);
         S.deleteStack(s, hp, uid, 'trash', 'ownEffect');
-        return true;
+        return !s.players[hp].battle.some(x => x.uid === uid); // slice3 r2 (Q3772/3782/3858/3861): 「~시키는 것으로」 — when the digimon was not really deleted the attack is not ended
       } }];
     },
   });

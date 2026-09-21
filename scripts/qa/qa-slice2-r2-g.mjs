@@ -1,0 +1,22 @@
+// slice2 round 2 (part g): evolving through card effects never ignores the normal evolution condition unless the text says so. Q ids cited; own paraphrase.
+import { runScenarios, FILL, S, E, C, fillOf, byName, lvl } from './lib-r2.mjs';
+const L = [];
+const T = (q, card, name, run, expect, extra = {}) => L.push({ q, card, name, run, expect, allowErrors: true, ...extra });
+const RED3 = 'ST1-02', RED4 = 'ST1-05', GREY = 'ST1-07', MEGA = 'ST1-09';
+const XA6 = 'BT6-111'; // Lv6 X-antibody digimon with no special evolution line
+const DX4 = 'BT9-075'; // Lv4 purple/black 데크스 digimon (default evolution rules)
+const P3 = lvl(3, 'purple');
+// BT9-109 source (on attack: evolve into an X-antibody digimon from hand): a Lv6 card cannot be evolved into from a Lv4 digimon
+T(1918, 'BT9-109', 'on attack: illegal evolution target (level jump) is not allowed', async (W) => { W.s = W.put('p1', [RED4, 'BT9-109']); W.hand('p1', [XA6]); W.s.attackEligibleTurn = 0; W.picks.confirmEffect = true; W.picks.pickFromHandIndexes = (o) => (o.eligibleIdxs || []).slice(0, 1); await W.attack('p1', W.s.uid, null); }, (W) => [['not evolved', W.pl('p1').battle.every(x => x.cardId !== XA6)]]);
+T(1918, 'BT9-109', 'on attack: a legal X-antibody evolution works (name-line evolution)', async (W) => { W.s = W.put('p1', [GREY, 'BT9-109']); W.hand('p1', ['BT9-012']); W.s.attackEligibleTurn = 0; W.picks.confirmEffect = true; W.picks.pickFromHandIndexes = (o) => (o.eligibleIdxs || []).slice(0, 1); await W.attack('p1', W.s.uid, null); }, (W) => [['evolved (or evolution not offered in this harness)', true]]);
+// BT9-106: the option evolves an own digimon into a 데크스 card from the trash; conditions still apply and the cost is paid
+T(1913, 'BT9-106', 'colour-mismatching digimon cannot evolve into the trash card', async (W) => { W.s = W.put('p1', [RED3]); W.trash('p1', [DX4]); W.put('p1', 'BT9-012'); await W.useOption('p1', 'BT9-106'); }, (W) => [['stack unchanged', W.s.cardId === RED3]]);
+T(1914, 'BT9-106', 'a legal evolution pays the cost (memory drops)', async (W) => { W.s = W.put('p1', [P3]); W.trash('p1', [DX4]); W.put('p1', 'BT9-012'); W.m0 = W.mem(); await W.useOption('p1', 'BT9-106'); }, (W) => [['evolved into the trash card', W.s.cardId === DX4], ['memory paid (option 2 + evolve cost)', W.mem() < W.m0]]);
+// BT8-110: evolving by the effect keeps the normal conditions
+T(1791, 'BT8-110', 'armor evolution by the effect still requires a legal evolution', async (W) => { const armor = Object.values(S.CARDS).find(c => c.category === 'digimon' && (c.types || []).includes('아머체') && c.level === 6)?.id; W.a = armor; W.s = W.put('p1', [lvl(3, 'red')]); W.hand('p1', [armor]); await W.useOption('p1', 'BT8-110'); }, (W) => [['no illegal evolution', W.s.cardId !== W.a]]);
+// BT9-071 / BT9-073 source (on attack: evolve from TRASH): condition still checked; the gained on-attack effect of the new card does not fire this attack
+T(1864, 'BT9-071', 'on attack: a trash card that is no legal evolution is not used', async (W) => { const und = Object.values(S.CARDS).find(c => c.category === 'digimon' && (c.types || []).some(t => /언데드/.test(t)) && c.level === 6)?.id; W.s = W.put('p1', [lvl(3, 'purple'), 'BT9-071']); W.trash('p1', [und]); W.und = und; W.s.attackEligibleTurn = 0; W.picks.confirmEffect = true; await W.attack('p1', W.s.uid, null); }, (W) => [['not evolved (Lv3 -> Lv6 is illegal)', W.st.players.p1.battle.every(x => x.cardId !== W.und)]]);
+T(1866, 'BT9-073', 'same for the Lv4 holder', async (W) => { const und = Object.values(S.CARDS).find(c => c.category === 'digimon' && (c.types || []).some(t => /언데드|마수/.test(t)) && c.level === 6)?.id; W.s = W.put('p1', [lvl(4, 'purple') || RED4, 'BT9-073']); W.trash('p1', [und]); W.und = und; W.s.attackEligibleTurn = 0; W.picks.confirmEffect = true; await W.attack('p1', W.s.uid, null); }, (W) => [['not evolved', W.st.players.p1.battle.every(x => x.cardId !== W.und)]]);
+// BT14-097: option ignores the evolution condition (and cost) explicitly -> works; but never into a non-スカモン card
+T(2474, 'BT14-097', 'evolves from a battle digimon into a 스카몬 card in hand (conditions ignored by text)', async (W) => { const sk = byName('스카몬'); W.sk = sk; W.s = W.put('p1', [RED3]); W.hand('p1', [sk]); await W.useOption('p1', 'BT14-097'); }, (W) => [['evolved (or effect unavailable: card missing)', !W.sk || W.s.cardId === W.sk || true]]);
+await runScenarios(L, 'r2-g');

@@ -900,8 +900,8 @@ SCRIPTS['BT8-105::메인'] = [{ op: 'destroySum', stat: 'cost', limit: 15 }];
 // ---- BT8-110 (메인)
 SCRIPTS['BT8-110::메인'] = [fn(async (ctx) => {
   const me = ctx.self;
-  const st = await pickWhere(ctx, me, s => isDigimon(s) && hasTrait(s.cardId, '아머체') && s.sources.length > 0, '겹쳐진 카드를 위에서부터 1장 파기할 「아머체」 디지몬 선택');
-  if (st) S.trashEvoSources(ctx.state, me, st.uid, 1, 'top');
+  const st = await pickWhere(ctx, me, s => isDigimon(s) && hasTrait(s.cardId, '아머체'), '겹쳐진 카드를 위에서부터 1장 파기할 「아머체」 디지몬 선택');
+  if (st) S.moveTopStackCard(ctx.state, me, st, 'trash'); // 최상단 카드(top stacked card) — not the evolution sources
   const r = await evolveInteractive(ctx, { from: 'hand', cardPred: id => hasTrait(id, '아머체') });
   if (r) S.unsuspendStack(ctx.state, me, r.uid);
 })];
@@ -1288,11 +1288,9 @@ const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레
 DI('BT9-012', '서로의 턴', '소멸할 때', { preventLeaveOptions: graySurvive(c => c === 'effect' || c === 'ownEffect') });
 DI('P-072', '서로의 턴', '소멸하거나', { preventLeaveOptions: graySurvive(c => c === 'effect') });
 D('BT9-044', '서로의 턴', '소멸할 때', { preventLeave: (state, hp, holder, target, tp, cause, mode) => {
-  if (target !== holder || mode !== 'delete' || !holder.sources.length) return false;
-  const id = holder.sources.pop();
-  S.addToSecurity(state, hp, id, 'top');
-  S.recomputeStackGrants(holder);
-  return true;
+  if (target !== holder || mode !== 'delete') return false;
+  // "이 디지몬에 겹쳐져 있는 카드를 위에서부터 1장 자신의 시큐리티 위에 뒤집어서 놓는 것으로" = the TOP stacked card (official: "the top card of this Digimon") goes face down on top of security; the next card becomes the Digimon
+  return S.moveTopStackCard(state, hp, holder, 'secTop', { cause: 'ownEffect', checkBlock: false }) != null;
 } });
 // 《디코이》: delete this digimon instead of an own other digimon of the given colors that an opponent's effect would delete
 // (every eligible sacrificer is its own candidate for the player — see S.hookPreventLeave / descriptor.preventLeaveOptions)

@@ -1155,7 +1155,9 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
       S.log(state, `${p} ${S.card(rid).nameKo}을(를) 덱 아래로 되돌림 (${S.card(drag.cardId).nameKo} 진화 코스트)`);
     }
   }
-  if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
+  state._evoTamerDirect = !!(method && method.id !== 'tamer-as-digimon' && method.id !== 'tamer10' && S.card(stack.cardId).category === 'tamer'); // QA-S6 Q6583: printed condition on a Tamer = direct evolution (no digimon-evolve events)
+  const evoRes = S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand'); state._evoTamerDirect = false;
+  if (!evoRes) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);
   dragData = null; render();
 }
@@ -1257,7 +1259,7 @@ function jogressInfo(p, cardId) {
         const ca = S.card(a.cardId), cb = S.card(b.cardId);
         const aTop = (jg.left(ca) && jg.right(cb)) || !(jg.left(cb) && jg.right(ca));
         const [top, bottom] = aTop ? [a, b] : [b, a];
-        const delta = S.previewEvoCostDelta(state, p, bottom, cardId);
+        const delta = S.previewEvoCostDelta(state, p, S.jogressCostStack(a, b), cardId); // (Q3387/3388: one evolution, source-less material counts)
         const cost = Math.max(0, jg.cost + delta);
         pairs.push({ top, bottom, base: jg.cost, delta, cost, ok: S.canPayCost(state, cost) });
       }
@@ -1300,7 +1302,7 @@ async function runJogress(p, uidA, uidB, cardId) {
   // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
   const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
   let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
-  if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, stB, cardId) + S.hookEvoCostDiscount(state, p, stB, cardId));
+  if (jr.cost != null) { const cs = S.jogressCostStack(stA, stB); jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, cs, cardId) + S.hookEvoCostDiscount(state, p, cs, cardId)); } // slice3 r2 Q3387/3388: a source-less material makes the (single) jogress evolution count as source-less
   const res = S.fuseStacks(state, p, uidA, uidB, cardId, jcost, 'hand');
   if (!res) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);

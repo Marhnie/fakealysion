@@ -66,5 +66,11 @@ for (const c of raw) {
   }
 }
 
+// official-list trait fill for cards whose dgchub `types` are empty (see scripts/fill-missing-traits.mjs)
+try {
+  const ov = JSON.parse(readFileSync(new URL('../data/trait-overrides.json', import.meta.url), 'utf-8'));
+  for (const [no, t] of Object.entries(ov)) if (out[no] && !out[no].types.length) out[no].types = [...t];
+} catch { /* no overrides file */ }
+
 writeFileSync(OUT_PATH, JSON.stringify(out));
 console.log(`Wrote ${Object.keys(out).length} cards to ${OUT_PATH.pathname}`);

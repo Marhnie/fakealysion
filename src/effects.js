@@ -495,13 +495,13 @@ const FX_KIND_OF_OP = { destroy: 'delete', destroySum: 'delete', retreat: 'retre
 let fxDepth = 0;
 function fxSourceOf(ctx) {
   const { state, S } = ctx;
-  let cat = S.card(ctx.sourceCardId)?.category;
+  let cat = S.card(ctx.sourceCardId)?.category, also = false;
   for (const pp of ['p1', 'p2']) {
     const pl = state.players[pp];
     const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === ctx.sourceStackUid);
-    if (st) cat = S.card(st.cardId)?.category;
+    if (st) { cat = S.card(st.cardId)?.category; also = cat !== 'digimon' && !!S.isAsDigimon(st); } // 「디지몬으로도 취급」: the effect counts as a Digimon's AND as its printed category's (Q6501/6505)
   }
-  return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' };
+  return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' || also, alsoDigimon: also };
 }
 const IMMUNE_SAFE_OPS = new Set(['destroy', 'destroySum', 'retreat', 'returnToHandStripSources', 'bounceToDeckBottomStripSources', 'rest', 'restAll', 'trashEvoSources', 'modifyDP', 'modifyDPAll', 'setDP', 'grantKeyword', 'restrictAttack', 'restrictAttackPlayer']);
 const PICK_KINDS = new Set(['pickStack', 'pickStackAnySide', 'pickFromHand', 'pickFromZoneIndex', 'pickFromRevealed']);
@@ -1020,7 +1020,7 @@ async function runOneCore(instr, ctx) {
       // 8-2-2-5: the printed jogress cost still goes through evolve-cost modifiers (one-time mods are restored if the fusion is rejected).
       const evoSnap = S.snapshotEvoCostMods(state, who);
       let jcost = j ? j.cost : 0;
-      if (j) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, who, cardId) + S.continuousEvoCostDiscount(state, who, src, cardId) + S.hookEvoCostDiscount(state, who, src, cardId));
+      if (j) { const cs = S.jogressCostStack(src, partner); jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, who, cardId) + S.continuousEvoCostDiscount(state, who, cs, cardId) + S.hookEvoCostDiscount(state, who, cs, cardId)); }
       if (!S.fuseStacks(state, who, src.uid, partner.uid, cardId, jcost, 'hand')) S.restoreEvoCostMods(evoSnap);
       break;
     }
@@ -1213,6 +1213,13 @@ async function runOneCore(instr, ctx) {
       let targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       if (instr.last) { const lp = resolveLast(ctx); if (lp) S.grantKeyword(state, lp.player, lp.uid, instr.keyword, instr.value, instr.duration || 'turn'); break; }
       if (instr.all) { for (const st of candidateStacks(ctx, targetPlayer, instr)) S.grantKeyword(state, targetPlayer, st.uid, instr.keyword, instr.value, instr.duration || 'turn'); break; }
+      if (instr.target === 'either' && !instr.thisStack) { // slice3 r2 (Q3722/3728/3734/3740): a bare 「디지몬 1마리에게」 may be an own OR an opponent's digimon
+        const entries = [ctx.self, ctx.opp].flatMap(pp => candidateStacks(ctx, pp, instr).map(s => ({ player: pp, uid: s.uid })));
+        if (!entries.length) break;
+        const picked = await ctx.choose('pickStackAnySide', { entries, prompt: `《${instr.keyword === '시큐리티어택' ? 'S 어택' : instr.keyword} ${instr.value > 0 ? '+' : ''}${instr.value}》 대상 선택 (자신/상대 무관)${instr.value < 0 ? ' — 약화 DP -' : ''}` });
+        if (picked) S.grantKeyword(state, picked.player, picked.uid, instr.keyword, instr.value, instr.duration || 'turn');
+        break;
+      }
       let targetUid = instr.thisStack ? ctx.sourceStackUid : null;
       if (!targetUid) {
         const uids = candidateStacks(ctx, targetPlayer, instr).map(s => s.uid);
@@ -2704,7 +2711,7 @@ function compileInner(text) {
     const gsA = /(?:얻|준다|주고|부여)/.test(t) ? grantSubject(t) : null;
     if (gsA) script.push(...subjectOps(gsA, (sub) => ({ op: 'grantKeyword', ...sub, keyword: '시큐리티어택', value, duration })));
     else {
-      const target = value < 0 && /디지몬\s*\d+\s*마리에게/.test(t) ? 'opponent' : 'self';
+      const target = value < 0 && /디지몬\s*\d+\s*마리에게/.test(t) ? (/상대(?:의)?\s*디지몬\s*\d+\s*마리에게/.test(t) ? 'opponent' : 'either') : 'self'; // (official Q3722: a bare 「디지몬 1마리에게」 also allows an own digimon)
       const thisStack = target === 'self' && /이\s*디지몬은|이\s*디지몬을\s*DP\s*[+-]/.test(t) &&!/자신(?:의)?\s*디지몬\s*\d+\s*마리/.test(t);
       const countM = t.match(/디지몬\s*(\d+)\s*마리에게/);
       const count = thisStack ? 1 : (countM ? Number(countM[1]) : 1);
@@ -2876,7 +2883,7 @@ function compileInner(text) {
 
   // Deck-top trash (non-whole-segment form, e.g. "...할 수 있다" tail as its
   // own clause after other text already consumed above).
-  if ((m = t.match(/(?:(자신의|상대의|서로의)\s*)?덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:을)?\s*파기(?:한다|할\s*수\s*있다|하고,)/)) && !script.some(i => i.op === 'trashDeckTop')) { // (b12: "…2장 파기하고, 턴 종료까지 …" — EX10-041; 「상대의/서로의 덱」 used to discard only OWN cards)
+  if ((m = t.match(/(?:(자신의|상대의|서로의)\s*)?덱\s*위(?:에서)?\s*(?:부터)?\s*(\d+)\s*장(?:까지)?(?:을)?\s*파기(?:한다|할\s*수\s*있다|하고,)/)) && !script.some(i => i.op === 'trashDeckTop')) { // (slice3 r2 Q3333: EX2-039 "3장까지 파기할 수 있다" compiled to nothing) // (b12: "…2장 파기하고, 턴 종료까지 …" — EX10-041; 「상대의/서로의 덱」 used to discard only OWN cards)
     const opt = /할\s*수\s*있다/.test(m[0]) ? { optional: true } : {};
     if (m[1] === '상대의' || m[1] === '서로의') script.push({ op: 'trashDeckTop', who: 'opponent', n: Number(m[2]), ...opt });
     if (m[1] !== '상대의') script.push({ op: 'trashDeckTop', who: 'self', n: Number(m[2]), ...opt }); // b10: "파기할 수 있다" is optional (EX1-060, EX2-040/044, BT10-082)
@@ -3156,7 +3163,8 @@ function parseConditionExtra(c) {
   }
   if ((m = c.match(/^이\s*디지몬에\s*Lv\.?이\s*같은\s*카드가\s*(\d+)\s*장\s*이상\s*겹쳐져\s*있다면$/))) return (ctx) => {
     const s = stackOf(ctx); if (!s) return false; const cnt = {};
-    s.sources.slice(ctx.S.fdCount(s)).forEach(id => { const lv = ctx.S.card(id).level; if (lv != null) cnt[lv] = (cnt[lv] || 0) + 1; });
+    // Q4879 family: the WHOLE stack is looked at — the top card counts too (Lv.5 digimon + one Lv.5 source = 2 same-Lv cards)
+    [s.cardId, ...s.sources.slice(ctx.S.fdCount(s))].forEach(id => { const lv = ctx.S.card(id).level; if (lv != null) cnt[lv] = (cnt[lv] || 0) + 1; });
     return Object.values(cnt).some(v => v >= Number(m[1]));
   };
   if ((m = c.match(/^이\s*디지몬의\s*진화원에\s*있는\s*Lv\.?(\d+)인\s*카드의\s*색의\s*합계가\s*(\d+)\s*색\s*이상이라면$/))) return (ctx) => {
@@ -3291,7 +3299,7 @@ function parseConditionText(c) {
   }
   if (/^조그레스\s*진화\s*하고\s*있었다면$/.test(c)) return (ctx) => (ctx.trigger && ctx.trigger.evtSnap ? !!ctx.trigger.evtSnap.viaFusion : !!stackOf(ctx)?.viaFusion); // watcher effects (tamer: "자신의 디지몬이 …로 진화했을 때, … 조그레스 진화하고 있었다면") read the EVENT subject, not the holder
   // 7-2-2-9/10: "디지크로스하고 있었다면" / "N장 디지크로스하고 있었다면" — stack.xrosCount = cards actually placed under by DigiXros
-  if ((m = c.match(/^(?:(\d+)\s*장\s*)?디지크로스\s*하고\s*있었(?:다면|을\s*때)$/))) { const n = Number(m[1] || 1); return (ctx) => (stackOf(ctx)?.xrosCount || 0) >= n; }
+  if ((m = c.match(/^(?:(\d+)\s*장\s*)?디지크로스\s*하고\s*있었(?:다면|을\s*때)$/))) { const n = Number(m[1] || 1); return (ctx) => (stackOf(ctx)?.xrosCount || 0) >= n && !(ctx.trigger && ctx.trigger.evt && ctx.trigger.evt.kind === 'attack'); } // slice3 r2 (Q3721/3727/3733/3739, EX6-023..026): the DigiXros clause of a 【등장 시】【어택 시】 line is judged only when the DigiXros happens, never at attack time
   if (/^이\s*효과로\s*소멸하지\s*않았다면$/.test(c)) return (ctx) => ctx._lastDestroyed === false;
   if (/^이\s*효과로\s*소멸했다면$/.test(c)) return (ctx) => ctx._lastDestroyed === true;
   if (/^이\s*효과로\s*(?:옵션\s*카드를\s*)?사용(?:했|하였)다면$/.test(c)) return (ctx) => ctx._lastUsedOption === true; // useOptionFree
@@ -4016,7 +4024,8 @@ function compileToScriptCore(text) {
   if (inner.some(x => x.op === 'condition' || x.op === 'setMemoryIfLE')) return inner;
   const test = parseConditionText(cm[1]) || manualCondition(cm[1]); // can't evaluate the condition → ask the player, never apply blindly
   // "<조건>라면, <효과>. 그 후, 《세이브》." — the condition belongs to the first sentence only; the trailing 《세이브》 sentence is unconditional (BT19-020)
-  const svm = cm[2].match(/^(.*?[.。])\s*(?:(?:그\s*후|또한),?\s*)([≪《]\s*세이브\s*[≫》])\s*[.。]?\s*$/s);
+  // (slice-4 r2, Q4706/4707/4713/4725/4736/4764/4942 …: EVERY "그 후, …" sentence after the condition is processed even when the condition is not met, unless it refers back to the first sentence's result)
+  const svm = cm[2].match(/^(.*?[.。])\s*(?:(?:그\s*후|또한),?\s*)([≪《]\s*세이브\s*[≫》])\s*[.。]?\s*$/s) || cm[2].match(/^(.*?[.。])\s*그\s*후,?\s*((?:(?!이\s*효과로|그\s*디지몬|그\s*카드|선택한|그\s*중|그\s*수)[^])+)$/);
   const rest = compileWithCostPer(svm ? svm[1] : cm[2]);
   if (!rest.length) return [];
   return [{ op: 'condition', if: { test }, then: rest, else: [] }, ...(svm ? compileToScript(svm[2]) : [])];
