@@ -65,7 +65,7 @@ export function renderSecurityZone(o) {
       c.up ? [cd.imgUrl ? h('img', { src: o.artUrl ? o.artUrl(c.id) : cd.imgUrl, alt: cd.nameKo, loading: 'lazy' }) : h('span', {}, cd.nameKo)] : []);
     return el;
   });
-  const stack = h('div', { className: 'sec-stack' }, fan.length ? fan : [h('div', { className: 'sec-none' }, '0')]);
+  const stack = h('div', { className: 'sec-stack', style: `--n:${Math.max(1, fan.length)}` }, fan.length ? fan : [h('div', { className: 'sec-none' }, '0')]);
   if (cnt > MAX_BACKS) stack.appendChild(h('span', { className: 'sec-more' }, `+${cnt - MAX_BACKS}`));
   if (a && (a.kind === 'lift' || a.kind === 'out' || a.kind === 'hand')) {
     stack.appendChild(h('div', { className: `sec-ghost sec-ghost-${a.kind}`, style: `${delayStyle(Date.now() - a.at)}` }, a.kind === 'hand' ? '✋' : ''));
@@ -148,9 +148,13 @@ export function renderSecurityZone(o) {
   }
 
   const zone = h('div', {
-    className: cls, 'data-pile': 'security', 'data-count': String(cnt), role: 'button', tabindex: '0',
-    title: `${SECURITY_HELP}\n(탭하면 정보)`,
-    onClick: () => { secToggle(p); onChange && onChange(); },
+    className: cls + (o.onAttack ? ' sec-attackable' : ''), 'data-pile': 'security', 'data-count': String(cnt), role: 'button', tabindex: '0',
+    title: o.onAttack ? '시큐리티를 눌러 이 플레이어를 공격 (드래그해서 놓아도 됩니다)' : `${SECURITY_HELP}
+(탭하면 정보)`,
+    onClick: () => { if (o.onAttack) { o.onAttack(); return; } secToggle(p); onChange && onChange(); },
+    ondragover: o.onDropAttack ? (e) => { if (o.onDropAttack(e, true)) { e.preventDefault(); e.currentTarget.classList.add('drop-hover'); } } : undefined,
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-hover'),
+    ondrop: o.onDropAttack ? (e) => { e.currentTarget.classList.remove('drop-hover'); if (o.onDropAttack(e, false)) e.preventDefault(); } : undefined,
   }, [head, stack, h('div', { className: 'sec-tags' }, tags), ...status, reveal, pop]);
   return zone;
 }

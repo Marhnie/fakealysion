@@ -818,6 +818,7 @@ function render() {
   if (!state) return renderSetup();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();
+  if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // 17-1-3-1 (rule-oracle): a recorded DP penalty that took effect lazily while no effect was resolving (15-15-5-2) is rule-checked at the next safe point
   if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
   E.autoAdvance(state);
   autoRunMandatoryPending();
@@ -1154,7 +1155,9 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
       S.log(state, `${p} ${S.card(rid).nameKo}을(를) 덱 아래로 되돌림 (${S.card(drag.cardId).nameKo} 진화 코스트)`);
     }
   }
-  if (!S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand')) S.restoreEvoCostMods(evoSnap);
+  state._evoTamerDirect = !!(method && method.id !== 'tamer-as-digimon' && method.id !== 'tamer10' && S.card(stack.cardId).category === 'tamer'); // QA-S6 Q6583: printed condition on a Tamer = direct evolution (no digimon-evolve events)
+  const evoRes = S.digivolve(state, p, stack.uid, drag.cardId, cost, 'hand'); state._evoTamerDirect = false;
+  if (!evoRes) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);
   dragData = null; render();
 }
@@ -1212,7 +1215,7 @@ function stackActionList(p, stack, zoneKind) {
   const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
   mainAbilities.forEach((ab, i) => {
     const payable = Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text);
-    out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1}` : '⚡메인', disabled: !payable, // 15-8-4-4-1
+    out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1} · ${S.card(ab.cardId).nameKo}${ab.cardId === stack.cardId ? '' : '(진화원)'}` : '⚡메인', disabled: !payable, // 여러 개일 때 어느 카드의 효과인지(진화원 효과 포함) 이름으로 구분 // 15-8-4-4-1
       title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
       run: () => {
         if (blockIfBusy()) return;
@@ -1256,7 +1259,7 @@ function jogressInfo(p, cardId) {
         const ca = S.card(a.cardId), cb = S.card(b.cardId);
         const aTop = (jg.left(ca) && jg.right(cb)) || !(jg.left(cb) && jg.right(ca));
         const [top, bottom] = aTop ? [a, b] : [b, a];
-        const delta = S.previewEvoCostDelta(state, p, bottom, cardId);
+        const delta = S.previewEvoCostDelta(state, p, S.jogressCostStack(a, b), cardId); // (Q3387/3388: one evolution, source-less material counts)
         const cost = Math.max(0, jg.cost + delta);
         pairs.push({ top, bottom, base: jg.cost, delta, cost, ok: S.canPayCost(state, cost) });
       }
@@ -1299,7 +1302,7 @@ async function runJogress(p, uidA, uidB, cardId) {
   // 8-2-3-2 / 8-2-2-5: pay the printed jogress cost, adjusted by evolve-cost effects (falls back to the manual input only for unparsed lines).
   const evoSnap = S.snapshotEvoCostMods(state, p); // a rejected jogress must not burn the one-time discount
   let jcost = jr.cost != null ? jr.cost : Number(val('costInput')) || 0;
-  if (jr.cost != null) jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, stB, cardId) + S.hookEvoCostDiscount(state, p, stB, cardId));
+  if (jr.cost != null) { const cs = S.jogressCostStack(stA, stB); jcost = Math.max(0, jcost + S.consumeEvoCostMod(state, p, cardId) + S.continuousEvoCostDiscount(state, p, cs, cardId) + S.hookEvoCostDiscount(state, p, cs, cardId)); } // slice3 r2 Q3387/3388: a source-less material makes the (single) jogress evolution count as source-less
   const res = S.fuseStacks(state, p, uidA, uidB, cardId, jcost, 'hand');
   if (!res) S.restoreEvoCostMods(evoSnap);
   E.checkAutoEndTurn(state);
@@ -1416,7 +1419,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
     effectiveDp: zoneKind === 'raising' ? undefined : S.effectiveDP(state, p, stack),
     keywordBadges: [...activeKeywordBadges(stack), ...(jgMat ? ['🧬재료'] : [])],
     jogress: jgMat,
-    draggable: isOwnActiveBattle && !isCpuSide(p),
+    draggable: isOwnActiveBattle && !isCpuSide(p) && S.card(stack.cardId).category === 'digimon', // 테이머는 어택할 수 없으므로 드래그 어택 없음
     dragPayload: { kind: 'stack', player: p, uid: stack.uid, zone: zoneKind },
     attackable: !!opts.attackTarget,
     target: !!handTargetKind(p, stack, zoneKind),
@@ -1548,7 +1551,7 @@ function renderPlayerPanel(p) {
   // on the board — the player and each attackable Digimon — as a second,
   // more discoverable way to attack besides dragging.
   const selectedEnemyAttacker = (sel.stack && sel.stack.player !== p && sel.stack.zone === 'battle' && sel.stack.player === state.activePlayer && state.phase === 'main')
-    ? findStack(sel.stack) : null;
+    ? findStack(sel.stack) : null; // (테이머는 canAttackPlayer가 false라 대상 강조가 나오지 않는다)
   const canAttackThisPlayerByClick = selectedEnemyAttacker && !selectedEnemyAttacker.suspended && S.canAttackPlayer(state, sel.stack.player, sel.stack.uid);
   const canAttackThisPlayer = canAttackThisPlayerByDrag || canAttackThisPlayerByClick;
   const legalClickTargets = canAttackThisPlayerByClick ? new Set(S.legalDigimonTargets(state, sel.stack.player, sel.stack.uid)) : new Set();
@@ -1571,9 +1574,17 @@ function renderPlayerPanel(p) {
 
   // 6-4: hatch OR move, not both, per breeding phase visit
   const canHatch = state.phase === 'breeding' && p === state.activePlayer && !state.breedingActionTaken && !pl.raising && pl.digitamaDeck.length > 0;
+  // 실제 대전 배치: 시큐리티는 각 플레이어 기준 왼쪽(아래쪽 P1=화면 왼쪽, 맞은편 P2=화면 오른쪽), 카드는 옆으로 눕혀 쌓인다
+  const secZone = renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render(),
+    // 시큐리티를 눌러도(또는 드래그해 놓아도) 플레이어 어택 대상으로 선택된다
+    onAttack: canAttackThisPlayerByClick ? () => { attackFlow(sel.stack.player, sel.stack.uid, 'PLAYER'); sel.stack = null; render(); } : null,
+    onDropAttack: (e, over) => {
+      if (!(dragData && dragData.kind === 'stack' && dragData.zone === 'battle' && dragData.player !== p && S.canAttackPlayer(state, dragData.player, dragData.uid))) return false;
+      if (!over) { attackFlow(dragData.player, dragData.uid, 'PLAYER'); dragData = null; }
+      return true;
+    } });
   const pileRail = h('div', { className: 'pile-rail', 'data-fxpile': p }, [
     pileChip('덱', pl.deck.length, 'pile-deck'),
-    renderSecurityZone({ h, S, state, p, pa: sel.pendingAttack, mode: fxGetMode(), cardChip, artUrl: (id) => S.artUrl(state, p, id) || S.card(id).imgUrl, onChange: () => render() }),
     // 3-1-2-1 / 3-6-3: the trash is a public zone — its cards (and order, top = last) can be inspected by anyone at any time.
     pileChip(panelsOpen.trashOf?.[p] ? '트래시 ▼' : '트래시', pl.trash.length, 'pile-trash', () => { (panelsOpen.trashOf ||= {})[p] = !panelsOpen.trashOf[p]; render(); }),
     panelsOpen.trashOf?.[p] ? h('div', { className: 'hand-list trash-list' }, pl.trash.length ? pl.trash.slice().reverse().map(id => cardChip(id, { owner: p })) : [h('span', {}, '(비어 있음)')]) : null,
@@ -1659,6 +1670,7 @@ function renderPlayerPanel(p) {
         : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
       pileRail,
     ]);
+  fieldRow.insertBefore(secZone, p === 'p2' ? null : fieldRow.firstChild);
   // 위쪽 플레이어(P2)를 어택하는 대상 바는 메모리 게이지 바로 위(패널 맨 아래)에 둔다. 아래쪽 P1의 바는 게이지 바로 아래(패널 맨 위).
   return h('div', { className: `player-panel${isActive ? ' active' : ''}` }, p === 'p2' ? [fieldRow, header] : [header, fieldRow]);
 }
@@ -1820,7 +1832,7 @@ function isOptionalAutoEffect(text, script) {
 async function runPendingScript(trigger, opts = {}) {
   const st0 = state, stale = () => state !== st0; // game-epoch guard: a continuation of a replaced game must not touch the new one
   if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
-    if (opts.delay) await new Promise(r => setTimeout(r, 400));
+    if (opts.delay) await new Promise(r => setTimeout(r, Math.round(900 * READ_SPEEDS[READ.speed] / 1.7)));
     if (stale()) return;
     try { await trigger.schedFn(); } catch (e) { S.log(state, `예약된 턴 종료 효과 처리 오류: ${e && e.message}`); }
     if (stale()) return;
@@ -1828,6 +1840,7 @@ async function runPendingScript(trigger, opts = {}) {
     render();
     return;
   }
+  if (S.waitingDestroyEffectGone(state, trigger)) { S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo}의 【소멸 시】 효과: 카드가 이미 트래시를 벗어나 발휘하지 못함`); S.resolvePending(state, trigger.uid); render(); return; }
   // 15-4-4-3: a waiting effect can't resolve if its card left the area or turned into a NEW card
   // (evolved / fused) before its turn came. 【소멸 시】 effects are meant to wait after leaving.
   if (trigger.stackUid && trigger.topId && !trigger.evt?.leaving && !trigger.tags.some(t => t.includes('소멸 시'))) {
@@ -1845,6 +1858,12 @@ async function runPendingScript(trigger, opts = {}) {
       render();
       return;
     }
+  }
+  if (S.pendingCardLeftZone(state, trigger)) { // Q5230/5593/5758/5905: the deleted card left the trash before this 【소멸 시】 effect resolved
+    S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 발동 대기 효과는 소멸한 카드가 트래시를 벗어나 발휘하지 못함`);
+    S.resolvePending(state, trigger.uid);
+    render();
+    return;
   }
   const limit = parseOnceLimit(trigger.text);
   let onceMark = null;
@@ -1865,7 +1884,7 @@ async function runPendingScript(trigger, opts = {}) {
   // (previous behavior) meant the effect banner appeared and vanished on
   // the same render tick, too fast to actually read. Skipped for effects
   // that need a real choice (ctx.choose already pauses those naturally).
-  if (opts.delay) await new Promise(r => setTimeout(r, 700));
+  if (opts.delay) await new Promise(r => setTimeout(r, Math.round(1500 * READ_SPEEDS[READ.speed] / 1.7)));
   if (stale()) return;
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
     startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
@@ -1899,12 +1918,14 @@ async function runPendingScript(trigger, opts = {}) {
       render();
       return;
     }
+    ctx._optAsked = true; // the "할 수 있다" prompt above already covers the optional processing condition (no second prompt from costGroup)
   }
   if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null;
   if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
   if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
+  if (ctx._declined) { S.resolvePending(state, trigger.uid); render(); if (onceMark) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } return; } // 15-7-1 / 15-14-1: a declined optional cost = the effect was never activated (no 〔턴에 1회〕 use consumed, nothing else runs)
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited)) { // bespoke scripts cover the whole segment
@@ -2053,7 +2074,7 @@ function renderUiChoice() {
       rows.push(h('div', { className: 'hand-list' }, idxs.map(i => cardChip(pl.hand[i], {
         owner: payload.player,
         selected: picked.includes(i),
-        onClick: () => { const p = picked.indexOf(i); if (p === -1) picked.push(i); else picked.splice(p, 1); render(); },
+        onClick: () => { const p = picked.indexOf(i); if (p === -1) { if (payload.n === 1) picked.length = 0; /* pick-exactly-1: choosing another card swaps the choice (used to give "2/1장 선택됨" + a dead 확인) */ picked.push(i); } else picked.splice(p, 1); render(); },
       }))));
       rows.push(h('div', { className: 'actions-row' }, [
         h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
@@ -2071,7 +2092,7 @@ function renderUiChoice() {
       const eligible = payload.eligible.some(x => x.i === i);
       return cardChip(id, {
         selected: picked.includes(i), target: eligible,
-        onClick: eligible ?() => { const p = picked.indexOf(i); if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
+        onClick: eligible ?() => { const p = picked.indexOf(i); if (p === -1 && payload.max === 1) { picked.length = 0; picked.push(i); } else if (p === -1 && picked.length < payload.max) picked.push(i); else if (p !== -1) picked.splice(p, 1); render(); } : undefined,
       });
     })));
     { // eligible cards are marked in the list above ("✔ 선택 가능" chips are clickable); with none, say so and let the player just continue
@@ -2090,7 +2111,7 @@ function renderUiChoice() {
     const picked = state._multiPick;
     rows.push(h('div', { className: 'hand-list' }, payload.ids.map((id, i) => cardChip(id, {
       selected: picked.includes(i),
-      onClick: () => { const k = picked.indexOf(i); if (k === -1) { if (picked.length < payload.n) picked.push(i); } else picked.splice(k, 1); render(); },
+      onClick: () => { const k = picked.indexOf(i); if (k === -1) { if (payload.n === 1) picked.length = 0; if (picked.length < payload.n) picked.push(i); } else picked.splice(k, 1); render(); },
     }))));
     rows.push(h('div', { className: 'actions-row' }, [
       h('span', {}, `${picked.length}/${payload.n}장 선택됨`),
@@ -2123,8 +2144,36 @@ function renderUiChoice() {
 // centered modal instead of buried in the bottom actions bar, which could
 // be scrolled/collapsed out of view. Checked in render() before the
 // regular actions panel; whichever of these exists takes over the screen.
+const gameOverAt = { state: null, t: 0 };
+let gameOverSeen = null; // the state object whose result popup the player already closed
+function renderGameOverModal() {
+  if (gameOverSeen === state) return null;
+  // 마지막 시큐리티 체크 연출을 잠깐(약 1.4초) 보여 준 뒤, 어택 창이 열려 있어도 그 위를 덮어 종료를 확실히 알린다
+  if (gameOverAt.state !== state) { gameOverAt.state = state; gameOverAt.t = Date.now(); }
+  const wait = 1400 - (Date.now() - gameOverAt.t);
+  if (wait > 0) { setTimeout(() => { if (state && state.winner) render(); }, wait + 30); return null; }
+  const w = state.winner;
+  const why = ((state.log.find(e => /승리|패배|투항|무승부/.test(String(e.msg))) || {}).msg || '').replace(/^🤖 CPU: /, '');
+  const mine = cpuOn ? (w === 'p1' ? 'win' : w === 'draw' ? 'draw' : 'lose') : (w === 'draw' ? 'draw' : 'win');
+  const title = w === 'draw' ? '🤝 무승부' : cpuOn ? (w === 'p1' ? '🎉 승리!' : '💀 패배…') : `🏆 ${w.toUpperCase()} 승리!`;
+  const sub = w === 'draw' ? '영구 순환 (18-3-2)' : cpuOn ? (w === 'p1' ? '당신(P1)이 이겼습니다' : 'CPU(P2)가 이겼습니다') : `승자: ${w}`;
+  const close = () => { gameOverSeen = state; render(); };
+  return h('div', { className: 'modal-backdrop go-backdrop', onClick: (e) => { if (e.target === e.currentTarget) close(); } }, [
+    h('div', { className: `modal-panel go-panel go-${mine}`, role: 'dialog', 'aria-label': '게임 결과' }, [
+      h('div', { className: 'go-title' }, title),
+      h('div', { className: 'go-sub' }, sub),
+      why ? h('div', { className: 'go-why' }, `사유: ${why}`) : null,
+      h('div', { className: 'go-btns' }, [
+        (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
+        h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+        h('button', { onClick: close }, '필드 확인 (닫기)'),
+      ]),
+    ]),
+  ]);
+}
+
 function renderModal() {
-  if (state.winner) return null; // game over: nothing left to decide (the result is in the topbar/log); the modal used to cover the "new game" path
+  if (state.winner) return renderGameOverModal(); // 승패가 갈리면 결과 팝업 (닫으면 최종 필드를 읽기 전용으로 볼 수 있음; 상단 바에도 결과가 남는다)
   if (state.uiChoice && state.uiChoice.hold) return null; // waiting for the activation VFX to finish (ctxChoose) — nothing may pile on top of it
   if (state.uiChoice && uiChoiceByCpu(state.uiChoice)) { // a prompt that belongs to the CPU: read-only note (the CPU driver answers it)
     const pr = state.uiChoice.payload && state.uiChoice.payload.prompt;
@@ -2292,14 +2341,14 @@ function blockedFromDigimonTarget(p, attackerStack) {
 // one render. Auto mode advances after a short visible pause (and waits for any
 // pending effect to finish first); manual mode waits for the "다음 단계" button.
 // 읽기 속도: 사람이 읽어야 하는 문구(단계 설명, 효과 결과, 알림)는 글자 수에 비례해 오래 보여 준다.
-const READ_SPEEDS = { slow: 1.6, normal: 1.0, fast: 0.6 };
+const READ_SPEEDS = { slow: 2.6, normal: 1.7, fast: 1.0 }; // 사람이 인지하기엔 이전 값(1.6/1.0/0.6)이 너무 빨랐다
 const READ = { speed: 'normal' };
 try { const v = localStorage.getItem('digimon_read_speed'); if (v && v in READ_SPEEDS) READ.speed = v; } catch (e) { /* ignore */ }
 function readMs(text, minMs = 1500, maxMs = 14000) {
   const chars = String(text || '').replace(/\s+/g, '').length;
   return Math.round(Math.min(maxMs, Math.max(minMs, 900 + chars * 85)) * READ_SPEEDS[READ.speed]);
 }
-const STEP = { manual: false, delay: 1300 };
+const STEP = { manual: false, delay: 2000 };
 try { STEP.manual = localStorage.getItem('digimon_step_manual') === '1'; } catch (e) { /* ignore */ }
 
 function runPendingNext(pa) {

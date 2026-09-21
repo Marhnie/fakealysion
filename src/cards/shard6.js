@@ -303,7 +303,9 @@ function discardLinkCard(state, p, st, idx = null) {
 }
 async function linkCostDiscard(ctx, st) {
   if (!st || !(st.linkCards || []).length) return false;
-  return discardLinkCard(ctx.state, ctx.self, st) != null;
+  let idx = null; // Q4583/5000 family: the player picks WHICH link card is discarded (any, including the effect's own card)
+  if (st.linkCards.length > 1) { const a = await ctx.choose('pickLinkCard', { player: ctx.self, ids: st.linkCards.map(l => l.cardId), prompt: '파기할 링크 카드를 선택하세요' }); if (Number.isInteger(a) && a >= 0 && a < st.linkCards.length) idx = a; }
+  return discardLinkCard(ctx.state, ctx.self, st, idx) != null;
 }
 
 // ---- app fusion ("자신의 디지몬 1마리를 패(/트래시)의 디지몬 카드로 어플 합체할 수 있다") — 8-4 rule flow lives in S.appFusionCheck / S.appFusion (state.js)

@@ -281,6 +281,7 @@ async function evolveInteractive(ctx, o) {
 }
 async function restOppCard(ctx) {
   const st = await pickWhere(ctx, ctx.opp, s => ['digimon', 'tamer'].includes(C(s.cardId).category), '레스트시킬 상대의 디지몬 또는 테이머 선택', 'rest');
+  ctx._restWasActive = !!st && !st.suspended; // official Q&A (BT8-102): the "does not become active" clause binds only cards this effect actually rested
   if (st) S.restStack(ctx.state, ctx.opp, st.uid);
   return st;
 }
@@ -887,7 +888,7 @@ SCRIPTS['BT8-102::메인'] = [fn(async (ctx) => {
   S.restStack(ctx.state, me, own.uid);
   if (!own.suspended) return;
   const st = await restOppCard(ctx);
-  if (st && st.suspended) S.setSkipNextUnsuspend(ctx.state, ctx.opp, st.uid);
+  if (st && st.suspended && ctx._restWasActive) S.setSkipNextUnsuspend(ctx.state, ctx.opp, st.uid);
 })];
 const restOppSecurity = [fn(async (ctx) => { await restOppCard(ctx); })];
 SCRIPTS['BT8-102::시큐리티'] = restOppSecurity;
@@ -899,8 +900,8 @@ SCRIPTS['BT8-105::메인'] = [{ op: 'destroySum', stat: 'cost', limit: 15 }];
 // ---- BT8-110 (메인)
 SCRIPTS['BT8-110::메인'] = [fn(async (ctx) => {
   const me = ctx.self;
-  const st = await pickWhere(ctx, me, s => isDigimon(s) && hasTrait(s.cardId, '아머체') && s.sources.length > 0, '겹쳐진 카드를 위에서부터 1장 파기할 「아머체」 디지몬 선택');
-  if (st) S.trashEvoSources(ctx.state, me, st.uid, 1, 'top');
+  const st = await pickWhere(ctx, me, s => isDigimon(s) && hasTrait(s.cardId, '아머체'), '겹쳐진 카드를 위에서부터 1장 파기할 「아머체」 디지몬 선택');
+  if (st) S.moveTopStackCard(ctx.state, me, st, 'trash'); // 최상단 카드(top stacked card) — not the evolution sources
   const r = await evolveInteractive(ctx, { from: 'hand', cardPred: id => hasTrait(id, '아머체') });
   if (r) S.unsuspendStack(ctx.state, me, r.uid);
 })];
@@ -1264,14 +1265,14 @@ function paySources(state, hp, holder, n, pred) {
 }
 const canPaySources = (holder, n, pred) => holder.sources.filter(pred).length >= n;
 // every distinct choice of which n matching sources to trash is its own candidate for the player (S.hookPreventLeave / preventLeaveOptions)
-const survive = (causeOk, nameOk, n, pred) => (state, hp, holder, target, tp, cause, mode) => {
+const survive = (causeOk, nameOk, n, pred, comboOk) => (state, hp, holder, target, tp, cause, mode) => {
   if (target !== holder || !causeOk(cause) || !nameOk(holder)) return [];
   const p = typeof pred === 'function' ? pred : () => true;
   const elig = holder.sources.map((id, i) => i).filter(i => p(holder.sources[i], holder));
   const combos = [], seen = new Set();
   const rec = (start, acc) => {
     if (combos.length >= 24) return;
-    if (acc.length === n) { const key = acc.map(i => holder.sources[i]).sort().join(); if (!seen.has(key)) { seen.add(key); combos.push(acc.slice()); } return; }
+    if (acc.length === n) { if (comboOk && !comboOk(acc.map(i => holder.sources[i]))) return; const key = acc.map(i => holder.sources[i]).sort().join(); if (!seen.has(key)) { seen.add(key); combos.push(acc.slice()); } return; }
     for (let k = start; k < elig.length; k++) { acc.push(elig[k]); rec(k + 1, acc); acc.pop(); }
   };
   rec(0, []);
@@ -1283,15 +1284,13 @@ const survive = (causeOk, nameOk, n, pred) => (state, hp, holder, target, tp, ca
   } }));
 };
 D('BT5-086', '서로의 턴', '소멸할 때', { preventLeaveOptions: survive(c => c === 'effect', () => true, 1, id => C(id).category === 'digimon' && lvOf(id) === 6) });
-const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레이몬') || nameHas(h.cardId, '오메가몬'), 2, (id, h) => lvOf(id) === lvOf(h.cardId));
+const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레이몬') || nameHas(h.cardId, '오메가몬'), 2, null, ids => lvOf(ids[0]) === lvOf(ids[1])); // official Q&A (BT9-012): "Lv.이 같은 카드 2장" = two sources sharing a Lv. with EACH OTHER, not the top card's Lv.
 DI('BT9-012', '서로의 턴', '소멸할 때', { preventLeaveOptions: graySurvive(c => c === 'effect' || c === 'ownEffect') });
 DI('P-072', '서로의 턴', '소멸하거나', { preventLeaveOptions: graySurvive(c => c === 'effect') });
 D('BT9-044', '서로의 턴', '소멸할 때', { preventLeave: (state, hp, holder, target, tp, cause, mode) => {
-  if (target !== holder || mode !== 'delete' || !holder.sources.length) return false;
-  const id = holder.sources.pop();
-  S.addToSecurity(state, hp, id, 'top');
-  S.recomputeStackGrants(holder);
-  return true;
+  if (target !== holder || mode !== 'delete') return false;
+  // "이 디지몬에 겹쳐져 있는 카드를 위에서부터 1장 자신의 시큐리티 위에 뒤집어서 놓는 것으로" = the TOP stacked card (official: "the top card of this Digimon") goes face down on top of security; the next card becomes the Digimon
+  return S.moveTopStackCard(state, hp, holder, 'secTop', { cause: 'ownEffect', checkBlock: false }) != null;
 } });
 // 《디코이》: delete this digimon instead of an own other digimon of the given colors that an opponent's effect would delete
 // (every eligible sacrificer is its own candidate for the player — see S.hookPreventLeave / descriptor.preventLeaveOptions)

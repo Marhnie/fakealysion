@@ -97,12 +97,19 @@ function payTamerUnderAuto(state, p, n, hint) {
   if (!t) return false;
   return withFx(state, p, 'tamer', () => S.trashEvoSources(state, p, t.uid, n, 'bottom').length === n);
 }
+// r2 (Q6212): "테이머 아래의 뒷면 카드를 아래에서부터 N장 파기" may be paid with cards from SEVERAL tamers (total N); each card is taken from the bottom of the tamer picked for it.
+const underTotal = (state, p, pred) => ownTamers(state, p).filter(t => !pred || pred(t)).reduce((a, t) => a + S.fdCount(t), 0);
 async function payTamerUnder(ctx, n, pred) {
-  const list = tamersWithUnder(ctx.state, ctx.self, n).filter(t => !pred || pred(t));
-  if (!list.length) return false;
-  const uid = list.length === 1 ? list[0].uid : await pickOne(ctx, ctx.self, list.map(t => t.uid), `아래의 카드를 ${n}장 파기할 테이머 선택`);
-  if (!uid) return false;
-  return S.trashEvoSources(ctx.state, ctx.self, uid, n, 'bottom').length === n;
+  if (underTotal(ctx.state, ctx.self, pred) < n) return false;
+  let done = 0;
+  for (let k = 0; k < n; k++) {
+    const list = ownTamers(ctx.state, ctx.self).filter(t => (!pred || pred(t)) && S.fdCount(t) >= 1);
+    if (!list.length) return false;
+    const uid = list.length === 1 ? list[0].uid : await pickOne(ctx, ctx.self, list.map(t => t.uid), `아래의 카드를 파기할 테이머 선택 (${k + 1}/${n})`);
+    if (!uid) return false;
+    if (S.trashEvoSources(ctx.state, ctx.self, uid, 1, 'bottom').length === 1) done++; else return false;
+  }
+  return done === n;
 }
 async function putDeckTopUnder(ctx, tamer, n = 1) {
   const pl = ctx.state.players[ctx.self];
@@ -262,7 +269,7 @@ const COST = {
     pay: async (ctx) => { const st = stackOf(ctx); S.restStack(ctx.state, ctx.self, st.uid); return !!st.suspended; },
   },
   tamerUnder: {
-    can: (ctx, c) => tamersWithUnder(ctx.state, ctx.self, c.n || 1).filter(t => !c.pred || c.pred(t)).length > 0,
+    can: (ctx, c) => underTotal(ctx.state, ctx.self, c.pred) >= (c.n || 1),
     pay: (ctx, c) => payTamerUnder(ctx, c.n || 1, c.pred),
   },
   trashHand: {
@@ -412,7 +419,7 @@ OPS.s8_evolve = async (i, ctx) => {
     const id = pl[z][k];
     const chk = ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(ctx.state, null, st), null);
     const printed = chk.ok ? chk.cost : (C(id).evoNormal?.cost ?? 0);
-    const cost = i.free ? 0 : Math.max(0, printed + (i.delta || 0));
+    const cost = i.free ? 0 : Math.max(0, printed + ((i.delta || 0) < 0 && S.isEvoCostLocked(state, ctx.self) ? 0 : (i.delta || 0))); // QA-S6 Q6869: cost-minus lock
     if (z !== 'hand') pl[z].splice(k, 1);
     S.digivolve(state, ctx.self, st.uid, id, cost, z === 'hand' ? 'hand' : 'trash');
     const ns = findStack(state, ctx.self, st.uid);
@@ -453,7 +460,9 @@ OPS.s8_playOrUse = async (i, ctx) => {
     const id = list[k];
     if (catOf(id) === 'option') { S8(ctx).played = useOptionFrom(ctx, z, k, dl, i.free, me); return; }
     if (z === 'sources') continue;
-    const cost = i.free ? 0 : Math.max(0, (C(id).cost || 0) + dl);
+    if (S.s1HookAny(state, 's1cannotPlay', { p: ctx.self }) || S.timedLocked(state, ctx.self, 'effectPlay')) { S.log(state, `${ctx.self} 효과로 디지몬을 등장시킬 수 없음`); return; } // slice6: effect-play ban — activated, but nothing is played and no cost is paid
+    const selfDc = (!i.free && (z === 'hand' || z === 'trash') && catOf(id) !== 'option' && !S.isPlayCostLocked(state)) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
+    const cost = i.free ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && S.isPlayCostLocked(state) ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
     if (cost > 0) S.spendMemory(state, cost);
     const xo = catOf(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
     const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
@@ -468,8 +477,8 @@ OPS.s8_link = async (i, ctx) => {
   const me = stackOf(ctx);
   let host = null;
   if (i.target === 'this') host = me;
-  else { const uid = await pickOne(ctx, ctx.self, pl.battle.filter(s => isDigi(s.cardId)).map(s => s.uid), '링크할 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
-  if (!host || !pl.battle.includes(host)) return;
+  else { const rz = pl.raising && ['digimon', 'digitama'].includes(C(pl.raising.cardId).category) ? [pl.raising] : []; /* QA-S6 Q6441/6443: 「에어리어의 자신의 디지몬」 includes the breeding-area digimon (also one without DP) */ const uid = await pickOne(ctx, ctx.self, [...pl.battle.filter(s => isDigi(s.cardId)), ...rz].map(s => s.uid), '링크할 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
+  if (!host || !(pl.battle.includes(host) || pl.raising === host)) return;
   const names = [];
   for (let n = 0; n < (i.max || 1); n++) {
     const opts = [];
@@ -877,7 +886,7 @@ SCRIPTS['BT26-094::자신의 턴'] = [{ op: 's8_costThen', costs: restTamerCost,
 SCRIPTS['BT26-090::자신의 턴 종료 시'] = [{ op: 's8_costThen', costs: restTamerCost, optional: true, then: [
   { op: 's8_playOrUse', zones: ['hand'], kinds: ['option'], pred: (id) => trait(id, 'TS'), delta: (ctx) => -memOf(ctx.state, ctx.opp) },
 ] }];
-SCRIPTS['BT26-029::등장 시'] = [{ op: 's8_costThen', costs: [{ t: 'trashSecTop', n: 1 }], then: [{ op: 's8_shield', target: 'pickOwn', kinds: ['dpDown', 'other', 'bounce'], prompt: '상대의 효과를 받지 않게 할 디지몬 선택' }] }];
+SCRIPTS['BT26-029::등장 시'] = [{ op: 's8_costThen', costs: [{ t: 'trashSecTop', n: 1 }], then: [{ op: 's8_shield', target: 'pickOwn', kinds: ['dpDown', 'other', 'srcReturn'], prompt: '상대의 효과를 받지 않게 할 디지몬 선택' }] }]; // slice6 G326: only the stacked CARDS are protected from returning to hand/deck ('srcReturn'); the digimon itself can still be returned (official Q7195)
 SCRIPTS['BT26-085::등장 시'] = [{ op: 's8_shield', target: 'this', kinds: ['dpDown', 'other'] }];
 SCRIPTS['BT26-031::진화 시'] = [{ op: 's8_costThen', costs: fdCost, then: [{ op: 'recoverTop' }] }];
 SCRIPTS['BT26-025::이동 시'] = [{ op: 's8_costThen', costs: [{ t: 'secTopToTamer', pred: (t) => glow(t.cardId) }], then: [{ op: 'recoverTop' }] }];
@@ -922,13 +931,21 @@ OPS.s8_sourcesToDeckTop = async (i, ctx) => {
   const pl = state.players[ctx.opp];
   for (const uid of uids) {
     const st = findStack(state, ctx.opp, uid);
-    if (!st || S.effectBlocked(state, ctx.opp, st, 'bounce')) continue;
-    const n = Math.min(i.n || 5, st.sources.length);
-    const taken = await S.orderPlacement(ctx.choose, ctx.self, st.sources.splice(st.sources.length - n, n), `덱 위로 되돌릴 ${C(st.cardId).nameKo}의 겹쳐진 카드 ${n}장의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)`); // top-most overlaid cards
+    if (!st || S.effectBlocked(state, ctx.opp, st, 'bounce') || S.effectBlocked(state, ctx.opp, st, 'srcReturn')) continue;
+    // slice6 G278-G280 (official Q7079-7083): "겹쳐져 있는 카드를 위에서부터 N장" counts the TOP card too — cards go back one by one from the top until only ONE card is left
+    // (the bottom card then IS the digimon; if it has no DP / is an option it is trashed by the rule check, not counted as leaving the battle area).
+    const n = Math.min(i.n || 5, st.sources.length); // st.sources.length = total - 1
+    if (n <= 0) continue;
+    const name0 = C(st.cardId).nameKo, taken0 = [];
+    for (let k = 0; k < n; k++) { taken0.push(st.cardId); st.cardId = st.sources.pop(); }
+    st.turnEffectUses = {};
+    S._s4.discardLinkCardsOnNewCard(state, ctx.opp, st);
+    const taken = await S.orderPlacement(ctx.choose, ctx.self, taken0, `덱 위로 되돌릴 ${name0}의 겹쳐진 카드 ${n}장의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)`);
     pl.deck.unshift(...taken);
     S.applyOverflowBatch(state, ctx.opp, taken);
     S.recomputeStackGrants(st);
-    log(ctx, `${ctx.opp} ${C(st.cardId).nameKo}의 겹쳐진 카드 ${n}장이 덱 위로 되돌아감`);
+    S._s4.ruleCheckDP(state, ctx.opp, st);
+    log(ctx, `${ctx.opp} ${name0}의 겹쳐진 카드 ${n}장이 덱 위로 되돌아감`);
   }
 };
 // 《딜레이》 triggered from a battle-area Option: discard it (not the turn it was placed) and run `then`
@@ -1095,7 +1112,7 @@ OPS.s8_jogress = async (i, ctx) => {
   if (k == null) return;
   const id = pl.hand[k];
   const j = S.parseJogress(id);
-  const fused = S.fuseStacks(state, ctx.self, a.uid, b.uid, id, j ? j.cost : 0, 'hand');
+  const fused = S.fuseJogress(state, ctx.self, a, b, id);
   if (fused) S8(ctx).fused = fused.uid;
 };
 
@@ -1127,7 +1144,8 @@ SCRIPTS['EX12-045::등장 시'] = [
 ];
 SCRIPTS['EX12-045::자신의 턴'] = [{ op: 's8_playOrUse', zones: ['hand'], kinds: ['digimon', 'tamer'], pred: (id) => mentions(id, '손오공몬') || trait(id, 'SW'), delta: -2 }];
 // "Lv.이 같은 카드가 2장 이상 겹쳐져 있다면": some Lv. value shared by 2+ of the overlaid (source) cards (no reference level is printed)
-const sameLvStacked = (ctx) => { const s = stackOf(ctx); if (!s) return false; const cnt = {}; for (const id of s.sources) { const lv = lvOf(id); if (!lv) continue; cnt[lv] = (cnt[lv] || 0) + 1; } return Object.values(cnt).some(n => n >= 2); };
+// slice6 G152 (official Q6768): "Lv.이 같은 카드가 2장 이상 겹쳐져 있다" looks at the WHOLE stack, the top card included
+const sameLvStacked = (ctx) => { const s = stackOf(ctx); if (!s) return false; const cnt = {}; for (const id of [s.cardId, ...s.sources]) { const lv = lvOf(id); if (!lv) continue; cnt[lv] = (cnt[lv] || 0) + 1; } return Object.values(cnt).some(n => n >= 2); };
 SCRIPTS['EX12-044::어택 시'] = [{ op: 's8_if', test: sameLvStacked, then: [{ op: 's8_evolve', subject: 'this', zones: ['hand'], card: (id) => trait(id, '천사형', '성룡형', '삼대천사', 'NSp', 'VB'), delta: -2 }] }];
 SCRIPTS['EX12-032::어택 시'] = [{ op: 's8_if', test: sameLvStacked, then: [{ op: 's8_evolve', subject: 'this', zones: ['trash'], card: (id) => nameHas(id, '가루몬') || trait(id, 'NSo', 'VB'), delta: -2 }] }];
 SCRIPTS['EX12-036::서로의 턴'] = [{ op: 's8_noEvoTrigNoRest' }];
@@ -1210,7 +1228,7 @@ H('EX12-045', { tag: '자신의 턴', has: '줄었을 때', limit: 1, events: { 
 H('EX12-046', { tag: '자신의 턴', has: '줄었을 때', events: { securityDecrease: (st, hp, h, info) => info.owner !== hp && isOwnDigi(h) } });
 H('BT26-038', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리', limit: 1, events: { battleWin: (st, hp, h, info) => info.stack === h } });
 H('BT26-035', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리', limit: 1, events: { battleWin: (st, hp, h, info) => info.stack === h } });
-H('BT26-001', { tag: '자신의 턴', src: 'inheritedKo', has: '늘어났을 때', limit: 1, events: { deckIncrease: (st, hp, h, info) => info.owner === hp && info.srcPlayer === hp && isOwnDigi(h) } });
+H('BT26-001', { tag: '자신의 턴', src: 'inheritedKo', has: '늘어났을 때', limit: 1, events: { deckIncrease: (st, hp, h, info) => info.srcPlayer === hp && isOwnDigi(h) } });
 H('BT26-079', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: {
   play: (st, hp, h, info) => info.owner !== hp && !!info.stack && isDigi(info.stack.cardId),
   digivolve: (st, hp, h, info) => info.owner !== hp && !!info.stack && isDigi(info.stack.cardId),
@@ -1274,15 +1292,18 @@ const saberLeave = (id, nameTerm) => { const d = leaveHook(id, { src: 'inherited
 saberLeave('ST24-06', '샤인그레이몬');
 saberLeave('ST24-10', '로제몬');
 leaveHook('BT26-033', { has: '벗어나지', preventLeave: (state, hp, h, target, tp) => {
-  if (tp !== hp || !['digimon', 'tamer'].includes(catOf(target.cardId)) || !trait(target.cardId, 'TS') || !h.sources.length) return false;
-  const id = h.sources.pop(); state.players[hp].security.push(id); S.recomputeStackGrants(h);
-  S.log(state, `${hp} ${C(h.cardId).nameKo}의 겹쳐진 카드 ${C(id).nameKo}을(를) 시큐리티 아래에 놓아 ${C(target.cardId).nameKo}이(가) 벗어나지 않음`);
+  if (tp !== hp || !['digimon', 'tamer'].includes(catOf(target.cardId)) || !trait(target.cardId, 'TS') || h.sources.length - S.fdCount(h) < 1) return false;
+  const old = C(h.cardId).nameKo;
+  const id = S.moveTopStackCard(state, hp, h, 'secBottom', { cause: 'ownEffect', checkBlock: false }); // 최상단 카드(top stacked card) -> bottom of security; the next card becomes the Digimon
+  if (id == null) return false;
+  S.log(state, `${hp} ${old}의 최상단 카드 ${C(id).nameKo}을(를) 시큐리티 아래에 놓아 벗어나지 않음`);
   return true;
 } });
 leaveHook('BT26-058', { has: '벗어나지', preventLeave: (state, hp, h, target, tp) => {
-  if (tp !== hp || !isDigi(target.cardId) || !trait(target.cardId, 'CS') || !h.sources.length) return false;
-  const id = h.sources.pop(); h.sources.unshift(id); S.recomputeStackGrants(h);
-  S.log(state, `${hp} ${C(h.cardId).nameKo}의 겹쳐진 카드 1장을 진화원 아래에 놓아 ${C(target.cardId).nameKo}이(가) 벗어나지 않음`);
+  if (tp !== hp || !isDigi(target.cardId) || !trait(target.cardId, 'CS') || h.sources.length - S.fdCount(h) < 1) return false;
+  const old = C(h.cardId).nameKo;
+  if (S.rotateTopStackToBottom(state, hp, h, 'effect') == null) return false; // 최상단 카드(top stacked card) -> bottom of its own sources; the next card becomes the Digimon
+  S.log(state, `${hp} ${old}의 최상단 카드를 진화원 아래에 놓아 벗어나지 않음`);
   return true;
 } });
 
@@ -1337,7 +1358,7 @@ OPS.s8_jogressOrLeave = async (i, ctx) => {
   let done = false;
   if (b) {
     const k = await pickZone(ctx, 'hand', legalFor(b), '조그레스 진화할 패의 특징 「ME」 디지몬 카드 선택');
-    if (k != null) { const id = pl.hand[k]; const j = S.parseJogress(id); done = !!S.fuseStacks(state, ctx.self, a.uid, b.uid, id, j ? j.cost : 0, 'hand'); }
+    if (k != null) { const id = pl.hand[k]; const j = S.parseJogress(id); done = !!S.fuseJogress(state, ctx.self, a, b, id); }
   }
   if (!done && findStack(state, ctx.self, a.uid)) { state._s8NoSurvive = true; try { S.deleteStack(state, ctx.self, a.uid, 'trash', ev0.cause || 'effect'); } finally { state._s8NoSurvive = false; } }
 };

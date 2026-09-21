@@ -112,7 +112,7 @@ SCRIPTS['P-135::진화 시'] = [fn(async (ctx) => {
 })];
 
 // P-139 레오몬 X항체 【서로의 턴】 진화원에 「레오몬」/「X항체」가 있는 이 디지몬은 《블로커》와 《불굴》을 얻는다 (name 「레오몬」 or trait 「X항체」 among the sources; the generic parser could not read this condition)
-const leoSrc = (holder) => (holder.sources || []).some(id => C(id).nameKo === '레오몬' || (C(id).types || []).includes('X항체'));
+const leoSrc = (holder) => (holder.sources || []).some(id => C(id).nameKo === '레오몬' || S.cardNameIs(id, 'X항체')); // slice-4 QA 4246: the X-antibody TRAIT alone does not count (a card named/treated as 「X항체」 does)
 D('P-139', '서로의 턴', '진화원에', { kw: (state, hp, holder, name) => (name === '블로커' || name === '불굴') && leoSrc(holder) });
 
 // P-171/172/174 「이 카드가 등장할 때, 자신의 앞면의 시큐리티에 「딥 세이버즈」/「네이처 스피릿츠」/「나이트메어 솔저스」가 있다면, 지불하는 등장 코스트 -4」 (no hook existed → never discounted).

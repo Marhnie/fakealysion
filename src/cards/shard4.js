@@ -593,7 +593,7 @@ OPS.s4_jogress = async (instr, ctx) => {
   if (ti == null) return;
   const tid = pl.hand[ti];
   const cost = S.parseJogress(tid).cost;
-  if (mode === 'two') { S.fuseStacks(st, p, a.uid, m.b.uid, tid, cost, 'hand'); }
+  if (mode === 'two') { S.fuseJogress(st, p, a, m.b, tid); }
   else {
     const matId = pl[zone][m.i];
     const removeIdx = [[zone, m.i], ['hand', ti]].sort((x, y) => (x[0] === y[0] ? y[1] - x[1] : 0));
@@ -819,7 +819,7 @@ OPS.s4_playTokenOptional = async (instr, ctx) => { if (await confirm(ctx, ctx.se
 SCRIPTS['BT19-043::자신의 턴 종료 시'] = [{ op: 's4_oppMayTrashSec' }, cond((ctx) => !V(ctx).oppTrashed, [{ op: 'recoverTop', who: 'self' }, { op: 's4_destroy', kinds: ['digimon', 'tamer'], n: 1 }])];
 // ---- batch 6: hooks — continuous abilities, immunity, auras, event watchers ----
 const effMemory = (st, p) => (p === 'p1' ? st.memory : -st.memory);
-H('P-144', { tag: '자신의 턴', has: '어택할 수 없다', noAttack: (st, hp, h) => !h.sources.some(id => (isNamed(id, '울퉁몬') || hasTrait(id, 'X항체'))) });
+H('P-144', { tag: '자신의 턴', has: '어택할 수 없다', noAttack: (st, hp, h) => !h.sources.some(id => (isNamed(id, '울퉁몬') || isNamed(id, 'X항체'))) }); // slice-4 QA 4259: a source with the X-antibody TRAIT does not count — only cards named/treated as 「울퉁몬」/「X항체」
 H('BT17-016', { tag: '자신의 턴', has: '상대의 효과를 받지 않는다', effectImmune: (st, hp, h, target) => target === h && effMemory(st, hp) <= 0 });
 const restedImmune = { tag: '서로의 턴', has: '상대의 디지몬의 효과를 받지 않는다', effectImmune: (st, hp, h, target, tp, fx) => target === h && h.suspended && fx.src && (fx.src.isDigimon || fx.src.category === 'digimon') };
 H('P-140', restedImmune);
@@ -850,7 +850,7 @@ H('P-137', { tag: '자신의 턴', has: '어택의 대상이 변경되었을 때
 SCRIPTS['P-137::자신의 턴'] = [{ op: 'securityTopToHand', who: 'opponent', n: 1 }];
 H('BT17-036', { tag: '서로의 턴', has: '시큐리티가 효과로 파기되었을 때', limit: 1, events: { securityDiscard: (st, hp, h, info) => info.owner === hp && h.sources.some(id => isNamed(id, '레온 알렉산더')) } });
 SCRIPTS['BT17-036::서로의 턴@시큐리티가 효과로 파기되었을 때'] = [{ op: 's4_evolve', subject: { this: true }, zone: 'hand', pred: (id) => nameHas(id, '펄스몬'), cost: { mode: 'free' }, optional: true }];
-const optUsed2 = { tag: '자신의 턴', has: '옵션 카드를 사용했을 때', limit: 1, events: { optionUsed: (st, hp, h, info) => info.owner === hp && ((info.cardId && C(info.cardId) ? (C(info.cardId).cost || 0) : info.useCost) >= 2) } }; // 「사용 코스트」 = the printed use cost (not the reduced/paid amount; effect-driven uses may not carry useCost)
+const optUsed2 = { tag: '자신의 턴', has: '옵션 카드를 사용했을 때', limit: 1, events: { optionUsed: (st, hp, h, info) => info.owner === hp && ((info.baseCost ?? (info.cardId && C(info.cardId) ? (C(info.cardId).cost || 0) : info.useCost)) >= 2) } }; // 「사용 코스트」 = the printed use cost (not the reduced/paid amount; effect-driven uses may not carry useCost)
 H('BT17-038', { ...optUsed2 });
 H('BT19-040', { ...optUsed2 });
 H('BT17-006', { tag: '자신의 턴', src: 'inheritedKo', has: '테이머 카드가 놓였을 때', limit: 1, events: { sourcesAdded: (st, hp, h, info) => info.stack === h && info.added.some(isTamerCard) } });

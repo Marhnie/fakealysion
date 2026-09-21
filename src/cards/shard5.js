@@ -198,7 +198,7 @@ async function jogress(ctx, o) {
   if (idx == null) return null;
   const id = pl.hand[idx];
   const j = S.parseJogress(id);
-  return S.fuseStacks(state, who, pair[0].uid, pair[1].uid, id, j ? j.cost : 0, 'hand');
+  return S.fuseJogress(state, who, pair[0], pair[1], id);
 }
 // replacement-timing jogress (sync): `target` is about to leave and is used as one material
 function interruptJogress(state, hp, target, cardPred, label) {
@@ -209,7 +209,7 @@ function interruptJogress(state, hp, target, cardPred, label) {
   if (!syncAsk(state, `${label}: ${C(target.cardId).nameKo}이(가) 벗어나려 합니다. 조그레스 진화할까요?`)) return false;
   const id = pl.hand[cardIdx(partner)];
   const j = S.parseJogress(id);
-  return !!S.fuseStacks(state, hp, target.uid, partner.uid, id, j ? j.cost : 0, 'hand');
+  return !!S.fuseJogress(state, hp, target, partner, id);
 }
 // delay option in the battle area: usable from the turn after it was placed
 const delayReady = (state, holder) => holder && holder.placedTurn < state.turnNumber;
@@ -1202,7 +1202,7 @@ sc('BT21-093::서로의 턴', (ctx) => delayOnly(ctx, async () => {
   const stacks = digs(ctx.state, ctx.self).filter(s => hasType(C(s.cardId), '파충류형', '용인형'));
   await evolveAny(ctx, { stacks, zones: ['hand'], pred: c => hasType(c, '파충류형', '용인형'), cost: { mode: 'free' } });
 }));
-hk('BT21-094', { tag: '서로의 턴', events: { sourcesTrashed: (state, hp, h, info) => info.owner === hp && info.from === 'top' && isDig(info.stack) && hasType(C(info.stack.cardId), '아머체') && delayReady(state, h) } });
+hk('BT21-094', { tag: '서로의 턴', events: { topTrashed: (state, hp, h, info) => info.owner === hp && isDig(info.stack) && hasType(C(info.cardId || info.stack.cardId), '아머체') && delayReady(state, h) } });
 sc('BT21-094::서로의 턴', (ctx) => delayOnly(ctx, () => evolveAny(ctx, { stacks: digs(ctx.state, ctx.self), zones: ['hand'], pred: c => hasType(c, '아머체'), cost: { mode: 'free' } })));
 sc('BT21-097::자신의 턴 종료 시', (ctx) => delayOnly(ctx, () => linkFree(ctx, { zones: ['hand'], pred: () => true })));
 sc('BT21-092::메인', async (ctx) => {

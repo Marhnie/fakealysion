@@ -22,12 +22,14 @@ export function createSim(state, opts = {}) {
     const CX = globalThis.__CENSUS; // effect-trigger census (scripts/census.mjs); undefined in normal play -> zero overhead
     while (guard++ < 60) {
       if (CX) CX.sync(state);
+      if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // lazily-recorded DP<=0 rule checks (15-15-5-2) — rule-oracle R-dp0
       const t = state.pending.find((x) => !x.resolved);
       if (!t) return;
       let cxs = null;
       try {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
         if (t.manualOnly) { if (CX) CX.manual(state, t, 'manualOnly'); S.resolvePending(state, t.uid); continue; }
+        if (S.waitingDestroyEffectGone(state, t)) { S.log(state, `${t.player} ${S.card(t.cardId).nameKo}의 【소멸 시】 효과: 카드가 이미 트래시를 벗어나 발휘하지 못함`); S.resolvePending(state, t.uid); continue; }
         const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
         let script = specific;
         if (!script && /^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(t.text.trim())) {
@@ -40,6 +42,7 @@ export function createSim(state, opts = {}) {
           const pl0 = state.players[t.player]; const stNow = pl0.raising && pl0.raising.uid === t.stackUid ? pl0.raising : pl0.battle.find((s) => s.uid === t.stackUid);
           if (!stNow || stNow.cardId !== t.topId) { S.resolvePending(state, t.uid); continue; }
         }
+        if (S.pendingCardLeftZone(state, t)) { S.resolvePending(state, t.uid); continue; } // Q5230/5593/5758/5905: the deleted card left the trash
         const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
         let onceMark = null;
         if (om && t.stackUid) {
@@ -58,7 +61,7 @@ export function createSim(state, opts = {}) {
         H.effectBegin && H.effectBegin(t, script);
         await Fx.runScript(script, ctx);
         H.effectEnd && H.effectEnd(t, script, ctx);
-        if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
+        if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
         if (CX) CX.after(state, t, script, cxs);
       } catch (e) { if (CX) CX.error(state, t, e); onError('pending', e); }
       S.resolvePending(state, t.uid);
@@ -103,6 +106,14 @@ export function createSim(state, opts = {}) {
     S.queueTriggersForStack(state, p, dec.stack, 'attack');
     S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
     await drain(); await drainRepl();
+    { // UI parity (main.js enterRedirectTiming): once the target is fixed, 'attackTarget' (+ 'attackOnDigimon') fire so ST15-05 / ST16-05 / BT2-084 style triggers work headlessly (slice1 r2, Q810/Q822/Q1036)
+      const aT = find(p, uid);
+      if (aT && !pa.ended && !state.winner) {
+        S.s1AttackTargeted(state, p, aT, pa.targetKind, pa.targetUid);
+        if (pa.targetKind === 'digimon') { const dT = find(op, pa.targetUid); const aT2 = find(p, uid); if (aT2 && dT) S.emitGameEvent(state, 'attackOnDigimon', { owner: p, stack: aT2, cause: null, target: dT }); }
+        await drain(); await drainRepl();
+      }
+    }
     const end = async () => { H.attackEnd && H.attackEnd({ p, op, uid, pa }); const st = find(p, uid); state.attackCtx = null; if (st) { S.s8AttackEnded(state, p, uid); S.queueTriggersForStack(state, p, st, 'attackEnd'); S.emitGameEvent(state, 'attackEnd', { owner: p, stack: st, cause: null }); } await drain(); };
     if (state.winner || pa.ended || !find(p, uid) || (pa.targetKind === 'digimon' && !find(op, pa.targetUid))) { await end(); return true; }
     // counter timing (defender)
@@ -133,6 +144,7 @@ export function createSim(state, opts = {}) {
       const res = S.resolveDigimonBattle(state, p, uid, pa.targetUid);
       H.battleAfter && H.battleAfter({ p, op, uid, pa, res });
       await drain();
+      { const sv = res && res.result === 'attackerWins' && res.destroyedOnlyOpponent ? find(p, uid) : null; if (sv && S.hasKeyword(sv, '전투후액티브')) S.unsuspendStack(state, p, uid); } // ≪전투후액티브≫ (EX1-043 / BT1-112): the UI offers this as a click after the battle; headless play takes it (official Q&A 984)
       if (res && res.piercing && !state.winner) await securityCheck(p, uid, op);
     }
     await drain();

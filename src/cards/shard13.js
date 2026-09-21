@@ -83,7 +83,7 @@ async function jogress(ctx, R, o) {
   if (idx == null) return null;
   const id = pl.hand[idx];
   const j = S.parseJogress(id);
-  return S.fuseStacks(state, who, pair[0].uid, pair[1].uid, id, j ? j.cost : 0, 'hand');
+  return S.fuseJogress(state, who, pair[0], pair[1], id);
 }
 OPS.s13_jogress = async (instr, ctx, R) => { await jogress(ctx, R, { filter: instr.filter }); };
 
@@ -254,7 +254,7 @@ hk('ST20-14', { tag: '서로의 턴', events: { leaveBattle: (state, hp, h, info
 sc('ST20-14::서로의 턴', (ctx, R) => delayOnly(ctx, () => runText(ctx, R, '자신의 패에서 특징 「어드벤처」를 가진 Lv.5 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.')));
 
 // ------------------------------------------------------------------ helpers (part 2)
-const attacking = (ctx) => !!(ctx.state.attackCtx && ctx.state.attackCtx.attacker === ctx.self); // "어택 중이라면"
+const attacking = (ctx) => !!ctx.state.attackCtx; // "어택 중이라면" = ANY attack in progress, the opponent's too (Q4715/4716/4721/4724 BT20-015/018/053/056)
 const fdN = (st) => S.fdCount(st);
 const tamerColorN = (state, p) => new Set(tams(state, p).flatMap(t => S.stackColors(t))).size;
 const restedOthers = (ctx) => [...digs(ctx.state, ctx.self), ...digs(ctx.state, ctx.opp)].filter(s => s.suspended && s.uid !== ctx.sourceStackUid).length;

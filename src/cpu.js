@@ -524,6 +524,23 @@ const BAD_VERB = /(소멸|퇴화|되돌릴|덱\s*아래|핸드로|패로|레스�
 const GOOD_VERB = /(부여|받을|액티브로|DP\s*[+＋]|소멸하지\s*않|보호|얻을|\+\d)/;
 const SELF_HARM = /(소멸|파기|트래시|덱\s*아래|퇴화)/;
 
+// 15-7-1: the player decides whether to pay an optional processing condition. Payload: { costKinds[], costText, effectText, cardId } (Effects.askOptionalCost / optionalGate).
+function optionalCostAnswer(state, who, pay, level) {
+  if (level === 'easy') return rnd() < 0.6;
+  const pl = state.players[who], kinds = pay.costKinds || [], eff = String(pay.effectText || '');
+  const mem = who === 'p1' ? state.memory : -state.memory;
+  const nHand = pl.hand.length, nSec = pl.security.length;
+  const secN = kinds.filter(k => k === 'removeSecurity').length;
+  for (const k of kinds) {
+    if (k === 'removeSecurity' && nSec - secN < 2) return false; // never trade the last security cards away
+    if (k === 'destroyOwn' && !/(소멸|시큐리티|드로우)/.test(eff)) return false; // sacrificing an own Digimon: only for a clearly removing / card-advantage effect
+    if (k === 'destroyOwn' && /(소멸하지\s*않|벗어나지\s*않)/.test(eff)) return false;
+    if (k === 'returnOwn' && !/(소멸|시큐리티|드로우|등장)/.test(eff)) return false;
+    if (k === 'trashHand' && nHand < 3) return false;
+    if (k === 'memory' && mem < 2) return false;
+  }
+  return true;
+}
 export function answerChoice(state, kind, payload, who, cfg) {
   const level = (cfg && cfg.level) || 'normal';
   const pay = payload || {};
@@ -533,6 +550,8 @@ export function answerChoice(state, kind, payload, who, cfg) {
     switch (kind) {
       case 'confirmEffect': {
         if (/투항/.test(prompt)) return false;
+        if (pay.optionalCost) return optionalCostAnswer(state, who, pay, level); // 15-7-1 "~하는 것으로": never auto-yes when the cost hurts
+        if (/대신\s*다음\s*효과를\s*사용할\s*수\s*있습니다/.test(prompt) && /(다른\s*[^,/]*디지몬[^,/]*소멸시키|자신의\s*디지몬[^,/]*소멸시키|시큐리티[^,/]*(?:파기|트래시))/.test(prompt.split('사용할 수 있습니다')[1] || '')) return false; // replacement whose optional cost sacrifices another own Digimon / security: not worth it blindly
         if (level === 'easy') return rnd() < 0.6;
         if (/자신의\s*시큐리티/.test(prompt) && /(트래시|파기)/.test(prompt) && !/상대/.test(prompt)) return false;
         return true;
@@ -655,7 +674,7 @@ export const enumerateActions = memoized(enumerateActions_), attackCandidates = 
 
 // ---------- UI driver ----------
 const SPEED_MULT = { fast: 0.55, normal: 1, slow: 1.8 };
-const BASE_PACE = 800;
+const BASE_PACE = 1200;
 export function createUiDriver(api) {
   const D = {
     enabled: false, cpu: 'p2', level: 'normal', paused: false, speed: 'normal',

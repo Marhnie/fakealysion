@@ -42,7 +42,7 @@ hk('BT26-041', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 �
 // (generic compile of "이 디지몬의 【진화 시】 효과 1개를 발휘" was an empty script → the watcher fired but did nothing; same borrowing helper as shard38 BT22-040)
 OPS.s52_borrowEvo = async (instr, ctx, R) => {
   const st = [ctx.state.players[ctx.self].raising, ...ctx.state.players[ctx.self].battle].filter(Boolean).find((s) => s.uid === ctx.sourceStackUid);
-  if (!st) return;
+  if (!st || S.evoTrigSuppressed(ctx.state, ctx.self, st)) return; // QA-S6 Q6792: 【진화 시】 suppressed
   if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `${C(st.cardId).nameKo}의 【진화 시】 효과 1개를 발휘할까요?` }))) return;
   const segs = S.parseEffectSegments(C(st.cardId).effectKo || '').segments.filter((sg) => sg.tags.some((t) => t.includes('진화 시')));
   if (!segs.length) return;

@@ -150,7 +150,7 @@ async function jogress(ctx, o) {
   if (idx == null) return null;
   const id = pl.hand[idx];
   const j = S.parseJogress(id);
-  return S.fuseStacks(state, who, pair[0].uid, pair[1].uid, id, j ? j.cost : 0, 'hand');
+  return S.fuseJogress(state, who, pair[0], pair[1], id);
 }
 
 // "N장까지": the UI's hand multi-pick needs an exact count, so ask for the number first

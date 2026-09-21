@@ -248,6 +248,7 @@ export function surrender(state, p) {
 
 // Call after any memory-spending action. Returns true if the turn ended.
 export function checkAutoEndTurn(state) {
+  if (!state.winner && !state._rcDepth && !state.turnEnding && state.phase === 'main') { try { S.ruleSweepDP(state, null); } catch (e) { /* never block the turn flow */ } } // 17-1-3-1: conditional DP bonuses (attack in progress / rested / ...) lapse without any event -> rule-check after every action (hunt: ST12-06 stayed at DP 0)
   // 6-1-4-1: the turn ends only when nothing is left to resolve — a just-queued 【등장 시】/【진화 시】 (which may
   // itself move the memory back) must resolve first; main.js render() re-checks once the queue is empty.
   if (state.turnEnding || state.pending.some(t => !t.resolved)) return false;

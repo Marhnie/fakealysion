@@ -81,7 +81,7 @@ OPS.n5_jogressPair = async (i, ctx) => {
   if (!b) return;
   const id = pl.hand[k], j = S.parseJogress(id);
   const snap = S.snapshotEvoCostMods(state, p);
-  const cost = Math.max(0, (j ? j.cost : 0) + S.consumeEvoCostMod(state, p, id) + S.continuousEvoCostDiscount(state, p, a, id) + S.hookEvoCostDiscount(state, p, a, id));
+  const cost = Math.max(0, (j ? j.cost : 0) + S.consumeEvoCostMod(state, p, id) + S.continuousEvoCostDiscount(state, p, S.jogressCostStack(a, b), id) + S.hookEvoCostDiscount(state, p, S.jogressCostStack(a, b), id));
   if (!S.fuseStacks(state, p, a.uid, b.uid, id, cost, 'hand')) S.restoreEvoCostMods(snap);
 };
 // "… 카드 1장을 지불하는 (등장)코스트 -N으로 등장(/사용)시킬 수 있다" — delegates to shard8's s8_playOrUse

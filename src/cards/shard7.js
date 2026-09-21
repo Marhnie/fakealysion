@@ -928,7 +928,7 @@ async function jogressFromHand(ctx, who, cardPred) {
   const b = await pickStack(ctx, who, partners, '조그레스 소재 2 선택', { mandatory: true });
   if (!b) return null;
   const j = S.parseJogress(id);
-  return S.fuseStacks(state, who, a.uid, b.uid, id, j ? j.cost : 0, 'hand');
+  return S.fuseJogress(state, who, a, b, id);
 }
 const cost2 = (ctx) => 0;
 const trashCards = (id, ...t) => hasType(id, ...t);
@@ -1034,7 +1034,7 @@ SCRIPTS['EX11-016::등장 시'] = [F(async (ctx) => {
   const k = await ctx.choose('multipleChoice', { prompt: '시큐리티 위 / 아래', options: ['위', '아래'] });
   if (bounceIt(ctx, ctx.opp, c, k === 1 ? 'secBottom' : 'secTop')) S.emitGameEvent(state, 'securityIncrease', { owner: ctx.opp, stack: null, cause: 'effect' });
 })];
-const FACEUP_CHECK = { tag: '자신의 턴', has: '앞면', events: { faceUpChecked: (state, hp, holder, info) => info.owner === hp && holder.sources.length > 0 } };
+const FACEUP_CHECK = { tag: '자신의 턴', has: '앞면', events: { faceUpChecked: (state, hp, holder, info) => info.owner === hp } };
 H('EX11-041', { ...FACEUP_CHECK });
 H('EX11-043', { ...FACEUP_CHECK });
 SCRIPTS['EX11-041::자신의 턴'] = [F(async (ctx) => {
@@ -1055,7 +1055,7 @@ SCRIPTS['EX11-011::등장 시'] = [F(async (ctx) => {
   }
   const keep = [];
   for (const who of [self, ctx.opp]) {
-    const ds = digimonsOf(state, who);
+    const ds = digimonsOf(state, who).filter((s) => !(C(s.cardId).isToken || /TOKEN/i.test(String(s.cardId)))); // Q5796: tokens have no play cost, they cannot be "the highest-cost digimon"
     if (!ds.length) continue;
     const max = Math.max(...ds.map((s) => C(s.cardId).cost || 0));
     const top = ds.filter((s) => (C(s.cardId).cost || 0) === max);
@@ -1548,8 +1548,9 @@ SCRIPTS['EX11-046::등장 시'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const ds = digimonsOf(state, ctx.opp);
   if (ds.length) {
-    const max = Math.max(...ds.map((s) => C(s.cardId).cost || 0));
-    const keep = await pickStack(ctx, ctx.opp, ds.filter((s) => (C(s.cardId).cost || 0) === max), '남길 (등장 코스트가 가장 높은) 상대 디지몬 선택', { mandatory: true });
+    const costed = ds.filter((s) => !(C(s.cardId).isToken || /TOKEN/i.test(String(s.cardId)))); // Q5895: tokens have no play cost -> not selectable; with only tokens ALL get deleted
+    const max = costed.length ? Math.max(...costed.map((s) => C(s.cardId).cost || 0)) : null;
+    const keep = costed.length ? await pickStack(ctx, ctx.opp, costed.filter((s) => (C(s.cardId).cost || 0) === max), '남길 (등장 코스트가 가장 높은) 상대 디지몬 선택', { mandatory: true }) : null;
     for (const s of ds) if (s !== keep) destroyIt(ctx, ctx.opp, s);
   }
   const h = holderOf(ctx);
@@ -1672,8 +1673,8 @@ const KILLED = (state, hp, holder, info) => info.stack === holder && info.loser 
 H('BT24-047', { tag: '서로의 턴', src: 'inheritedKo', limit: 1, events: { battleWin: KILLED } });
 H('BT24-048', { tag: '서로의 턴', src: 'inheritedKo', events: { battleWin: KILLED } });
 H('EX11-033', { tag: '서로의 턴', src: 'inheritedKo', limit: 1, events: { battleWin: KILLED } });
-H('EX11-026', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder } });
-H('EX11-032', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder && hasType(holder.cardId, '볼텍스 워리어') } });
+H('EX11-026', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 이겼', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder } });
+H('EX11-032', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder && hasType(holder.cardId, '볼텍스 워리어') } });
 // BT24-045: 【패에서 파기】 (untagged preamble, acts from the trash) + inherited 【자신의 턴】 evolve on own hand discard
 H('BT24-045', { tag: '패에서 파기', zone: 'trash', text: '자신의 패가 5장 이하라면 《1 드로우》', events: { discard: (state, hp, holder, info) => info.owner === hp && info.cardId === 'BT24-045' } });
 SCRIPTS['BT24-045::패에서 파기'] = [F(async (ctx) => { if (ctx.state.players[ctx.self].hand.length <= 5) S.drawCards(ctx.state, ctx.self, 1); })];

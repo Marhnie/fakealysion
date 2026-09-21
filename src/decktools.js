@@ -260,7 +260,8 @@ export function deckCheckup(deck, env, stats) {
   for (const id of Object.keys(main)) {
     const c = env.card(id);
     if (c.category !== 'option') continue;
-    const miss = (c.colors || []).filter(col => !support[col]);
+    const altCol = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우: 'yellow', 그린: 'green', 블랙: 'black', 퍼플: 'purple', 화이트: 'white' }[((c.effectKo || '').match(/이\s*카드는\s*(레드|블루|옐로우?|그린|블랙|퍼플|화이트)(?:으)?로도\s*색\s*조건을\s*만족시킬\s*수\s*있다/) || [])[1]]; // LM-033..038
+    const miss = (c.colors || []).filter(col => !support[col] && !(altCol && support[altCol]));
     if (miss.length) add('error', 'option-color', `${nm(id)}: 색 조건을 만족할 수 없음`, `옵션 카드는 같은 색의 디지몬/테이머가 필드에 있어야 사용할 수 있습니다 (룰 4-22). 이 덱에는 ${miss.map(x => COLOR_KO[x] || x).join('/')} 디지몬·테이머가 없습니다.`, [id]);
     else { const thin = (c.colors || []).filter(col => support[col] < 4); if (thin.length) add('warn', 'option-color-thin', `${nm(id)}: ${thin.map(x => COLOR_KO[x] || x).join('/')} 지원이 약함`, `같은 색 디지몬/테이머가 ${thin.map(x => support[x]).join('/')}장뿐이라 필드에 없어서 못 쓰는 경우가 잦습니다 (룰 4-22).`, [id]); }
   }

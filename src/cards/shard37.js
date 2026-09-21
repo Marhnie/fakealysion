@@ -355,7 +355,7 @@ sc('BT20-015::등장 시', async (ctx) => {
       S.log(state, `${p} ${C(id).nameKo}을(를) 육성 에어리어에 코스트 없이 등장`);
     }
   }
-  if (!state.attackCtx || state.attackCtx.attacker !== p) return; // 어택 중이라면
+  if (!state.attackCtx) return; // 어택 중이라면 (any attack in progress, the opponent's too: Q4715)
   const t = await pickStack(ctx, p, digs(state, p), '《S 어택 +1》과 DP +5000을 얻을 자신의 디지몬 선택');
   if (!t) return;
   S.grantKeyword(state, p, t.uid, '시큐리티어택', 1, 'opponentTurn');

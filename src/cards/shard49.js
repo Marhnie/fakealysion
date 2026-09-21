@@ -59,7 +59,7 @@ sc('EX5-065::상대의 턴 개시 시', async (ctx, R) => {
         pair = f2.find((p) => p[1].uid === s2) || f2[0];
       }
       const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone: 'hand', eligibleIdxs: legal(pair[0], pair[1]), prompt: '조그레스 진화할 패의 카드 선택' });
-      if (idx != null) { const hid = pl.hand[idx]; const j = S.parseJogress(hid); const fused = S.fuseStacks(state, who, pair[0].uid, pair[1].uid, hid, j ? j.cost : 0, 'hand'); if (fused && fused.uid) last = fused; }
+      if (idx != null) { const hid = pl.hand[idx]; const j = S.parseJogress(hid); const fused = S.fuseJogress(state, who, pair[0], pair[1], hid); if (fused && fused.uid) last = fused; }
     }
   }
   if (last && last.uid) { // 이 효과로 등장한 디지몬은 턴 종료 시에 패로 되돌아간다 (a jogress result keeps the identity of the appeared digimon)
