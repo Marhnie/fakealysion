@@ -67,6 +67,11 @@ ok(T.mulberry32(42)() === T.mulberry32(42)(), 'seeded rng deterministic');
 const tid = Object.keys(deck.main)[0], tc = deck.main[tid];
 const res = T.runBatchSync(deck, env, { n: 20000, rng: T.mulberry32(7), targetId: tid });
 ok(res.n === 20000, 'ran all hands');
+// 멀리건 1회 적용 모드: 키핑 불가 핸드만 다시 뽑는다 -> 멀리건 비율 = 1 - pGood, 최종 키핑 가능 확률은 멀리건 전보다 높다
+{ const rm = T.runBatchSync(deck, env, { n: 30000, rng: T.mulberry32(5), mulligan: true }), rn = T.runBatchSync(deck, env, { n: 30000, rng: T.mulberry32(5), mulligan: false });
+  ok(rm.mulliganOn && Math.abs(rm.pMulliganned - (1 - rm.pGood)) < 1e-9, 'mulligan share = 1 - P(good first hand)');
+  ok(rm.pGoodAfterMulligan >= rm.pGood - 1e-9, 'mulligan never hurts (final good >= first good)');
+  ok(rm.pLv3 >= rn.pLv3 - 0.01, 'P(>=1 Lv3) with mulligan is not lower than without'); }
 // 카드 지정 3장: 각각 이론값에 근접, 전부 동시에 오는 확률은 각각보다 작거나 같고 독립 근사값과 비슷
 { const ids = Object.keys(deck.main).slice(0, 3); const r3 = T.runBatchSync(deck, env, { n: 100000, rng: T.mulberry32(11), targetIds: ids });
   ok(r3.n === 100000 && r3.targets.length === ids.length, '3 targets, 100k hands');

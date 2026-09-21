@@ -175,7 +175,7 @@ export function createBatch(deck, env, o = {}) {
   const N = model.ids.length, total = o.n || 10000, rng = o.rng || Math.random, handN = o.handSize || 5, turns = o.turns == null ? 3 : o.turns;
   const targetIds = (o.targetIds && o.targetIds.length ? o.targetIds : (o.targetId ? [o.targetId] : [])).filter(Boolean).slice(0, 3); // 카드 지정 최대 3장
   const targetId = targetIds[0] || null;
-  const tAcc = targetIds.map(() => ({ open: 0, turns: 0 })); let allOpen = 0, allTurns = 0;
+  const tAcc = targetIds.map(() => ({ open: 0, turns: 0 })); let allOpen = 0, allTurns = 0, mullDone = 0;
   const arr = new Int32Array(Math.max(N, 1));
   const acc = { n: 0, lv3: 0, lv2: 0, noLow: 0, blocker: 0, line: 0, lineEgg: 0, tamers: 0, options: 0, good: 0, afterMull: 0, tgtOpen: 0, tgtTurns: 0 };
   const hasTarget = (idxs, id = targetId) => id != null && idxs.some(i => model.ids[i] === id);
@@ -184,11 +184,14 @@ export function createBatch(deck, env, o = {}) {
     const end = Math.min(total, acc.n + k);
     for (; acc.n < end; acc.n++) {
       drawIdx(rng, N, handN + turns, arr);
-      const hand = Array.from(arr.subarray(0, handN)), seen = Array.from(arr.subarray(0, handN + turns));
-      const r = judgeHand(model, hand);
+      let hand = Array.from(arr.subarray(0, handN)), seen = Array.from(arr.subarray(0, handN + turns));
+      const r0 = judgeHand(model, hand); let r = r0;
+      // o.mulligan: "1회 멀리건 가능" 전제 - 키핑 불가 핸드는 손패를 전부 되돌려 섞고 새로 뽑는다(5-2-1-5). 이후 모든 통계는 최종 핸드 기준
+      if (o.mulligan && !r0.good) { drawIdx(rng, N, handN + turns, arr); hand = Array.from(arr.subarray(0, handN)); seen = Array.from(arr.subarray(0, handN + turns)); r = judgeHand(model, hand); mullDone++; }
       if (r.lv3) acc.lv3++; if (r.lv2) acc.lv2++; if (r.noLow) acc.noLow++; if (r.blocker) acc.blocker++; if (r.line) acc.line++; if (r.lineEgg) acc.lineEgg++;
       acc.tamers += r.tamers; acc.options += r.options;
-      if (r.good) { acc.good++; acc.afterMull++; }
+      if (o.mulligan) { if (r0.good) acc.good++; if (r.good) acc.afterMull++; }
+      else if (r.good) { acc.good++; acc.afterMull++; }
       else { drawIdx(rng, N, handN, arr); if (judgeHand(model, Array.from(arr.subarray(0, handN))).good) acc.afterMull++; } // mulligan the bad hand
       if (targetId) {
         if (hasTarget(hand)) acc.tgtOpen++; if (hasTarget(seen)) acc.tgtTurns++;
@@ -204,7 +207,7 @@ export function createBatch(deck, env, o = {}) {
     return { n: acc.n, total, pLv3: p(acc.lv3), pLv2: p(acc.lv2), pNoLow: p(acc.noLow), pBlocker: p(acc.blocker), pLine: p(acc.line), pLineEgg: p(acc.lineEgg),
       avgTamers: acc.tamers / n, avgOptions: acc.options / n, pGood: p(acc.good), pGoodAfterMulligan: p(acc.afterMull), mulliganGain: p(acc.afterMull) - p(acc.good),
       pTargetOpen: p(acc.tgtOpen), pTargetTurns: p(acc.tgtTurns), hatchable: model.digN > 0,
-      targets: targetIds.map((id, k) => ({ id, open: p(tAcc[k].open), turns: p(tAcc[k].turns) })), pAllOpen: p(allOpen), pAllTurns: p(allTurns) };
+      targets: targetIds.map((id, k) => ({ id, open: p(tAcc[k].open), turns: p(tAcc[k].turns) })), pAllOpen: p(allOpen), pAllTurns: p(allTurns), pMulliganned: p(mullDone), mulliganOn: !!o.mulligan };
   };
   return { step, result, model, done: () => acc.n >= total };
 }

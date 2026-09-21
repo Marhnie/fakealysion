@@ -849,7 +849,33 @@ function pumpReplacementPrompt() {
   };
 }
 
+// 화면 그리기 중 예외가 나도 빈 화면으로 멈추지 않게: 오류 내용을 화면에 보여 주고 복구 버튼을 준다 (폰에서는 콘솔을 볼 수 없으므로)
+let renderErrCount = 0;
 function render() {
+  try { renderInner(); renderErrCount = 0; }
+  catch (e) {
+    console.error('render failed', e);
+    try {
+      renderErrCount++;
+      const msg = [String(e && e.message ? e.message : e), ...String(e && e.stack || '').split('\n').slice(0, 6)].join('\n');
+      const info = ['[화면 오류] 턴 ' + (state ? state.turnNumber : '-') + ' / ' + (state ? state.phase : '-') + ' / ' + navigator.userAgent, msg].join('\n');
+      app.innerHTML = '';
+      app.appendChild(h('div', { className: 'su-wrap' }, [
+        h('div', { className: 'su-card' }, [
+          h('div', { className: 'su-h' }, '⚠ 화면을 그리는 중 오류가 발생했습니다'),
+          h('div', { className: 'su-note' }, '아래 내용을 알려 주시면 바로 고칠 수 있습니다. 게임 데이터는 그대로입니다.'),
+          h('pre', { style: 'white-space:pre-wrap;word-break:break-all;font-size:11px;background:#0008;padding:8px;border-radius:8px;max-height:40vh;overflow:auto;' }, info),
+          h('div', { className: 'su-more' }, [
+            h('button', { className: 'primary', onClick: () => { try { render(); } catch (e2) { /* ignore */ } } }, '🔄 다시 시도'),
+            h('button', { onClick: () => { try { navigator.clipboard.writeText(info); } catch (e3) { /* ignore */ } } }, '📋 오류 복사'),
+            h('button', { onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+          ]),
+        ]),
+      ]));
+    } catch (e4) { /* nothing more we can do */ }
+  }
+}
+function renderInner() {
   if (!state) return renderSetup();
   settleTurnEndIfIdle();
   pumpReplacementPrompt();

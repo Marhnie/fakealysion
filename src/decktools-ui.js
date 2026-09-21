@@ -15,7 +15,7 @@ export function createDeckAnalysis(ctx) {
   const open = (() => { try { return JSON.parse(localStorage.getItem('digimon_dt_open_v1') || '{}'); } catch { return {}; } })();
   const saveOpen = () => { try { localStorage.setItem('digimon_dt_open_v1', JSON.stringify(open)); } catch { /* ignore */ } };
   const bodies = {}, heads = {};
-  let sample = null, batch = null, batchTok = 0, batchRes = null, batchTarget = '', batchTargets = ['', '', ''], diffWith = '', timer = null;
+  let sample = null, batch = null, batchTok = 0, batchRes = null, batchTarget = '', batchTargets = ['', '', ''], batchMull = true, diffWith = '', timer = null;
 
   const nm = (id) => S.card(id).nameKo;
   const link = (id, label) => h('button', { className: 'dt-link', title: `${nm(id)} (${id}) 미리보기`, onClick: () => ctx.openPreview(id) }, label || `${nm(id)}`);
@@ -114,6 +114,9 @@ export function createDeckAnalysis(ctx) {
     const pickedIds = () => [...new Set(sels.map(x => x.value).filter(Boolean))];
     const nSel = h('select', { className: 'db-scope' }, [1000, 10000, 50000, 100000].map(n => h('option', { value: n }, `${n.toLocaleString()}회`)));
     nSel.value = '10000';
+    const mullChk = h('input', { type: 'checkbox', checked: batchMull, id: 'dt-mull' });
+    mullChk.addEventListener('change', () => { batchMull = mullChk.checked; });
+    const mullLbl = h('label', { className: 'meta', style: 'display:inline-flex;gap:6px;align-items:center;cursor:pointer;', title: '켜면: 키핑 불가 핸드(Lv.3 디지몬도 코스트 3 이하 디지몬도 없음)는 1회 멀리건해 새로 5장을 뽑고, 모든 확률을 그 최종 핸드 기준으로 계산합니다' }, [mullChk, '키핑 불가면 멀리건 1회 (모든 항목에 적용)']);
     const prog = h('div', { className: 'dt-prog', style: 'display:none' }, [h('div', { className: 'dt-prog-in' })]);
     const out = h('div', { className: 'dt-batch-out' });
     const runBtn = h('button', { className: 'primary', onClick: () => {
@@ -122,17 +125,17 @@ export function createDeckAnalysis(ctx) {
       const model = T.buildSimModel(d, env);
       const tok = ++batchTok; const N = Number(nSel.value);
       const tIds = pickedIds();
-      batch = T.createBatch(d, env, { n: N, targetId: tIds[0] || null, targetIds: tIds, model });
+      batch = T.createBatch(d, env, { n: N, targetId: tIds[0] || null, targetIds: tIds, model, mulligan: mullChk.checked });
       prog.style.display = ''; out.replaceChildren();
       const chunk = () => {
         if (tok !== batchTok) return;
         const done = batch.step(1000);
         prog.firstChild.style.width = (batch.result().n / N) * 100 + '%';
-        if (done) { batchRes = { r: batch.result(), target: tIds[0] || '', targets: tIds, N, model }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else nextTick(chunk);
+        if (done) { batchRes = { r: batch.result(), target: tIds[0] || '', targets: tIds, N, model, mull: mullChk.checked }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else nextTick(chunk);
       };
       nextTick(chunk);
     } }, '▶ 시뮬레이션 실행');
-    kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위, 1회 멀리건 가정)', h('div', { className: 'actions-row' }, [nSel, ...sels, runBtn]), prog, out));
+    kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위 · 멀리건은 아래 스위치로 선택)', h('div', { className: 'actions-row' }, [nSel, ...sels, runBtn]), h('div', { className: 'actions-row' }, [mullLbl]), prog, out));
     box.replaceChildren(...kids);
     if (batchRes && batchRes.N && !out.firstChild && prog.style.display === 'none') renderBatch(out, batchRes, d);
   }
@@ -152,8 +155,9 @@ export function createDeckAnalysis(ctx) {
     if (b.target) {
       for (const t of (r.targets && r.targets.length ? r.targets : [{ id: b.target, open: r.pTargetOpen, turns: r.pTargetTurns }])) {
         const K = d.main[t.id] || 0;
-        rows.push(row(`${nm(t.id)} — 오프닝 5장`, t.open, `이론값 ${pct(ex(K, 5))}`));
-        rows.push(row(`${nm(t.id)} — 3턴째까지 (5+3장)`, t.turns, `이론값 ${pct(ex(K, 8))}`));
+        const thNote = (n) => `${b.mull ? '멀리건 없을 때 이론값' : '이론값'} ${pct(ex(K, n))}`;
+        rows.push(row(`${nm(t.id)} — 오프닝 5장${b.mull ? ' (멀리건 후)' : ''}`, t.open, thNote(5)));
+        rows.push(row(`${nm(t.id)} — 3턴째까지 (5+3장)${b.mull ? ' (멀리건 후)' : ''}`, t.turns, thNote(8)));
       }
       if (r.targets && r.targets.length > 1) {
         rows.push(row(`지정 ${r.targets.length}장 전부 — 오프닝 5장`, r.pAllOpen, '동시에 한 손패에'));
@@ -161,7 +165,7 @@ export function createDeckAnalysis(ctx) {
       }
     }
     out.replaceChildren(
-      h('div', { className: 'meta' }, `${r.n.toLocaleString()}회 시뮬레이션 결과 · 평균 테이머 ${r.avgTamers.toFixed(2)}장 · 평균 옵션 ${r.avgOptions.toFixed(2)}장`),
+      h('div', { className: 'meta' }, `${r.n.toLocaleString()}회 시뮬레이션 결과 · ${b.mull ? `멀리건 적용 (${pct(r.pMulliganned || 0)}의 핸드가 멀리건됨) · 모든 확률은 멀리건 후 최종 핸드 기준` : '멀리건 없음 (처음 5장 기준)'} · 평균 테이머 ${r.avgTamers.toFixed(2)}장 · 평균 옵션 ${r.avgOptions.toFixed(2)}장`),
       h('table', { className: 'dt-table' }, [h('tbody', {}, rows)]));
   }
 
