@@ -48,3 +48,17 @@ export function logOdds(state, p, w = EVAL_WEIGHTS) {
   for (let i = 0; i < x.length; i++) z += w[i] * x[i];
   return z;
 }
+
+// group multipliers of the injected params (src/cpu.js TUNE ev* keys) on the fitted weights; cached on the params object (bias untouched)
+const GROUP = { evSec: [2, 3, 4, 5, 6, 7], evBoard: [8, 9, 10, 11, 12, 13], evHand: [14, 15, 16], evMem: [17], evDev: [18, 19, 20, 21, 24, 25, 26, 27, 28], evTempo: [1, 22, 23, 29] };
+export function weightsFor(P) {
+  if (!P) return EVAL_WEIGHTS;
+  const key = GROUP_KEYS.map((k) => P[k]).join(',');
+  if (P._wKey === key && P._w) return P._w;
+  const w = EVAL_WEIGHTS.slice();
+  for (const k of GROUP_KEYS) { const m = P[k] == null ? 1 : P[k]; for (const i of GROUP[k]) w[i] *= m; }
+  Object.defineProperty(P, '_wKey', { value: key, writable: true, enumerable: false, configurable: true });
+  Object.defineProperty(P, '_w', { value: w, writable: true, enumerable: false, configurable: true });
+  return w;
+}
+const GROUP_KEYS = Object.keys(GROUP);

@@ -846,6 +846,7 @@ function fullEffectInheritTarget(effectKo) {
 // evolution source's inherited effect text.
 export function queueTriggersForStack(state, p, stack, eventKind) {
   if (!stack) return;
+  if (eventKind === 'attack') queueAttackDeclarationTriggers(state, p, stack); // 11-2-8-1 / 15-8-3: 「레스트했을 때」 + ≪연계≫ + ≪돌진≫ trigger at the SAME moment as 【어택 시】
   if (stack.s13NoTrig && stack.s13NoTrig[eventKind] != null && state.turnNumber <= stack.s13NoTrig[eventKind]) { log(state, `${p} ${card(stack.cardId).nameKo}의 ${({ play: '【등장 시】', digivolve: '【진화 시】', attack: '【어택 시】' })[eventKind] || eventKind} 효과는 발휘하지 않음 (효과, s13)`); return; } // batch-4: 「【등장 시】 효과는 발휘하지 않는다」 until the given turn number
   if (eventKind === 'digivolve' && stack.noEvoTrigUntil != null && state.turnNumber <= stack.noEvoTrigUntil) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s8
   if (eventKind === 'digivolve' && hookSuppressTrigger(state, p, stack, '진화 시')) { log(state, `${p} ${card(stack.cardId).nameKo}의 【진화 시】 효과는 발휘하지 않음 (효과)`); return; } // s5
@@ -1109,6 +1110,17 @@ export function activatableMainAbilities(state, p, stack, zoneKind) {
 // ≪연계≫: "이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는
 // 것으로, 이 어택 동안 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고,
 // 《S 어택 +1》을 얻는다." — optional, so the UI offers it per attack.
+// 11-2-8-1 / 15-8-3 / 16-23-2 / 16-24-2: what happens at attack DECLARATION besides the printed 【어택 시】 text — all of it triggers at once and waits in the
+// same pending queue (turn player orders theirs first, 4-3-2):
+//  - the attacker's own rest (declareAttack marks stack._declRest) -> 'rest' event (cause 'attack': not "효과로"), so 「레스트했을 때」 watchers fire;
+//  - ≪돌진≫ (16-23) and ≪연계≫ (16-24): triggered keyword effects, resolved by the '*::__돌진' / '*::__연계' scripts (src/cards/shard96.js).
+export function queueAttackDeclarationTriggers(state, p, stack) {
+  if (stack._declRest) { stack._declRest = false; emitGameEvent(state, 'rest', { owner: p, stack, cause: 'attack' }); }
+  if (card(stack.cardId).category !== 'digimon' && !isAsDigimon(stack)) return;
+  const has = (kw) => hasKeyword(stack, kw) || hookGrantedKeywords(state, p, stack).includes(kw);
+  if (has('돌진')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__돌진'], optGateDone: true, text: '《돌진》 이 디지몬이 어택했을 때, 어택의 대상을 가장 DP가 높은 액티브 상태인 상대의 디지몬 1마리로 변경할 수 있다.', resolved: false });
+  if (has('연계')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__연계'], optGateDone: true, text: '《연계》 이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는 것으로, 그 어택의 종료까지 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고 《S 어택 +1》을 얻는다.', resolved: false });
+}
 export function chainOptions(state, p, attackerUid) {
   const pl = state.players[p];
   const a = pl.battle.find(s => s.uid === attackerUid);
@@ -5022,6 +5034,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     log(state, `${attackerP} ${card(stack.cardId).nameKo}는 상대 디지몬이 없는 동안 어택할 수 없음`);
     return { ok: false, reason: 'attack restricted' };
   }
+  stack._declRest = !opts.noRest && !stack.suspended; // 11-2-8-1: the declaration rests the attacker; its 「레스트했을 때」 triggers fire together with 【어택 시】 (queueTriggersForStack 'attack')
   if (!opts.noRest) stack.suspended = true; // s5: "레스트시키지 않고 어택" (BT21-072)
   log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp ?? '-'}) 공격 선언${opts.noRest ? ' (레스트하지 않음)' : ''}`);
   return { ok: true, stack };
@@ -6084,7 +6097,8 @@ export function s1AttackTargeted(state, attackerP, attacker, targetKind, targetU
   const defP = opponentOf(attackerP);
   if (attacker && targetKind === 'digimon' && s1Flag(state, attacker, 'killNoSrc')) {
     const t = state.players[defP].battle.find(s => s.uid === targetUid);
-    if (t && t.sources.length === 0) { log(state, `${attackerP} ${card(attacker.cardId).nameKo} 효과: 진화원이 없는 ${card(t.cardId).nameKo} 소멸`); deleteStack(state, defP, t.uid, 'trash', 'effect'); }
+    // BT4-101 「【자신의 턴】 진화원을 갖지 않은 상대 디지몬에게 어택했을 때, 그 디지몬을 소멸시킨다」 is a TRIGGERED effect (15-8-3): it waits in the pending queue with the other declaration triggers (the turn player orders them), not an immediate deletion
+    if (t && t.sources.length === 0) state.pending.push({ uid: 'p' + (pendingUid++), player: attackerP, cardId: attacker.cardId, stackUid: attacker.uid, topId: attacker.cardId, tags: ['__어택소멸'], optGateDone: true, evtTargetUid: t.uid, text: '이 디지몬이 진화원을 갖지 않은 상대의 디지몬에게 어택했을 때, 그 디지몬을 소멸시킨다.', resolved: false });
   }
 }
 export function s1BattleWon(state, p, stack) { emitGameEvent(state, 'battleWin', { owner: p, stack, cause: null }); }

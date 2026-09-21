@@ -18,11 +18,48 @@ import * as S from './state.js';
 import * as E from './engine.js';
 import * as Fx from './effects.js';
 
-export const LEVEL_LABEL = { easy: '쉬움', normal: '보통', hard: '어려움' };
+export const LEVEL_LABEL = { easy: '쉬움', normal: '보통', hard: '어려움', expert: '전문가' };
 export const SPEED_LABEL = { fast: '빠르게', normal: '보통', slow: '느리게' };
 const R = { rng: Math.random };
 // tunable knobs (scripts/test-cpu.mjs --tune=key:value,… used them to calibrate the levels)
-export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 1.0, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1 };
+// The keys below hardGain2 … are the "explicit params" of the self-play optimisation (scripts/cpu-arena.mjs / cpu-evolve.mjs): every default reproduces the
+// behaviour the levels had before the params existed.  A per-player override travels as cfg.params (see makeParams / tp()); the 'expert' level = tuned params.
+export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 1.0, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1,
+  gainBase: 2.2, pBlockHi: 0.75, pBlockLo: 0.35, tBlockHi: 0.6, tBlockLo: 0.3, cThr: 1.5, baitBonus: 0, dangerLim: 3, tieBlockSec: 3, chumpVal: 5, mullCost: 3, mullHiCost: 5,
+  // search / evaluation params (read by src/cpusearch.js through cfg.params): group multipliers on the fitted eval weights + tactical terms
+  evSec: 1, evBoard: 1, evHand: 1, evMem: 1, evDev: 1, evTempo: 1, lethalW: 40, threatW: 1, priorW: 2, deckLowW: 25 };
+// name -> [min, max] search ranges of the optimiser (only the keys listed here are evolved)
+export const PARAM_RANGES = {
+  hardReserve: [0, 8], hardThrA: [-5, 2], hardThreshold: [0.3, 3], hardLimit: [2, 8], hardGw: [0.3, 2.5], secDpMid: [4500, 9000], pSecDig: [0.2, 1], hardGain2: [1.5, 6], hardChump: [0, 5],
+  gainBase: [1, 4], pBlockHi: [0.4, 1], pBlockLo: [0, 0.7], cThr: [0.5, 3.5], baitBonus: [0, 3], dangerLim: [1, 5], tieBlockSec: [1, 5], chumpVal: [2, 9], mullCost: [2, 5], mullHiCost: [3, 8],
+  evSec: [0.3, 2.5], evBoard: [0.2, 3], evHand: [0.2, 3], evMem: [0, 3], evDev: [0, 3], evTempo: [0, 2.5], lethalW: [10, 80], threatW: [0.3, 2.5], priorW: [0, 4],
+};
+// -> a complete params object (defaults + partial overrides).  Never mutates TUNE.
+export function makeParams(partial) { return { ...TUNE, ...(partial || {}) }; }
+const tp = (cfg) => (cfg && cfg.params) || TUNE;
+// 'expert' = level hard's logic + tuned params (data/cpu-params.json, loaded by loadParams()) + a deeper search inside the time budget
+export const EXPERT = { params: null, meta: null, search: { depth: 5, budgetMs: 1100, hardCapMs: 1500, rootBeam: 10, beam: 6, samples: 2 }, headlessNodes: 400 };
+export const isHardLike = (level) => level === 'hard' || level === 'expert';
+// level name -> decision config { level: internal logic level, params }.  'expert' is hard logic + tuned params.
+export function levelCfg(level) { return level === 'expert' ? { level: 'hard', params: EXPERT.params } : { level, params: null }; }
+// data/cpu-params.json ({version, level:'hard', params:{…}, search?:{…}, trainedGames, winrateVsBaseline}); a missing / broken file leaves the built-in defaults (safe fallback)
+export async function loadParams(fetchFn) {
+  try {
+    const f = fetchFn || (typeof fetch === 'function' ? fetch : null);
+    if (!f) return false;
+    const r = await f('./data/cpu-params.json');
+    if (r && r.ok === false) return false;
+    const j = await r.json();
+    if (!j || typeof j.params !== 'object') return false;
+    const clean = {};
+    for (const k of Object.keys(j.params)) if (k in TUNE && Number.isFinite(Number(j.params[k]))) clean[k] = Number(j.params[k]);
+    EXPERT.params = makeParams(clean);
+    EXPERT.meta = { version: j.version, trainedGames: j.trainedGames, winrateVsBaseline: j.winrateVsBaseline };
+    if (j.search && typeof j.search === 'object') for (const k of Object.keys(j.search)) if (Number.isFinite(Number(j.search[k]))) EXPERT.search[k] = Number(j.search[k]);
+    if (Number.isFinite(Number(j.headlessNodes))) EXPERT.headlessNodes = Number(j.headlessNodes);
+    return true;
+  } catch (e) { return false; }
+}
 export function setRng(fn) { R.rng = fn || Math.random; }
 export function getRng() { return R.rng; }
 // lookahead search plug-in (src/cpusearch.js registers itself here; cpu.js never imports it -> no import cycle).
@@ -85,17 +122,19 @@ function findAny(state, p, uid) {
 const hasBattle = (state, p, uid) => !!state.players[p].battle.find((s) => s.uid === uid);
 
 // ---------- mulligan ----------
-export function shouldMulligan(state, p, level) {
+export function shouldMulligan(state, p, level, params) {
+  if (level === 'expert') { level = 'hard'; params = params || EXPERT.params; }
+  const P = params || TUNE;
   const hand = state.players[p].hand.map(card);
   const lv3 = hand.filter((c) => c.category === 'digimon' && c.level === 3);
-  const cheapLv3 = lv3.filter((c) => (c.cost || 0) <= 3);
+  const cheapLv3 = lv3.filter((c) => (c.cost || 0) <= P.mullCost);
   if (level === 'easy') return rnd() < 0.15 ? true : !(lv3.length >= 1);
   if (cheapLv3.length >= 1 || lv3.length >= 2) return false;
   if (level === 'hard') {
     // one expensive Lv3 is fine if the hand also has a Lv4 to evolve into or a tamer/draw support
     const lv4 = hand.filter((c) => c.category === 'digimon' && c.level === 4).length;
     const tamers = hand.filter((c) => c.category === 'tamer').length;
-    if (lv3.length >= 1 && (lv4 >= 1 || tamers >= 1) && lv3.some((c) => (c.cost || 0) <= 5)) return false;
+    if (lv3.length >= 1 && (lv4 >= 1 || tamers >= 1) && lv3.some((c) => (c.cost || 0) <= P.mullHiCost)) return false;
   }
   return true;
 }
@@ -269,6 +308,11 @@ function enumerateActions_(state, p) {
       if (ok && ab.cardId === 'BT1-089' && !(pl.raising ? (S.card(pl.raising.cardId).category === 'digimon' && (S.card(pl.raising.cardId).level || 0) >= 3) : pl.digitamaDeck.length > 0)) return; // hatch / move impossible -> resting the tamer would do nothing
       if (ok) acts.push({ type: 'main', uid: st.uid, idx, cost: 0, score: 2.6, key: 'mn:' + st.uid + ':' + idx + ':' + ab.cardId });
     });
+    // 16-17 ≪딜레이≫: a placed Option (not on the turn it was placed) may be discarded for its bullet effect — the CPU used to leave these cards on the field forever
+    if (zone === 'battle' && S.card(st.cardId).category === 'option' && state.turnNumber > (st.placedTurn ?? 0)) {
+      const body = safe(() => S.parseDelayEffect(S.card(st.cardId).effectKo), null);
+      if (body && safe(() => Fx.mainAbilityPayable(state, S, p, st.uid, st.cardId, ['메인'], body), false)) acts.push({ type: 'delay', uid: st.uid, cost: 0, score: /메모리/.test(body) ? 3.1 : 2.3, key: 'dl:' + st.uid });
+    }
   });
   void atkReady;
   return acts;
@@ -292,7 +336,7 @@ function lethalPlan(state, p) {
   return { lethal, sec, blockers, uids: lethal ? through.map((x) => x.uid) : [] };
 }
 
-const pLoseVsSecurity = (aDP, jam) => (jam ? 0 : TUNE.pSecDig * Math.max(0, Math.min(1, (TUNE.secDpMid - aDP) / 4300)));
+const pLoseVsSecurity = (aDP, jam, P = TUNE) => (jam ? 0 : P.pSecDig * Math.max(0, Math.min(1, (P.secDpMid - aDP) / 4300)));
 
 function battleOutcome(aDP, bDP, valA, valB) { // value delta for the attacker when it fights a blocker/target
   if (aDP > bDP) return valB;
@@ -301,7 +345,7 @@ function battleOutcome(aDP, bDP, valA, valB) { // value delta for the attacker w
 }
 
 function attackCandidates_(state, p, cfg) {
-  const level = cfg.level;
+  const level = cfg.level, P = tp(cfg);
   const pl = state.players[p], op = opp(p), opl = state.players[op];
   const lp = level !== 'easy' ? lethalPlan(state, p) : { lethal: false, uids: [] };
   const oppBlockers = opl.battle.filter((s) => isBlockerNow(state, op, s));
@@ -321,7 +365,7 @@ function attackCandidates_(state, p, cfg) {
     const isBl = hasKw(state, p, st, '블로커');
     // defensive reserve: a blocker keeps its job when I'm low on security and the opponent has attackers
     let reserve = 0;
-    if (level === 'hard' && isBl && mySec <= 3 && oppThreat >= 1 && !lp.lethal) reserve = TUNE.hardReserve;
+    if (level === 'hard' && isBl && mySec <= 3 && oppThreat >= 1 && !lp.lethal) reserve = P.hardReserve;
     else if (level === 'normal' && isBl && mySec <= 2 && oppThreat >= 2 && !lp.lethal) reserve = 2.5;
     if (level === 'easy') {
       if (rnd() < 0.35) continue;
@@ -336,11 +380,11 @@ function attackCandidates_(state, p, cfg) {
       if (opl.security.length === 0) cands.push({ target: 'PLAYER', score: 900 });
       else if (lp.lethal && lp.uids.includes(st.uid)) cands.push({ target: 'PLAYER', score: 400 + aDP / 1000 });
       else {
-        const gain = Math.min(checks, opl.security.length) * (level === 'hard' && opl.security.length <= 2 ? TUNE.hardGain2 : 2.2);
-        const pBlock = oppBlockers.length ? (bestBlockerDP >= aDP ? 0.75 : 0.35) : 0;
-        const noBlock = gain - pLoseVsSecurity(aDP, jam) * valA * 1.3;
+        const gain = Math.min(checks, opl.security.length) * (level === 'hard' && opl.security.length <= 2 ? P.hardGain2 : P.gainBase);
+        const pBlock = oppBlockers.length ? (bestBlockerDP >= aDP ? P.pBlockHi : P.pBlockLo) : 0;
+        const noBlock = gain - pLoseVsSecurity(aDP, jam, P) * valA * 1.3;
         const blk = oppBlockers.length ? battleOutcome(aDP, bestBlockerDP, valA, stackValue(state, op, bestBlocker)) + (hasKw(state, p, st, '관통') && aDP > bestBlockerDP ? gain : 0) : 0;
-        cands.push({ target: 'PLAYER', score: (1 - pBlock) * noBlock + pBlock * blk - reserve });
+        cands.push({ target: 'PLAYER', score: (1 - pBlock) * noBlock + pBlock * blk - reserve + (P.baitBonus && oppBlockers.length ? P.baitBonus * (1 - Math.min(1, aDP / 12000)) : 0) });
       }
     }
     for (const u of targets) {
@@ -348,7 +392,7 @@ function attackCandidates_(state, p, cfg) {
       if (!t) continue;
       const tDP = dpOf(state, op, t);
       const valT = stackValue(state, op, t);
-      const pBlock = oppBlockers.length ? (bestBlockerDP >= aDP ? 0.6 : 0.3) : 0;
+      const pBlock = oppBlockers.length ? (bestBlockerDP >= aDP ? P.tBlockHi : P.tBlockLo) : 0;
       const direct = battleOutcome(aDP, tDP, valA, valT);
       const blk = oppBlockers.length ? battleOutcome(aDP, bestBlockerDP, valA, stackValue(state, op, bestBlocker)) : 0;
       if (aDP > tDP || (aDP === tDP && valT > valA + 0.5)) cands.push({ target: u, score: (1 - pBlock) * direct + pBlock * blk - reserve + 0.4 });
@@ -362,7 +406,7 @@ function attackCandidates_(state, p, cfg) {
 // ---------- the next main-phase action ----------
 // -> { type:'pass' } | an action from enumerateActions / attackCandidates.  cfg = { level, banned:Set, giftLimit? }
 function planMain_(state, p, cfg) {
-  const level = cfg.level;
+  const level = cfg.level, P = tp(cfg);
   const banned = cfg.banned || new Set();
   const mem = memOf(state, p);
   const noise = level === 'hard' ? 0.15 : level === 'normal' ? 0.45 : 6;
@@ -381,7 +425,7 @@ function planMain_(state, p, cfg) {
     if (ov.length && rnd() < 0.5) return pickRand(ov);
     return { type: 'pass' };
   }
-  const threshold = level === 'hard' ? TUNE.hardThreshold : 0.9;
+  const threshold = level === 'hard' ? P.hardThreshold : 0.9;
   const lp = lethalPlan(state, p);
   // lethal first: all lethal attackers go (weakest first as bait when the defender still has blockers)
   if (level === 'hard' && lp.lethal) {
@@ -397,18 +441,18 @@ function planMain_(state, p, cfg) {
     return a;
   }
   // B: attacks
-  const thrA = level === 'hard' ? TUNE.hardThrA : TUNE.normThrA;
+  const thrA = level === 'hard' ? P.hardThrA : P.normThrA;
   const goodAtk = atk.filter((a) => a.score > thrA);
   if (goodAtk.length) {
     goodAtk.sort((a, b) => b.score - a.score);
     return goodAtk[0];
   }
   // C: actions that push memory to the opponent (a pass hands over 3 anyway, so up to 3 is free)
-  const gw = level === 'hard' ? TUNE.hardGw : 0.85;
+  const gw = level === 'hard' ? P.hardGw : 0.85;
   const dangerous = level === 'hard' && state.players[p].security.length <= 2 && state.players[opp(p)].battle.filter(isDigi).length >= 2;
-  const limit = dangerous ? 3 : (cfg.giftLimit != null ? cfg.giftLimit : (level === 'hard' ? TUNE.hardLimit : 4));
+  const limit = dangerous ? P.dangerLim : (cfg.giftLimit != null ? cfg.giftLimit : (level === 'hard' ? P.hardLimit : 4));
   const C = over.map((a) => ({ a, gift: Math.min(10, a.cost - mem) })).filter((x) => x.gift <= limit && S.canPayCost(state, x.a.cost))
-    .map((x) => ({ ...x.a, eff: x.a.score - Math.max(0, x.gift - 3) * gw })).filter((x) => x.eff > (level === 'hard' ? 1.5 : 1.2));
+    .map((x) => ({ ...x.a, eff: x.a.score - Math.max(0, x.gift - 3) * gw })).filter((x) => x.eff > (level === 'hard' ? P.cThr : 1.2));
   if (C.length) return C.sort((a, b) => b.eff + rnd() * noise - (a.eff + rnd() * noise))[0];
   return { type: 'pass' };
 }
@@ -426,7 +470,7 @@ function chooseAttackTarget_(state, pa, cfg) {
 // ---------- defence ----------
 // c = { attackerP, attackerUid, targetKind:'player'|'digimon', targetUid, blockers:[stack], mandatory }
 function decideBlock_(state, c, cfg) {
-  const level = cfg.level;
+  const level = cfg.level, P = tp(cfg);
   const p = opp(c.attackerP);
   const pl = state.players[p];
   const aSt = findAny(state, c.attackerP, c.attackerUid);
@@ -454,9 +498,9 @@ function decideBlock_(state, c, cfg) {
     const lethal = checks > secN;
     if (lethal) return (winners[0] || ties[0] || cheapest).b.uid; // must stop it
     if (winners.length) return winners.sort((x, y) => x.val - y.val)[0].b.uid; // free kill (cheapest winner)
-    if (ties.length && (valA >= ties[0].val || secN <= 3)) return ties[0].b.uid;
-    const chumpAt = level === 'hard' ? TUNE.hardChump : 2;
-    if (!pierce && secN <= chumpAt && cheapest.val < 4 + (level === 'hard' ? 1 : 0) && (level === 'hard' ? checks >= 1 : true)) return cheapest.b.uid;
+    if (ties.length && (valA >= ties[0].val || secN <= (level === 'hard' ? P.tieBlockSec : 3))) return ties[0].b.uid;
+    const chumpAt = level === 'hard' ? P.hardChump : 2;
+    if (!pierce && secN <= chumpAt && cheapest.val < (level === 'hard' ? P.chumpVal : 4) && (level === 'hard' ? checks >= 1 : true)) return cheapest.b.uid;
     return null;
   }
   // attack on one of my Digimon
@@ -541,6 +585,26 @@ function optionalCostAnswer(state, who, pay, level) {
   }
   return true;
 }
+// ≪연계≫ (16-24-3): player attack -> rest the weakest other active digimon (the DP is added and 《S 어택 +1》 is gained); digimon attack -> only when a rested digimon's DP turns a loss into a win.
+function cpuChainPick(state, who, uids, level) {
+  const pa = state.attackCtx; if (!pa || pa.attacker !== who) return null;
+  const pl = state.players[who], atk = pl.battle.find(x => x.uid === pa.uid); if (!atk) return null;
+  const dpOf = (u) => S.effectiveDP(state, who, pl.battle.find(x => x.uid === u));
+  const sorted = uids.slice().sort((x, y) => dpOf(x) - dpOf(y));
+  if (pa.targetKind === 'player') return sorted[0];
+  const t = state.players[pa.opp].battle.find(x => x.uid === pa.targetUid); if (!t) return null;
+  const need = S.effectiveDP(state, pa.opp, t) - S.effectiveDP(state, who, atk);
+  if (need < 0) return null;
+  return sorted.find(u => dpOf(u) > need) || null;
+}
+// ≪돌진≫ (16-23): the CPU redirects only when its attacker beats the highest-DP active digimon outright (a redirect away from the player is otherwise a wasted attack)
+function cpuChargePick(state, who, uids, level) {
+  const pa = state.attackCtx; if (!pa || pa.attacker !== who) return null;
+  const atk = state.players[who].battle.find(x => x.uid === pa.uid); if (!atk) return null;
+  const opp = state.players[pa.opp].battle;
+  const best = uids.map(u => opp.find(x => x.uid === u)).filter(Boolean).sort((a, b) => S.effectiveDP(state, pa.opp, a) - S.effectiveDP(state, pa.opp, b))[0];
+  return best && S.effectiveDP(state, who, atk) > S.effectiveDP(state, pa.opp, best) + 1000 && level !== 'easy' ? best.uid : null;
+}
 export function answerChoice(state, kind, payload, who, cfg) {
   const level = (cfg && cfg.level) || 'normal';
   const pay = payload || {};
@@ -572,6 +636,8 @@ export function answerChoice(state, kind, payload, who, cfg) {
       case 'pickStack': {
         const uids = pay.uids || [];
         if (!uids.length) return null;
+        if (pay.chainKw) return cpuChainPick(state, who, uids, level); // ≪연계≫ (16-24): a triggered effect now — the CPU decides here whether to pay the rest
+        if (pay.chargeKw) return cpuChargePick(state, who, uids, level); // ≪돌진≫ (16-23)
         const ownerP = pay.player;
         const stacks = uids.map((u) => findAny(state, ownerP, u)).filter(Boolean);
         if (!stacks.length) return uids[0];
@@ -681,7 +747,7 @@ export function createUiDriver(api) {
     busyTick: false, acting: false, lastStep: 0, lastProgress: Date.now(), lastSig: '', banned: new Set(), turnKey: '', actionsThisTurn: 0,
     hb: null, searchOn: true, searchBudget: 900, searchCap: 2500, searching: false, thinkInfo: null, lastSearch: null, showLine: false, watchdogFires: 0, stats: { actions: 0, choices: 0, fallbacks: 0, banned: 0 },
   };
-  const cfg = () => ({ level: D.level, banned: D.banned });
+  const cfg = () => ({ ...levelCfg(D.level), banned: D.banned });
   const paceMs = () => Math.round(BASE_PACE * (SPEED_MULT[D.speed] || 1) * (0.85 + rnd() * 0.3));
   const note = (m) => { try { S.log(api.getState(), '🤖 CPU: ' + m); } catch (e) { /* ignore */ } };
 
@@ -694,7 +760,7 @@ export function createUiDriver(api) {
   function paDecider(st, pa) {
     switch (pa.stage) {
       case 'targetChoice': return pa.attacker;
-      case 'redirectTiming': return pa.paused ? null : ((pa.redirectOptions && pa.redirectOptions.length) ? pa.opp : pa.attacker);
+      case 'redirectTiming': return pa.paused || pa.declWait ? null : ((pa.redirectOptions && pa.redirectOptions.length) ? pa.opp : pa.attacker);
       case 'counterTiming': return pa.paused ? null : pa.opp;
       case 'blockCheck': return pa.paused ? null : pa.opp;
       case 'digimonResult': return pa.paused ? null : pa.attacker;
@@ -745,20 +811,6 @@ export function createUiDriver(api) {
     if (pa.stage === 'targetChoice') {
       const tgt = force ? (pa.canHitPlayer ? 'PLAYER' : pa.digimonTargets[0]) : chooseAttackTarget(st, pa, cfg());
       if (tgt == null) { api.pa.close(pa); return true; }
-      if (!pa.chainUsed && api.pa.chain && !force) { // ≪연계≫: 플레이어 어택이면 가장 DP 낮은 액티브 디지몬으로, 디지몬 어택이면 이기기 위해 필요한 만큼의 디지몬으로 사용
-        try {
-          const opts = S.chainOptions(st, pa.attacker, pa.uid);
-          if (opts.length) {
-            const dpOf = (u) => S.effectiveDP(st, pa.attacker, st.players[pa.attacker].battle.find(x => x.uid === u));
-            const sorted = opts.slice().sort((x, y) => dpOf(x) - dpOf(y));
-            const atk = st.players[pa.attacker].battle.find(x => x.uid === pa.uid);
-            let pick = null;
-            if (tgt === 'PLAYER') pick = sorted[0];
-            else { const td = S.effectiveDP(st, pa.opp, st.players[pa.opp].battle.find(x => x.uid === tgt)); const need = td - S.effectiveDP(st, pa.attacker, atk); if (need >= 0) pick = sorted.find(u => dpOf(u) > need) || null; }
-            if (pick != null) api.pa.chain(pa, pick);
-          }
-        } catch (e) { /* 연계는 선택 사항 */ }
-      }
       api.pa.chooseTarget(pa, tgt);
     } else if (pa.stage === 'redirectTiming') {
       api.pa.passRedirect(pa);
@@ -802,6 +854,7 @@ export function createUiDriver(api) {
         case 'jogress': note(`${card(act.cardId).nameKo} 조그레스 진화`); await api.jogress(p, act.a, act.b, act.cardId); break;
         case 'attack': { const stk = findAny(st, p, act.uid); note(`${stk ? card(stk.cardId).nameKo : '?'} 어택`); api.attack(p, act.uid, act.target); break; }
         case 'train': note('【트레이닝】 사용'); api.train(p, act.uid); break;
+        case 'delay': note('《딜레이》 발동'); api.useDelay(p, act.uid); break;
         case 'main': { const mk = act.key; const cnt = (D.mainUses ||= {}); cnt[D.turnKey + '|' + mk] = (cnt[D.turnKey + '|' + mk] || 0) + 1; if (cnt[D.turnKey + '|' + mk] >= 2) D.banned.add(mk); /* a 【메인】 whose script does nothing (e.g. ST17-10 with no 테리어몬 / 세인트가르고몬) changes no state but the pending row, so the before/after ban never fired: 22 no-op uses per turn — cap at 2 per turn */ note('【메인】 효과 사용'); api.useMain(p, act.uid, act.idx); break; }
         default: break;
       }
@@ -830,11 +883,11 @@ export function createUiDriver(api) {
     if (st.phase !== 'main') return false;
     if (D.actionsThisTurn >= 45) { await execute(st, { type: 'pass' }); return true; } // hard cap: a turn never runs forever
     let act = null;
-    if (D.level === 'hard' && D.searchOn && HOOKS.search) { // 어려움: 4-ply lookahead (src/cpusearch.js); null = no opinion -> heuristic below
+    if (isHardLike(D.level) && D.searchOn && HOOKS.search) { // 어려움: 4-ply lookahead (src/cpusearch.js); null = no opinion -> heuristic below
       D.searching = true; D.thinkInfo = { depth: 0, nodes: 0, ms: 0 }; safe(() => api.thinkUpdate && api.thinkUpdate(), null);
       try {
         act = await HOOKS.search(st, p, cfg(), {
-          budgetMs: D.searchBudget, hardCapMs: Math.max(D.searchBudget, D.searchCap),
+          ...(D.level === 'expert' ? EXPERT.search : { budgetMs: D.searchBudget, hardCapMs: Math.max(D.searchBudget, D.searchCap) }),
           shouldAbort: () => !D.enabled || D.paused || api.getState() !== st,
           onProgress: (i) => { D.thinkInfo = i; safe(() => api.thinkUpdate && api.thinkUpdate(), null); },
         });

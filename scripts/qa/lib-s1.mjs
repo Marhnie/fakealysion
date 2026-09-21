@@ -96,8 +96,9 @@ export async function attack(st, p, uid, target = 'PLAYER', opts = {}) {
   const op = S.opponentOf(p); const dec = S.declareAttack(st, p, uid, opts.declare || {}); if (!dec.ok) return { declined: dec };
   const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target }; st.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
   st.qaLog = { blockers: [], battle: null };
-  S.queueTriggersForStack(st, p, dec.stack, 'attack'); S.emitGameEvent(st, 'attack', { owner: p, stack: dec.stack, cause: null }); await drain(st);
-  { const aT = findS(st, p, uid); if (aT && !pa.ended && !st.winner) { S.s1AttackTargeted(st, p, aT, pa.targetKind, pa.targetUid); const dT = pa.targetKind === 'digimon' ? st.players[op].battle.find(x => x.uid === pa.targetUid) : null; if (dT) S.emitGameEvent(st, 'attackOnDigimon', { owner: p, stack: aT, cause: null, target: dT }); await drain(st); } } // UI parity (main.js enterRedirectTiming)
+  S.queueTriggersForStack(st, p, dec.stack, 'attack'); S.emitGameEvent(st, 'attack', { owner: p, stack: dec.stack, cause: null });
+  { const aT = findS(st, p, uid); if (aT && !st.winner) { S.s1AttackTargeted(st, p, aT, pa.targetKind, pa.targetUid); const dT = pa.targetKind === 'digimon' ? st.players[op].battle.find(x => x.uid === pa.targetUid) : null; if (dT) S.emitGameEvent(st, 'attackOnDigimon', { owner: p, stack: aT, cause: null, target: dT }); } } // UI parity (main.js enterRedirectTiming): every declaration trigger is queued BEFORE any resolves
+  await drain(st);
   const end = async () => { const s2 = findS(st, p, uid); st.attackCtx = null; if (s2) { S.s8AttackEnded(st, p, uid); S.queueTriggersForStack(st, p, s2, 'attackEnd'); S.emitGameEvent(st, 'attackEnd', { owner: p, stack: s2, cause: null }); } await drain(st); };
   if (st.winner || pa.ended || !findS(st, p, uid) || (pa.targetKind === 'digimon' && !findS(st, op, pa.targetUid))) { await end(); return { ended: true }; }
   if (opts.counter) { const r = S.activateCounter(st, op, opts.counter, pa); if (r.ok) { st.pending.push({ uid: 'ct' + Math.random(), player: op, cardId: opts.counter.cardId, stackUid: opts.counter.stackUid, tags: opts.counter.tags, text: opts.counter.body, resolved: false }); await drain(st); } }
