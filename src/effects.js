@@ -366,7 +366,8 @@ function moveEachEntries(ctx, instr) {
   for (const z of instr.from) {
     if (z !== 'sources') { (instr.zoneOwner === 'opp' ? state.players[ctx.opp] : pl)[z].forEach((id, i) => out.push({ z, i, id })); continue; }
     if (instr.srcOwn) { // "자신의 디지몬의 진화원에서 …": the evolution sources of ANY own Digimon (optionally only those matching srcFilter)
-      for (const s of [pl.raising, ...pl.battle].filter(Boolean)) if (ctx.S.card(s.cardId).category === 'digimon' && (!instr.srcFilter || matchesFilter(ctx.S, s, instr.srcFilter, state))) s.sources.forEach((id, i) => { if (i >= ctx.S.fdCount(s)) out.push({ z: 'sources', st: s, i, id }); });
+      // 3-4-7-5: 육성 에어리어의 디지몬은 육성 에어리어를 지정/참조하지 않는 효과의 대상이 아니다 -> 배틀 에어리어만
+      for (const s of pl.battle) if (ctx.S.card(s.cardId).category === 'digimon' && (!instr.srcFilter || matchesFilter(ctx.S, s, instr.srcFilter, state))) s.sources.forEach((id, i) => { if (i >= ctx.S.fdCount(s)) out.push({ z: 'sources', st: s, i, id }); });
       continue;
     }
     if (st) st.sources.forEach((id, i) => out.push({ z: 'sources', i, id }));
@@ -3211,7 +3212,7 @@ function parseConditionText(c) {
   if ((m = c.match(/^메모리가\s*상대\s*쪽의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
   if ((m = c.match(/^상대의\s*디지몬이\s*(있다면|없다면)$/))) return (ctx) => (digimonCount(ctx, opp(ctx)) > 0) === (m[1] === '있다면');
   if ((m = c.match(/^자신의\s*테이머가\s*(\d+)\s*명\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).battle.filter(s => cat(ctx, s.cardId) === 'tamer').length); }
-  if ((m = c.match(/^자신의\s*「([^」]+)」의\s*진화원이\s*(\d+)\s*장\s*이상\s*있다면$/))) return (ctx) => [own(ctx).raising, ...own(ctx).battle].filter(Boolean).some(s => ctx.S.effectiveInfo(ctx.state, s).names.includes(m[1]) && s.sources.length >= Number(m[2])); // EX2-053 "자신의 「마더 디·리퍼」의 진화원이 5장 이상 있을 때"
+  if ((m = c.match(/^자신의\s*「([^」]+)」의\s*진화원이\s*(\d+)\s*장\s*이상\s*있다면$/))) return (ctx) => [...own(ctx).battle].filter(Boolean).some(s => ctx.S.effectiveInfo(ctx.state, s).names.includes(m[1]) && s.sources.length >= Number(m[2])); // EX2-053 "자신의 「마더 디·리퍼」의 진화원이 5장 이상 있을 때"
   if ((m = c.match(/^자신의\s*테이머가\s*(있다면|없다면)$/))) return (ctx) => (own(ctx).battle.some(s => cat(ctx, s.cardId) === 'tamer')) === (m[1] === '있다면');
   // zone sizes: "자신/상대의 패/트래시/시큐리티가 N장 이하/이상(이라면|있다면)"
   if ((m = c.match(/^(자신|상대)의\s*(패|트래시|시큐리티)(?:가|에)?\s*(\d+)\s*장\s*(이하|이상)(?:이)?(?:라면|\s*있다면)$/))) {
