@@ -2144,9 +2144,14 @@ function renderUiChoice() {
 // centered modal instead of buried in the bottom actions bar, which could
 // be scrolled/collapsed out of view. Checked in render() before the
 // regular actions panel; whichever of these exists takes over the screen.
+const gameOverAt = { state: null, t: 0 };
 let gameOverSeen = null; // the state object whose result popup the player already closed
 function renderGameOverModal() {
-  if (gameOverSeen === state || sel.pendingAttack) return null; // 어택 결과(시큐리티 체크 연출)가 끝난 뒤에 띄운다
+  if (gameOverSeen === state) return null;
+  // 마지막 시큐리티 체크 연출을 잠깐(약 1.4초) 보여 준 뒤, 어택 창이 열려 있어도 그 위를 덮어 종료를 확실히 알린다
+  if (gameOverAt.state !== state) { gameOverAt.state = state; gameOverAt.t = Date.now(); }
+  const wait = 1400 - (Date.now() - gameOverAt.t);
+  if (wait > 0) { setTimeout(() => { if (state && state.winner) render(); }, wait + 30); return null; }
   const w = state.winner;
   const why = ((state.log.find(e => /승리|패배|투항|무승부/.test(String(e.msg))) || {}).msg || '').replace(/^🤖 CPU: /, '');
   const mine = cpuOn ? (w === 'p1' ? 'win' : w === 'draw' ? 'draw' : 'lose') : (w === 'draw' ? 'draw' : 'win');

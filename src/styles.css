@@ -727,7 +727,7 @@ body.pr-replay #app .board { overflow: auto; }
 }
 
 /* 게임 결과 팝업 */
-.go-backdrop { z-index: 200; }
+.go-backdrop { z-index: 400; position: fixed; inset: 0; background: rgba(0,0,0,.78); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; }
 .go-panel { text-align: center; padding: 24px 28px; min-width: min(360px, 88vw); max-width: 92vw; border: 2px solid var(--holo-accent); background: #0f141a; animation: go-pop .45s cubic-bezier(.2,1.4,.4,1) both; }
 .go-win { border-color: #ffd36a; box-shadow: 0 0 40px 6px rgba(255,211,106,.45); }
 .go-lose { border-color: #ff5a5a; box-shadow: 0 0 40px 6px rgba(255,90,90,.4); }
