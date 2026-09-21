@@ -1865,7 +1865,11 @@ function scriptFor(trigger) {
     const mainSeg = segments.find(seg => seg.tags.includes('메인'));
     if (mainSeg) return Effects.lookupCardSpecific(trigger.cardId, mainSeg.tags, mainSeg.body) || Effects.compileToScript(mainSeg.body); // bespoke 【메인】 scripts (BT25-093 …) must win over the generic compile
   }
-  return Effects.compileToScript(trigger.text);
+  // 16-17 《딜레이》 trigger sentence ("【자신의 턴】 …했을 때, 《딜레이》."): compiles to [] (the bullet is an optional cost-effect), which made the runner treat the
+  // queued trigger as "no script → 자동 인식 실패" and never prompt (유니크 엠블럼 안 터짐). A placeholder marks it runnable; runPendingScript's delay branch handles it.
+  const compiled = Effects.compileToScript(trigger.text);
+  if (!compiled.length && Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text)) return [{ op: 'delayTrigger' }];
+  return compiled;
 }
 
 // "[턴에 N회]"/"[턴 N회]" printed at the start of a segment's body caps how
