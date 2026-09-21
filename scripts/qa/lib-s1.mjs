@@ -67,7 +67,7 @@ export async function drain(st) {
       const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); let onceMark = null;
       if (om && t.stackUid) { const s1 = findS(st, t.player, t.stackUid); if (s1) { const key = S.onceLimitKey(t.cardId, t.tags); if (S.turnUsesRemaining(s1, key, Number(om[1])) <= 0) { S.resolvePending(st, t.uid); continue; } onceMark = { stack: s1, key }; } }
       if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, attack: () => st.attackCtx, endAttack() {}, choose: makeChoose(st) };
+      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {}, choose: makeChoose(st) };
       await Fx.runScript(script, ctx);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }
     } catch (e) { (st._qaErr = st._qaErr || []).push(String(e.stack || e).slice(0, 300)); }
