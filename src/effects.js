@@ -1099,9 +1099,11 @@ async function runOneCore(instr, ctx) {
       // (only makes sense if resting your own was actually an option).
       if (instr.target === 'either') {
         const entries = [
-          ...state.players[ctx.self].battle.map(s => ({ player: ctx.self, uid: s.uid })),
-          ...state.players[ctx.opp].battle.map(s => ({ player: ctx.opp, uid: s.uid })),
-        ];
+          ...state.players[ctx.self].battle.map(s => ({ player: ctx.self, uid: s.uid, s })),
+          ...state.players[ctx.opp].battle.map(s => ({ player: ctx.opp, uid: s.uid, s })),
+        ].filter(e => S.card(e.s.cardId).category === 'digimon' && (!instr.filter || matchesFilter(S, e.s, instr.filter, state))) // "디지몬" 대상: 테이머/옵션은 제외
+          .map(({ player, uid }) => ({ player, uid }));
+        if (!entries.length) break;
         const picked = await ctx.choose('pickStackAnySide', { entries, prompt: instr.prompt || '레스트시킬 디지몬 선택 (자신/상대 무관)' });
         if (picked) S.restStack(state, picked.player, picked.uid);
         break;
@@ -1168,7 +1170,7 @@ async function runOneCore(instr, ctx) {
       // same check the drag-drop digivolve path uses. Only stacks that
       // actually satisfy some printed condition are offered as choices.
       const pl = state.players[ctx.self];
-      const eligible = pl.battle.filter(s => ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, S.evoExtraArg(state, ctx.self, s), S.evolveTargetRestriction(state, ctx.self, s)).ok);
+      const eligible = pl.battle.filter(s => S.card(s.cardId).category === 'digimon' && ctx.E.canEvolveAny(s.cardId, ctx.sourceCardId, S.evoExtraArg(state, ctx.self, s), S.evolveTargetRestriction(state, ctx.self, s)).ok);
       if (!eligible.length) break;
       const targetUid = eligible.length === 1 ? eligible[0].uid
         : await ctx.choose('pickStack', { player: ctx.self, uids: eligible.map(s => s.uid), prompt: `《블래스트 진화》 — ${S.card(ctx.sourceCardId).nameKo}로 진화시킬 디지몬 선택` });
@@ -1482,7 +1484,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'skipUnsuspend': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.map(s => s.uid);
+      const uids = state.players[targetPlayer].battle.filter(s => S.card(s.cardId).category === 'digimon').map(s => s.uid); // 디지몬만 (테이머/옵션 제외)
       if (!uids.length) break;
       const uid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '액티브가 되지 않을 디지몬 선택' });
       if (uid) S.setSkipNextUnsuspend(state, targetPlayer, uid);
@@ -2604,7 +2606,8 @@ function compileInner(text) {
     // that combo off "이 효과로 자신의 디지몬이 레스트했다면", which only
     // makes sense if resting your own was actually an option).
     const target = m[1] ? (/상대/.test(m[1]) ? 'opponent' : 'self') : 'either';
-    for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'rest', target });
+    const lvPre = t.slice(0, m.index).match(/Lv\.\s*(\d+)\s*이하의\s*$/); // "Lv.6 이하의 디지몬 1마리를 레스트시킬 수 있다"
+    for (let i = 0; i < Number(m[2]); i++) script.push({ op: 'rest', target, ...(lvPre ? { filter: { levelMax: Number(lvPre[1]) } } : {}) });
   }
 
   // "[DP N 이하의] 상대의 디지몬/테이머 전부를 레스트시킨다" — mass rest.
