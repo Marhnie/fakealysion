@@ -5,9 +5,10 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const sh = (cmd, opts = {}) => execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts }).trim();
-const root = path.resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dry = process.argv.includes('--dry');
 const head = sh('git rev-parse --short HEAD', { cwd: root });
 if (sh('git status --porcelain -- src index.html data/cards.json data/cards_full.json', { cwd: root })) console.log('※ 커밋되지 않은 변경이 있습니다. 배포에는 포함되지 않습니다 (HEAD 기준).');
