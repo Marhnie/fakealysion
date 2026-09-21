@@ -936,6 +936,8 @@ function renderInner() {
   app.appendChild(renderLog());
   const modal = renderModal();
   if (modal) app.appendChild(modal);
+  app.classList.toggle('dock-left-open', !!app.querySelector('.dock-left'));
+  app.classList.toggle('dock-right-open', !!app.querySelector('.dock-right'));
   const newBoard = app.querySelector('.board');
   if (newBoard && prevScroll) newBoard.scrollTop = prevScroll;
   // vs CPU: at the start of MY turn bring my own area (hand + field) into view once — on small screens it sits below the CPU's board
@@ -2257,6 +2259,17 @@ function renderGameOverModal() {
   ]);
 }
 
+// 옆 도크: 발동 대기 중인 효과는 왼쪽, 어택 진행은 오른쪽 사이드에 붙여 필드를 가리지 않는다 (데스크톱은 필드가 도크만큼 옆으로 비켜 서고,
+// 모바일은 아래 시트로 나오며 ◀/▶ 로 접어 필드를 한눈에 볼 수 있다). 접은 상태는 panelsOpen.dockL / dockR.
+function dockPanel(side, title, bodyNodes, pillText) {
+  const key = side === 'left' ? 'dockL' : 'dockR';
+  if (panelsOpen[key] === false) return h('button', { className: `dock-pill dock-pill-${side}`, title: '눌러서 다시 펼치기', onClick: () => { panelsOpen[key] = true; render(); } }, pillText || title);
+  return h('div', { className: `dock dock-${side}`, role: 'complementary', 'aria-label': title }, [
+    h('div', { className: 'dock-head' }, [h('b', {}, title), h('button', { className: 'dock-x', title: '접어서 필드 보기', onClick: () => { panelsOpen[key] = false; render(); } }, side === 'left' ? '◀ 접기' : '접기 ▶')]),
+    h('div', { className: 'dock-body' }, bodyNodes),
+  ]);
+}
+
 function renderModal() {
   if (state.winner) return renderGameOverModal(); // 승패가 갈리면 결과 팝업 (닫으면 최종 필드를 읽기 전용으로 볼 수 있음; 상단 바에도 결과가 남는다)
   if (state.uiChoice && state.uiChoice.hold) return null; // waiting for the activation VFX to finish (ctxChoose) — nothing may pile on top of it
@@ -2276,7 +2289,7 @@ function renderModal() {
   const jogressUi = busy() ? null : renderJogressModal();
   if (jogressUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]), { key: 'jogress', title: '조그레스/DNA 진화', pill: '조그레스 선택 대기 (누르면 다시 열기)', cancelable: true });
   const pendingUi = renderPendingAttack();
-  if (pendingUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [pendingUi])]), { key: peekIdOf(sel.pendingAttack), title: '⚔ 공격 진행', pill: `⚔ 공격 진행 중: ${String(sel.pendingAttack.info || sel.pendingAttack.stage || '').replace(/\s+/g, ' ').slice(0, 34)} (누르면 다시 열기)`, cancelable: true });
+  if (pendingUi) { peekNone(); return dockPanel('right', '⚔ 공격 진행', [pendingUi], `⚔ 공격 진행: ${String(sel.pendingAttack.info || sel.pendingAttack.stage || '').replace(/\s+/g, ' ').slice(0, 24)}`); }
   peekNone();
   return null;
 }
@@ -2289,7 +2302,7 @@ function renderActions() {
   // else queued) must be dealt with before the Counter/Block/etc. attack-
   // flow UI is shown, not hidden behind it.
   const pendingEffectsUiEarly = renderPendingEffects();
-  if (pendingEffectsUiEarly) { return h('div', { className: 'actions actions-attention' }, [pendingEffectsUiEarly]); }
+  if (pendingEffectsUiEarly) { return h('div', { className: 'actions actions-attention actions-dock' }, [dockPanel('left', '⏳ 발동 대기 중인 효과', [pendingEffectsUiEarly], '⏳ 대기 효과')]); }
 
   const pendingEffectsUi = renderPendingEffects();
 
