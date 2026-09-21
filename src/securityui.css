@@ -109,7 +109,7 @@
 @keyframes sec-fanin { 0% { transform: translateY(-40px) rotate(-8deg); opacity: 0; } 100% { transform: none; opacity: 1; } }
 .sec-p1 .sec-pop, .sec-p1 .sec-reveal { left: 0; right: auto; }
 @media (max-width: 900px), (pointer: coarse) {
-  .field-row > .sec-zone { flex: 0 0 auto; width: 100%; }
+  .field-row > .sec-zone { flex: 0 0 84px; width: 84px; }
   .sec-stack { height: calc(var(--n, 1) * 4px + 34px); }
   .sec-card { top: calc(var(--i) * 4px); }
 }

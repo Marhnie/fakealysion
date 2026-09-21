@@ -776,3 +776,57 @@ body.pr-replay #app .board { overflow: auto; }
 .atk-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 14px; } .atk-actor { font-size: 12px; color: var(--holo-accent); font-weight: 700; }
 .atk-desc { font-size: 12.5px; line-height: 1.4; } .atk-next { font-size: 11.5px; color: var(--muted); }
 @media (max-width: 640px) { .atk-lbl { font-size: 10px; } .atk-desc { font-size: 12px; } }
+
+/* ===== 옆 도크: 발동 대기 효과(왼쪽) / 어택 진행(오른쪽) — 필드를 가리지 않는다 ===== */
+.actions-dock { padding: 0 !important; border: 0 !important; max-height: 0 !important; overflow: visible !important; margin: 0 !important; animation: none; background: none; }
+.dock { position: fixed; top: 48px; bottom: 0; width: 340px; z-index: 45; background: #0f1115; overflow-y: auto; padding: 0 12px 14px; box-shadow: 0 0 24px rgba(0,0,0,.55); display: flex; flex-direction: column; gap: 8px; }
+.dock-left { left: 0; border-right: 2px solid var(--holo-accent); }
+.dock-right { right: 32px; border-left: 2px solid var(--holo-accent); }
+#app.log-open .dock-right { right: 300px; }
+.dock-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0 6px; background: #0f1115; border-bottom: 1px solid var(--holo-line); font-size: 13px; }
+.dock-x { min-height: 28px !important; padding: 2px 8px !important; font-size: 11px !important; }
+.dock-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dock .modal-panel, .dock .effect-box { max-width: 100%; }
+.dock-pill { position: fixed; bottom: 12px; z-index: 46; border: 1px solid var(--holo-accent); background: #14161a; color: var(--holo-accent); border-radius: 18px; font-weight: 700; min-height: 36px; padding: 4px 12px; box-shadow: 0 4px 14px rgba(0,0,0,.6); max-width: 60vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-pill-left { left: 12px; } .dock-pill-right { right: 44px; }
+/* 도크가 열려 있으면 필드가 옆으로 비켜서 가려지지 않는다 */
+#app.dock-left-open .board, #app.dock-left-open .actions:not(.actions-dock) { margin-left: 340px; }
+#app.dock-right-open .board { margin-right: 372px; }
+#app.dock-right-open.log-open .board { margin-right: 640px; }
+#app.dock-right-open .actions:not(.actions-dock) { margin-right: 372px; }
+#app.dock-right-open.log-open .actions:not(.actions-dock) { margin-right: 640px; }
+@media (max-width: 1300px) and (min-width: 901px) { .dock { width: 300px; } #app.dock-left-open .board, #app.dock-left-open .actions:not(.actions-dock) { margin-left: 300px; } #app.dock-right-open .board { margin-right: 332px; } #app.dock-right-open.log-open .board { margin-right: 600px; } }
+
+@media (max-width: 900px), (pointer: coarse) {
+  /* 모바일: 도크는 아래 시트. ◀/▶ 로 접으면 작은 알약만 남아 필드가 한눈에 보인다 */
+  .dock { top: auto; left: 0 !important; right: 0 !important; bottom: 0; width: auto; max-height: 34vh; border: 0 !important; border-top: 2px solid var(--holo-accent) !important; z-index: 58; padding: 0 10px calc(10px + env(safe-area-inset-bottom)); }
+  #app.dock-left-open .board, #app.dock-right-open .board, #app.dock-left-open .actions:not(.actions-dock), #app.dock-right-open .actions:not(.actions-dock) { margin-left: 0 !important; margin-right: 0 !important; }
+  #app.dock-left-open .board, #app.dock-right-open .board { padding-bottom: 34vh; }
+  #app.dock-left-open .dock-right { display: none; } /* 대기 효과가 먼저 처리돼야 어택이 진행된다 (11-1-4) */
+  .dock-pill { bottom: calc(10px + env(safe-area-inset-bottom)); } .dock-pill-right { right: 12px; }
+  .dock .atk-desc { font-size: 11.5px; } .dock .atk-next { display: none; }
+  .dock label.meta { font-size: 11px; }
+
+  /* ===== 모바일 필드를 한눈에: 카드/여백을 줄이고 시큐리티를 옆 열로 ===== */
+  .zone-row { flex-direction: row; flex-wrap: nowrap; align-items: flex-start; gap: 4px; }
+  .zone-row > .zone:first-child { flex: 0 0 96px; }
+  .zone-row > .zone:last-child { flex: 1 1 0; min-width: 0; }
+  .zone-pill { writing-mode: horizontal-tb; white-space: nowrap; font-size: 9px; padding: 1px 6px; } .zone-pill .desk, .zone-pill .touch-only { display: none; }
+  .zone .card-chip, .zone .stack-wrap { width: 44px; }
+  .zone .card-chip .nm { font-size: 9px; } .zone .card-chip .meta { display: none; }
+  .zone .empty-slot { width: 44px; height: 28px; font-size: 0; }
+  .zone .stack-list { gap: 3px; flex-wrap: wrap; }
+  .hand-list { flex-wrap: nowrap; overflow-x: auto; } .hand-list .card-chip { width: 54px; flex: 0 0 auto; }
+  /* 시큐리티는 옆 열(P1 왼쪽 / P2 오른쪽, 실제 대전 배치), 덱·트래시는 그 아래 한 줄 */
+  .field-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 4px; align-items: start; }
+  .field-row:has(> .sec-p1) { grid-template-columns: 84px minmax(0, 1fr); }
+  .field-row > .field-zones { grid-column: 1; grid-row: 1; min-width: 0; }
+  .field-row:has(> .sec-p1) > .field-zones { grid-column: 2; }
+  .field-row > .sec-zone { grid-row: 1; grid-column: 2; width: auto !important; flex: none !important; }
+  .field-row > .sec-p1 { grid-column: 1 !important; }
+  .field-row > .pile-rail { grid-column: 1 / -1; grid-row: 2; flex-direction: row; gap: 4px; }
+  .pile-rail .pile-chip { min-width: 44px; min-height: 28px; padding: 1px 4px; }
+  .player-panel { padding: 3px 4px; gap: 3px; }
+  .player-header { min-height: 20px; font-size: 11px; }
+  .sec-zone .sec-tags, .sec-zone .sec-label { display: none; }
+}
