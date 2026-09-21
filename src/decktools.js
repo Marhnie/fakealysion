@@ -173,10 +173,12 @@ export function judgeHand(model, idxs) {
 export function createBatch(deck, env, o = {}) {
   const model = o.model || buildSimModel(deck, env);
   const N = model.ids.length, total = o.n || 10000, rng = o.rng || Math.random, handN = o.handSize || 5, turns = o.turns == null ? 3 : o.turns;
-  const targetId = o.targetId || null;
+  const targetIds = (o.targetIds && o.targetIds.length ? o.targetIds : (o.targetId ? [o.targetId] : [])).filter(Boolean).slice(0, 3); // 카드 지정 최대 3장
+  const targetId = targetIds[0] || null;
+  const tAcc = targetIds.map(() => ({ open: 0, turns: 0 })); let allOpen = 0, allTurns = 0;
   const arr = new Int32Array(Math.max(N, 1));
   const acc = { n: 0, lv3: 0, lv2: 0, noLow: 0, blocker: 0, line: 0, lineEgg: 0, tamers: 0, options: 0, good: 0, afterMull: 0, tgtOpen: 0, tgtTurns: 0 };
-  const hasTarget = (idxs) => targetId != null && idxs.some(i => model.ids[i] === targetId);
+  const hasTarget = (idxs, id = targetId) => id != null && idxs.some(i => model.ids[i] === id);
   const step = (k) => {
     if (N < handN) { acc.n = total; return true; }
     const end = Math.min(total, acc.n + k);
@@ -188,7 +190,12 @@ export function createBatch(deck, env, o = {}) {
       acc.tamers += r.tamers; acc.options += r.options;
       if (r.good) { acc.good++; acc.afterMull++; }
       else { drawIdx(rng, N, handN, arr); if (judgeHand(model, Array.from(arr.subarray(0, handN))).good) acc.afterMull++; } // mulligan the bad hand
-      if (targetId) { if (hasTarget(hand)) acc.tgtOpen++; if (hasTarget(seen)) acc.tgtTurns++; }
+      if (targetId) {
+        if (hasTarget(hand)) acc.tgtOpen++; if (hasTarget(seen)) acc.tgtTurns++;
+        let ao = true, at = true;
+        targetIds.forEach((id, k) => { const o1 = hasTarget(hand, id), t1 = hasTarget(seen, id); if (o1) tAcc[k].open++; if (t1) tAcc[k].turns++; ao = ao && o1; at = at && t1; });
+        if (ao) allOpen++; if (at) allTurns++;
+      }
     }
     return acc.n >= total;
   };
@@ -196,7 +203,8 @@ export function createBatch(deck, env, o = {}) {
     const n = Math.max(1, acc.n), p = (x) => x / n;
     return { n: acc.n, total, pLv3: p(acc.lv3), pLv2: p(acc.lv2), pNoLow: p(acc.noLow), pBlocker: p(acc.blocker), pLine: p(acc.line), pLineEgg: p(acc.lineEgg),
       avgTamers: acc.tamers / n, avgOptions: acc.options / n, pGood: p(acc.good), pGoodAfterMulligan: p(acc.afterMull), mulliganGain: p(acc.afterMull) - p(acc.good),
-      pTargetOpen: p(acc.tgtOpen), pTargetTurns: p(acc.tgtTurns), hatchable: model.digN > 0 };
+      pTargetOpen: p(acc.tgtOpen), pTargetTurns: p(acc.tgtTurns), hatchable: model.digN > 0,
+      targets: targetIds.map((id, k) => ({ id, open: p(tAcc[k].open), turns: p(tAcc[k].turns) })), pAllOpen: p(allOpen), pAllTurns: p(allTurns) };
   };
   return { step, result, model, done: () => acc.n >= total };
 }

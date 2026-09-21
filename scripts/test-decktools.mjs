@@ -67,6 +67,11 @@ ok(T.mulberry32(42)() === T.mulberry32(42)(), 'seeded rng deterministic');
 const tid = Object.keys(deck.main)[0], tc = deck.main[tid];
 const res = T.runBatchSync(deck, env, { n: 20000, rng: T.mulberry32(7), targetId: tid });
 ok(res.n === 20000, 'ran all hands');
+// 카드 지정 3장: 각각 이론값에 근접, 전부 동시에 오는 확률은 각각보다 작거나 같고 독립 근사값과 비슷
+{ const ids = Object.keys(deck.main).slice(0, 3); const r3 = T.runBatchSync(deck, env, { n: 100000, rng: T.mulberry32(11), targetIds: ids });
+  ok(r3.n === 100000 && r3.targets.length === ids.length, '3 targets, 100k hands');
+  ids.forEach((id, k) => near(r3.targets[k].open, T.pSeeCard(deck.main[id], 5, st.mainN), 0.006, 'target ' + k + ' opening ~ exact'));
+  ok(r3.pAllOpen <= Math.min(...r3.targets.map(t => t.open)) + 1e-9 && r3.pAllTurns <= Math.min(...r3.targets.map(t => t.turns)) + 1e-9, 'joint <= each'); }
 for (const k of ['pLv3', 'pLv2', 'pNoLow', 'pBlocker', 'pLine', 'pLineEgg', 'pGood', 'pGoodAfterMulligan']) ok(res[k] >= 0 && res[k] <= 1, k + ' in [0,1]');
 ok(res.pGoodAfterMulligan >= res.pGood, 'mulligan never hurts');
 near(res.pLv3, T.hyperAtLeast(st.mainN, st.lv[3], 5, 1), 0.012, 'sim P(>=1 Lv3) ~ exact');

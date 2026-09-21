@@ -15,7 +15,7 @@ export function createDeckAnalysis(ctx) {
   const open = (() => { try { return JSON.parse(localStorage.getItem('digimon_dt_open_v1') || '{}'); } catch { return {}; } })();
   const saveOpen = () => { try { localStorage.setItem('digimon_dt_open_v1', JSON.stringify(open)); } catch { /* ignore */ } };
   const bodies = {}, heads = {};
-  let sample = null, batch = null, batchTok = 0, batchRes = null, batchTarget = '', diffWith = '', timer = null;
+  let sample = null, batch = null, batchTok = 0, batchRes = null, batchTarget = '', batchTargets = ['', '', ''], diffWith = '', timer = null;
 
   const nm = (id) => S.card(id).nameKo;
   const link = (id, label) => h('button', { className: 'dt-link', title: `${nm(id)} (${id}) 미리보기`, onClick: () => ctx.openPreview(id) }, label || `${nm(id)}`);
@@ -103,10 +103,16 @@ export function createDeckAnalysis(ctx) {
     }
     // batch
     const cardIds = Object.keys(d.main);
-    const sel = h('select', { className: 'db-scope', title: '특정 카드가 손패에 올 확률' }, [h('option', { value: '' }, '카드 지정 안 함'), ...cardIds.map(id => h('option', { value: id }, `${nm(id)} ×${d.main[id]}`))]);
-    sel.value = cardIds.includes(batchTarget) ? batchTarget : '';
-    sel.addEventListener('change', () => { batchTarget = sel.value; });
-    const nSel = h('select', { className: 'db-scope' }, [1000, 10000, 50000].map(n => h('option', { value: n }, `${n.toLocaleString()}회`)));
+    // 카드 지정: 최대 3장 (각각의 확률 + 전부 동시에 오는 확률)
+    const sels = [0, 1, 2].map(k => {
+      const s1 = h('select', { className: 'db-scope', title: `특정 카드가 손패에 올 확률 (지정 ${k + 1}/3)` }, [h('option', { value: '' }, k === 0 ? '카드 지정 안 함' : `카드 지정 ${k + 1} (선택)`), ...cardIds.map(id => h('option', { value: id }, `${nm(id)} ×${d.main[id]}`))]);
+      s1.value = cardIds.includes(batchTargets[k]) ? batchTargets[k] : '';
+      s1.addEventListener('change', () => { batchTargets[k] = s1.value; });
+      return s1;
+    });
+    const sel = sels[0];
+    const pickedIds = () => [...new Set(sels.map(x => x.value).filter(Boolean))];
+    const nSel = h('select', { className: 'db-scope' }, [1000, 10000, 50000, 100000].map(n => h('option', { value: n }, `${n.toLocaleString()}회`)));
     nSel.value = '10000';
     const prog = h('div', { className: 'dt-prog', style: 'display:none' }, [h('div', { className: 'dt-prog-in' })]);
     const out = h('div', { className: 'dt-batch-out' });
@@ -115,17 +121,18 @@ export function createDeckAnalysis(ctx) {
       if (T.sumCounts(d.main) < 6) { ctx.showToast('메인덱에 카드가 6장 이상 필요합니다'); return; }
       const model = T.buildSimModel(d, env);
       const tok = ++batchTok; const N = Number(nSel.value);
-      batch = T.createBatch(d, env, { n: N, targetId: sel.value || null, model });
+      const tIds = pickedIds();
+      batch = T.createBatch(d, env, { n: N, targetId: tIds[0] || null, targetIds: tIds, model });
       prog.style.display = ''; out.replaceChildren();
       const chunk = () => {
         if (tok !== batchTok) return;
         const done = batch.step(1000);
         prog.firstChild.style.width = (batch.result().n / N) * 100 + '%';
-        if (done) { batchRes = { r: batch.result(), target: sel.value, N, model }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else nextTick(chunk);
+        if (done) { batchRes = { r: batch.result(), target: tIds[0] || '', targets: tIds, N, model }; prog.style.display = 'none'; renderBatch(out, batchRes, d); } else nextTick(chunk);
       };
       nextTick(chunk);
     } }, '▶ 시뮬레이션 실행');
-    kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위, 1회 멀리건 가정)', h('div', { className: 'actions-row' }, [nSel, sel, runBtn]), prog, out));
+    kids.push(sect('오프닝 핸드 시뮬레이션 (5장 · 무작위, 1회 멀리건 가정)', h('div', { className: 'actions-row' }, [nSel, ...sels, runBtn]), prog, out));
     box.replaceChildren(...kids);
     if (batchRes && batchRes.N && !out.firstChild && prog.style.display === 'none') renderBatch(out, batchRes, d);
   }
@@ -143,9 +150,15 @@ export function createDeckAnalysis(ctx) {
       row('멀리건 후 키핑 가능', r.pGoodAfterMulligan, `개선 ${r.mulliganGain >= 0 ? '+' : ''}${pct(r.mulliganGain)}p`),
     ];
     if (b.target) {
-      const K = d.main[b.target] || 0;
-      rows.push(row(`${nm(b.target)} — 오프닝 5장`, r.pTargetOpen, `이론값 ${pct(ex(K, 5))}`));
-      rows.push(row(`${nm(b.target)} — 3턴째까지 (5+3장)`, r.pTargetTurns, `이론값 ${pct(ex(K, 8))}`));
+      for (const t of (r.targets && r.targets.length ? r.targets : [{ id: b.target, open: r.pTargetOpen, turns: r.pTargetTurns }])) {
+        const K = d.main[t.id] || 0;
+        rows.push(row(`${nm(t.id)} — 오프닝 5장`, t.open, `이론값 ${pct(ex(K, 5))}`));
+        rows.push(row(`${nm(t.id)} — 3턴째까지 (5+3장)`, t.turns, `이론값 ${pct(ex(K, 8))}`));
+      }
+      if (r.targets && r.targets.length > 1) {
+        rows.push(row(`지정 ${r.targets.length}장 전부 — 오프닝 5장`, r.pAllOpen, '동시에 한 손패에'));
+        rows.push(row(`지정 ${r.targets.length}장 전부 — 3턴째까지 (5+3장)`, r.pAllTurns, '동시에'));
+      }
     }
     out.replaceChildren(
       h('div', { className: 'meta' }, `${r.n.toLocaleString()}회 시뮬레이션 결과 · 평균 테이머 ${r.avgTamers.toFixed(2)}장 · 평균 옵션 ${r.avgOptions.toFixed(2)}장`),
