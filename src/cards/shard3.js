@@ -390,7 +390,7 @@ async function destroyByLevel(ctx, highest) {
   if (t) destroy(ctx, ctx.opp, t);
 }
 const boardCount = (ctx, p) => PL(ctx, p).battle.filter(s => isDig(s) || isTam(s)).length;
-sc('EX5-063::등장 시', [{ op: 'condition', if: { test: (ctx) => boardCount(ctx, ctx.opp) >= boardCount(ctx, ctx.self) }, then: [fn(async (ctx) => { await destroyByLevel(ctx, true); await destroyByLevel(ctx, false); })], else: [] }]);
+sc('EX5-063::등장 시', [{ op: 'condition', if: { test: (ctx) => boardCount(ctx, ctx.opp) >= boardCount(ctx, ctx.self) }, then: [fn(async (ctx) => { await destroyByLevel(ctx, true); })], else: [] }, fn(async (ctx) => { await destroyByLevel(ctx, false); })]); // QA-S3 Q3666: "그 후" (lowest-Lv deletion) resolves even when the first sentence's "~라면" condition fails
 
 // EX5-064 코우＆사요 등장 시/메인: rest this tamer + move a 라이트 팽/나이트 클로 digimon's top card to the bottom of its own sources → free evolve
 function rotateTopToBottom(ctx, p, st) {

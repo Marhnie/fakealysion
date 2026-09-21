@@ -1,0 +1,25 @@
+
+=== test-all summary ===
+PASS  check-syntax               10.8s  syntax OK (124 files)
+PASS  test-ace.mjs                0.4s  ALL PASS
+PASS  test-census-regress.mjs     0.4s  RESULT: OK
+PASS  test-cpu-search.mjs       228.9s  ALL OK
+PASS  test-cpu.mjs               11.5s  RESULT: OK
+PASS  test-cs-evolution.mjs       0.5s  ALL PASS 565
+PASS  test-dbsearch.mjs           0.3s  dbsearch tests OK
+PASS  test-deckimport.mjs         0.3s  deckimport tests OK
+PASS  test-decktools.mjs          0.4s  decktools tests OK (76 assertions)
+PASS  test-hunt-regress.mjs       0.4s  RESULT: OK
+PASS  test-immune-grants.mjs      0.4s  ALL PASS (95 assertions)
+PASS  test-optional-cost.mjs      1.4s  optional-cost test: 659 passed, 0 failed
+PASS  test-oracle-regress.mjs     0.4s  RESULT: OK
+PASS  test-parallels.mjs          0.5s  80
+PASS  test-raising-area.mjs       1.8s  cards probed 3520; violations 0 on 0 cards
+PASS  test-rematch-driver.mjs     2.7s  rematch driver test OK — first action in new game: play
+PASS  test-snapshot.mjs          18.2s  ALL OK
+PASS  test-ui-regress.mjs         0.3s  ui-regress OK
+PASS  audit-effects               2.3s  100.0%
+PASS  soak 60                     1.1s  0 distinct errors
+PASS  fuzz 200                    4.8s  0 findings, 40 games/3968 actions
+
+ALL PASSED (21 steps)

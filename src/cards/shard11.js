@@ -618,7 +618,7 @@ sc('EX5-025::진화 시', async (ctx) => {
     const idxs = await S.chooseSourceIdxs(state, ctx.opp, t, n, ctx.choose, null, `파기할 진화원 ${n}장 선택`);
     S.trashEvoSources(state, ctx.opp, t.uid, n, 'bottom', idxs);
   }
-  for (const s of digs(state, ctx.opp).filter(x => !x.sources.length)) S.preventRest(state, ctx.opp, s.uid, oppEnd(state, ctx.self));
+  (state.s3RestLocks ||= []).push({ owner: ctx.opp, until: oppEnd(state, ctx.self), kind: 'noSources' }); // QA-S3 Q3586/3587: covers Digimon that enter later; released once a source is gained
 });
 SCRIPTS['EX5-025::어택 시'] = SCRIPTS['EX5-025::진화 시'];
 

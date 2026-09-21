@@ -1,0 +1,10 @@
+import * as fs from 'fs';
+import * as S from '../../src/state.js';
+global.fetch = async (url) => ({ json: async () => JSON.parse(fs.readFileSync(url, 'utf8')) });
+await S.loadData();
+const a=JSON.parse(fs.readFileSync('data/rulings/slice6.json','utf8'));
+const ids=[...new Set(a.flatMap(x=>[x.card,...x.cards]).map(c=>c.split(' ')[0]))];
+const miss=ids.filter(i=>!S.CARDS[i]);
+console.log(ids.length,'missing',miss.length,miss.join(','));
+const bySet={};for(const i of miss){const s=i.split('-')[0];bySet[s]=(bySet[s]||0)+1}console.log(bySet);
+const cnt={};for(const x of a){const c=x.card.split(' ')[0];if(!S.CARDS[c])cnt[c]=(cnt[c]||0)+1}console.log('qs on missing',Object.values(cnt).reduce((a,b)=>a+b,0));

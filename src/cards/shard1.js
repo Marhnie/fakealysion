@@ -281,6 +281,7 @@ async function evolveInteractive(ctx, o) {
 }
 async function restOppCard(ctx) {
   const st = await pickWhere(ctx, ctx.opp, s => ['digimon', 'tamer'].includes(C(s.cardId).category), '레스트시킬 상대의 디지몬 또는 테이머 선택', 'rest');
+  ctx._restWasActive = !!st && !st.suspended; // official Q&A (BT8-102): the "does not become active" clause binds only cards this effect actually rested
   if (st) S.restStack(ctx.state, ctx.opp, st.uid);
   return st;
 }
@@ -887,7 +888,7 @@ SCRIPTS['BT8-102::메인'] = [fn(async (ctx) => {
   S.restStack(ctx.state, me, own.uid);
   if (!own.suspended) return;
   const st = await restOppCard(ctx);
-  if (st && st.suspended) S.setSkipNextUnsuspend(ctx.state, ctx.opp, st.uid);
+  if (st && st.suspended && ctx._restWasActive) S.setSkipNextUnsuspend(ctx.state, ctx.opp, st.uid);
 })];
 const restOppSecurity = [fn(async (ctx) => { await restOppCard(ctx); })];
 SCRIPTS['BT8-102::시큐리티'] = restOppSecurity;
@@ -1264,14 +1265,14 @@ function paySources(state, hp, holder, n, pred) {
 }
 const canPaySources = (holder, n, pred) => holder.sources.filter(pred).length >= n;
 // every distinct choice of which n matching sources to trash is its own candidate for the player (S.hookPreventLeave / preventLeaveOptions)
-const survive = (causeOk, nameOk, n, pred) => (state, hp, holder, target, tp, cause, mode) => {
+const survive = (causeOk, nameOk, n, pred, comboOk) => (state, hp, holder, target, tp, cause, mode) => {
   if (target !== holder || !causeOk(cause) || !nameOk(holder)) return [];
   const p = typeof pred === 'function' ? pred : () => true;
   const elig = holder.sources.map((id, i) => i).filter(i => p(holder.sources[i], holder));
   const combos = [], seen = new Set();
   const rec = (start, acc) => {
     if (combos.length >= 24) return;
-    if (acc.length === n) { const key = acc.map(i => holder.sources[i]).sort().join(); if (!seen.has(key)) { seen.add(key); combos.push(acc.slice()); } return; }
+    if (acc.length === n) { if (comboOk && !comboOk(acc.map(i => holder.sources[i]))) return; const key = acc.map(i => holder.sources[i]).sort().join(); if (!seen.has(key)) { seen.add(key); combos.push(acc.slice()); } return; }
     for (let k = start; k < elig.length; k++) { acc.push(elig[k]); rec(k + 1, acc); acc.pop(); }
   };
   rec(0, []);
@@ -1283,7 +1284,7 @@ const survive = (causeOk, nameOk, n, pred) => (state, hp, holder, target, tp, ca
   } }));
 };
 D('BT5-086', '서로의 턴', '소멸할 때', { preventLeaveOptions: survive(c => c === 'effect', () => true, 1, id => C(id).category === 'digimon' && lvOf(id) === 6) });
-const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레이몬') || nameHas(h.cardId, '오메가몬'), 2, (id, h) => lvOf(id) === lvOf(h.cardId));
+const graySurvive = (causeOk) => survive(causeOk, h => nameHas(h.cardId, '그레이몬') || nameHas(h.cardId, '오메가몬'), 2, null, ids => lvOf(ids[0]) === lvOf(ids[1])); // official Q&A (BT9-012): "Lv.이 같은 카드 2장" = two sources sharing a Lv. with EACH OTHER, not the top card's Lv.
 DI('BT9-012', '서로의 턴', '소멸할 때', { preventLeaveOptions: graySurvive(c => c === 'effect' || c === 'ownEffect') });
 DI('P-072', '서로의 턴', '소멸하거나', { preventLeaveOptions: graySurvive(c => c === 'effect') });
 D('BT9-044', '서로의 턴', '소멸할 때', { preventLeave: (state, hp, holder, target, tp, cause, mode) => {

@@ -95,7 +95,7 @@ sc('EX10-067::자신의 턴', async (ctx) => {
 
 // EX11-003 / EX11-004 (digitama inherited): 앞면 시큐리티 이벤트
 HK('EX11-003', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { faceUpSecurityAdded: (state, hp, h, info) => info.owner === hp && hasT(C(info.cardId), '로얄 베이스') } });
-HK('EX11-004', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { faceUpSecurityAdded: (state, hp, h, info) => info.owner !== hp } });
+HK('EX11-004', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { faceUpSecurityAdded: (state, hp, h, info) => info.owner !== hp, faceUpSecurityFlipped: (state, hp, h, info) => info.owner !== hp } }); // Q5789: a face-down card turned face-up also increases their face-up security
 // EX11-028 inherited: 이 디지몬이 배틀에서 승리했을 때, 메모리 +1
 HK('EX11-028', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리했을 때', limit: 1, events: { battleWin: (state, hp, h, info) => info.owner === hp && info.stack === h } });
 // EX11-042: 이 디지몬이 링크했을 때, 등장 코스트 5 이하의 상대 디지몬 1마리를 소멸
@@ -357,7 +357,7 @@ sc('EX12-052::진화 시@DP +3000하고', async (ctx) => {
   const a = await pickStack(ctx, ctx.self, digs(state, ctx.self), 'DP +3000 할 자신의 디지몬 선택');
   if (!a) return;
   S.modifyDP(state, ctx.self, a.uid, 3000, 'opponentTurn');
-  if (!digs(state, o).length || !(await ask(ctx, `${C(a.cardId).nameKo}와(과) 상대의 디지몬 1마리로 배틀할까요?`))) return;
+  if (!digs(state, o).length) return; // slice6 G186 (official Q6836): after the DP bonus the battle cannot be declined (as far as possible)
   const t = await pickStack(ctx, o, digs(state, o), '배틀할 상대의 디지몬 선택');
   if (!t) return;
   S.resolveDigimonBattle(state, ctx.self, a.uid, t.uid);

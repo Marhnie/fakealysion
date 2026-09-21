@@ -100,7 +100,7 @@ sc('BT25-077::서로의 턴', async (ctx, R) => {
 hk('BT25-077', { tag: '__handPlay', selfPlayDiscount: (state) => (['p1', 'p2'].reduce((n, p) => n + digs(state, p).reduce((m, s) => m + (C(s.cardId).level || 0), 0), 0) >= 12 ? -5 : 0) });
 
 // ------------------------------------------------------------------ BT26-045 그랜쿠가몬: 등장 코스트 -4 while own hand is smaller than the opponent's; 【자신의 턴】 곤충형/타이탄족 own digimon get 《연계》《관통》《볼텍스》
-hk('BT26-045', { tag: '__handPlay', selfPlayDiscount: (state, hp) => { const h = state.players[hp].hand.slice(); const i = h.indexOf('BT26-045'); if (i >= 0) h.splice(i, 1); return h.length < state.players[opp(hp)].hand.length ? -4 : 0; } });
+hk('BT26-045', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (state.players[hp].hand.length < state.players[opp(hp)].hand.length ? -4 : 0) }); // slice6 G261: the card being declared is still in hand and counts (equal sizes -> no discount)
 hk('BT26-045', { tag: '자신의 턴', has: '《연계》', grantKw: (state, hp, h, t) => (C(t.cardId).category === 'digimon' && S.ownerOfStack(state, t) === hp && (C(t.cardId).types || []).some((x) => x === '곤충형' || x === '타이탄족') ? ['연계', '관통', '볼텍스'] : []) });
 
 // ------------------------------------------------------------------ BT26-015 부텐몬: 【자신의 턴】 [턴1회] 덱이 자신의 효과로 늘어났을 때: own digimon 1 DP +3000 & may attack with it; inherited 【서로의 턴】: 「크로노몬」 기술 디지몬 액티브

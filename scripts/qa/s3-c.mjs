@@ -1,0 +1,2 @@
+import { S, C } from './s3lib.mjs';
+for (const id of process.argv.slice(2)) { const c = C(id); if(!c){console.log(id,'MISSING');continue;} console.log(id, c.nameKo, c.category, 'Lv'+c.level, 'c'+c.cost, 'dp'+c.dp, JSON.stringify(c.colors), (c.types||[]).join('/'), '| evoN', JSON.stringify(c.evoNormal), '\n  E:', (c.effectKo||'').replace(/\n/g,' ⏎ '), '\n  I:', (c.inheritedKo||'').replace(/\n/g,' ⏎ ')); }

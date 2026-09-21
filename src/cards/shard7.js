@@ -1055,7 +1055,7 @@ SCRIPTS['EX11-011::등장 시'] = [F(async (ctx) => {
   }
   const keep = [];
   for (const who of [self, ctx.opp]) {
-    const ds = digimonsOf(state, who);
+    const ds = digimonsOf(state, who).filter((s) => !(C(s.cardId).isToken || /TOKEN/i.test(String(s.cardId)))); // Q5796: tokens have no play cost, they cannot be "the highest-cost digimon"
     if (!ds.length) continue;
     const max = Math.max(...ds.map((s) => C(s.cardId).cost || 0));
     const top = ds.filter((s) => (C(s.cardId).cost || 0) === max);
@@ -1548,8 +1548,9 @@ SCRIPTS['EX11-046::등장 시'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const ds = digimonsOf(state, ctx.opp);
   if (ds.length) {
-    const max = Math.max(...ds.map((s) => C(s.cardId).cost || 0));
-    const keep = await pickStack(ctx, ctx.opp, ds.filter((s) => (C(s.cardId).cost || 0) === max), '남길 (등장 코스트가 가장 높은) 상대 디지몬 선택', { mandatory: true });
+    const costed = ds.filter((s) => !(C(s.cardId).isToken || /TOKEN/i.test(String(s.cardId)))); // Q5895: tokens have no play cost -> not selectable; with only tokens ALL get deleted
+    const max = costed.length ? Math.max(...costed.map((s) => C(s.cardId).cost || 0)) : null;
+    const keep = costed.length ? await pickStack(ctx, ctx.opp, costed.filter((s) => (C(s.cardId).cost || 0) === max), '남길 (등장 코스트가 가장 높은) 상대 디지몬 선택', { mandatory: true }) : null;
     for (const s of ds) if (s !== keep) destroyIt(ctx, ctx.opp, s);
   }
   const h = holderOf(ctx);

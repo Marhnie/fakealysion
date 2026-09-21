@@ -1,0 +1,2 @@
+import { S } from './lib-s4.mjs';
+for (const id of process.argv.slice(2)) { const c = S.CARDS[id]; if (!c) { console.log(id, 'MISSING'); continue; } console.log(`## ${id} ${c.nameKo} [${c.category} L${c.level ?? '-'} c${c.cost ?? ''} dp${c.dp ?? ''} ${(c.colors||[]).join('/')}] ${(c.types||[]).join(',')}\n E: ${c.effectKo}\n I: ${c.inheritedKo || ''}${c.evoNormal ? '\n evo: ' + JSON.stringify(c.evoNormal) : ''}${c.evoSpecial ? '\n evoS: ' + JSON.stringify(c.evoSpecial) : ''}`); }

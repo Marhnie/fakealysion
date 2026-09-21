@@ -152,7 +152,12 @@ export function grantEffect(state, stack, { trigger, label, until }) {
 }
 let pendSeq = 1;
 export function queueGranted(state, p, stack, eventKind) {
-  if (!stack || !stack.s2Granted) return;
+  if (!stack) return;
+  for (const g of (state.s3LateGrants || [])) { // QA-S3 Q3256: "전부에게" grants also cover Digimon that entered after the grant
+    if (g.owner !== p || g.trigger !== eventKind || state.turnNumber > g.until || g.given.includes(stack.uid) || C(stack.cardId).category !== 'digimon') continue;
+    state.pending.push({ uid: 's2g' + (pendSeq++), player: p, cardId: 'S2-GRANT', stackUid: stack.uid, tags: ['부여:' + g.label], text: g.label, resolved: false, watcher: true });
+  }
+  if (!stack.s2Granted) return;
   for (const g of stack.s2Granted) {
     if (g.trigger !== eventKind || state.turnNumber > g.until) continue;
     state.pending.push({ uid: 's2g' + (pendSeq++), player: p, cardId: g.cardId || 'S2-GRANT', stackUid: stack.uid, tags: ['부여:' + g.label], text: g.label, resolved: false, watcher: true });

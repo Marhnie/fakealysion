@@ -75,8 +75,9 @@ for (const id of ['EX6-043', 'EX8-074']) sc(`${id}::서로의 턴@【진화 시�
 
 // EX5-073 그레이스노바몬 【진화 시】【어택 시】 조그레스 진화하고 있었다면, 상대 디지몬의 진화원을 선택하여 8장 파기한다. 그 후, 진화원 매수가 이 디지몬 이하의 상대의 디지몬 1마리를 소멸시킨다.
 sc('EX5-073::진화 시', async (ctx, R) => {
-  const t = me(ctx); if (!t || !t.viaFusion) return;
-  await R.runOne({ op: 'trashEvoSources', target: 'opponent', count: 8, choose: true }, ctx);
+  const t = me(ctx); if (!t) return;
+  // QA-S3 Q3687/Q3688: "조그레스 진화하고 있었다면" gates only the 8-source discard (and never applies on attack); the "그 후" deletion resolves regardless
+  if (t.viaFusion && ctx.trigger?.evt?.kind !== 'attack') await R.runOne({ op: 'trashEvoSources', target: 'opponent', count: 8, choose: true }, ctx);
   await R.runOne({ op: 'destroy', target: 'opponent', mode: 'choose', filter: { srcMaxSelf: true } }, ctx);
 });
 // combos of `n` distinct source indices satisfying `ok(idxs)` (capped) -> index lists, for descriptor.preventLeaveOptions

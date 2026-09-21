@@ -29,6 +29,7 @@ export function createSim(state, opts = {}) {
       try {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
         if (t.manualOnly) { if (CX) CX.manual(state, t, 'manualOnly'); S.resolvePending(state, t.uid); continue; }
+        if (S.waitingDestroyEffectGone(state, t)) { S.log(state, `${t.player} ${S.card(t.cardId).nameKo}의 【소멸 시】 효과: 카드가 이미 트래시를 벗어나 발휘하지 못함`); S.resolvePending(state, t.uid); continue; }
         const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
         let script = specific;
         if (!script && /^이\s*카드의\s*【메인】\s*효과를\s*발(?:휘|동)한다\.?$/.test(t.text.trim())) {
@@ -41,6 +42,7 @@ export function createSim(state, opts = {}) {
           const pl0 = state.players[t.player]; const stNow = pl0.raising && pl0.raising.uid === t.stackUid ? pl0.raising : pl0.battle.find((s) => s.uid === t.stackUid);
           if (!stNow || stNow.cardId !== t.topId) { S.resolvePending(state, t.uid); continue; }
         }
+        if (S.pendingCardLeftZone(state, t)) { S.resolvePending(state, t.uid); continue; } // Q5230/5593/5758/5905: the deleted card left the trash
         const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
         let onceMark = null;
         if (om && t.stackUid) {
@@ -134,6 +136,7 @@ export function createSim(state, opts = {}) {
       const res = S.resolveDigimonBattle(state, p, uid, pa.targetUid);
       H.battleAfter && H.battleAfter({ p, op, uid, pa, res });
       await drain();
+      { const sv = res && res.result === 'attackerWins' && res.destroyedOnlyOpponent ? find(p, uid) : null; if (sv && S.hasKeyword(sv, '전투후액티브')) S.unsuspendStack(state, p, uid); } // ≪전투후액티브≫ (EX1-043 / BT1-112): the UI offers this as a click after the battle; headless play takes it (official Q&A 984)
       if (res && res.piercing && !state.winner) await securityCheck(p, uid, op);
     }
     await drain();
