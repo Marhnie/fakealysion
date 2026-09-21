@@ -115,6 +115,8 @@ export async function loadData() {
     if (typeof c.nameKo === 'string' && /\s*ACE$/.test(c.nameKo)) { c.nameDisplayKo = c.nameKo; c.nameKo = c.nameKo.replace(/\s*ACE$/, ''); }
   }
   S2.fixData(CARDS); // shard2: data repairs + pseudo cards (tokens)
+  // 이미지 주소가 없는 카드(dgchub 원본에 이미지가 없는 최신 세트 등)는 공식 카드 목록 이미지로 대신한다 (일본어판 카드 그림; 없으면 화면이 글자 카드로 표시)
+  for (const c of Object.values(CARDS)) if (!c.imgUrl && c.id && !c.isToken && /^[A-Z]{1,3}\d{0,2}-\d{1,3}$/.test(c.id)) { c.imgUrl = `https://digimoncard.com/images/cardlist/card/${c.id}.png`; c.imgFallback = true; }
   // data: the trait is typed 「엑셀」 on the card data but printed 「액셀」 in BT20/LM texts (and 「엑셀」 in BT25): make every 엑셀 card also carry 액셀 so both spellings match (BT20-004/030/031/033/036/038/039/041/043 …)
   for (const c of Object.values(CARDS)) if (Array.isArray(c.types) && c.types.includes('엑셀') && !c.types.includes('액셀')) c.types.push('액셀');
   // data: BT21 texts print 「크로스하트」 (no space) for the trait typed 「크로스 하트」, and 「어플리 드라이버」 for the trait typed 「어플드라이버」
