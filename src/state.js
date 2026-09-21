@@ -1118,8 +1118,8 @@ export function queueAttackDeclarationTriggers(state, p, stack) {
   if (stack._declRest) { stack._declRest = false; emitGameEvent(state, 'rest', { owner: p, stack, cause: 'attack' }); }
   if (card(stack.cardId).category !== 'digimon' && !isAsDigimon(stack)) return;
   const has = (kw) => hasKeyword(stack, kw) || hookGrantedKeywords(state, p, stack).includes(kw);
-  if (has('돌진')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__돌진'], text: '《돌진》 이 디지몬이 어택했을 때, 어택의 대상을 가장 DP가 높은 액티브 상태인 상대의 디지몬 1마리로 변경할 수 있다.', resolved: false });
-  if (has('연계')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__연계'], text: '《연계》 이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는 것으로, 그 어택의 종료까지 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고 《S 어택 +1》을 얻는다.', resolved: false });
+  if (has('돌진')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__돌진'], optGateDone: true, text: '《돌진》 이 디지몬이 어택했을 때, 어택의 대상을 가장 DP가 높은 액티브 상태인 상대의 디지몬 1마리로 변경할 수 있다.', resolved: false });
+  if (has('연계')) state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: stack.cardId, stackUid: stack.uid, topId: stack.cardId, tags: ['__연계'], optGateDone: true, text: '《연계》 이 디지몬이 어택했을 때, 다른 자신의 디지몬 1마리를 레스트시키는 것으로, 그 어택의 종료까지 이 디지몬에게 레스트시킨 디지몬의 DP를 플러스하고 《S 어택 +1》을 얻는다.', resolved: false });
 }
 export function chainOptions(state, p, attackerUid) {
   const pl = state.players[p];
@@ -6097,7 +6097,8 @@ export function s1AttackTargeted(state, attackerP, attacker, targetKind, targetU
   const defP = opponentOf(attackerP);
   if (attacker && targetKind === 'digimon' && s1Flag(state, attacker, 'killNoSrc')) {
     const t = state.players[defP].battle.find(s => s.uid === targetUid);
-    if (t && t.sources.length === 0) { log(state, `${attackerP} ${card(attacker.cardId).nameKo} 효과: 진화원이 없는 ${card(t.cardId).nameKo} 소멸`); deleteStack(state, defP, t.uid, 'trash', 'effect'); }
+    // BT4-101 「【자신의 턴】 진화원을 갖지 않은 상대 디지몬에게 어택했을 때, 그 디지몬을 소멸시킨다」 is a TRIGGERED effect (15-8-3): it waits in the pending queue with the other declaration triggers (the turn player orders them), not an immediate deletion
+    if (t && t.sources.length === 0) state.pending.push({ uid: 'p' + (pendingUid++), player: attackerP, cardId: attacker.cardId, stackUid: attacker.uid, topId: attacker.cardId, tags: ['__어택소멸'], optGateDone: true, evtTargetUid: t.uid, text: '이 디지몬이 진화원을 갖지 않은 상대의 디지몬에게 어택했을 때, 그 디지몬을 소멸시킨다.', resolved: false });
   }
 }
 export function s1BattleWon(state, p, stack) { emitGameEvent(state, 'battleWin', { owner: p, stack, cause: null }); }

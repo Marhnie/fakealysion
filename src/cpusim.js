@@ -24,7 +24,10 @@ export function createSim(state, opts = {}) {
       if (CX) CX.sync(state);
       if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // lazily-recorded DP<=0 rule checks (15-15-5-2) — rule-oracle R-dp0
       const t = state.pending.find((x) => !x.resolved);
-      if (!t) return;
+      if (!t) { // effect-started attacks (진격/볼텍스/급습/에그제큐트/오버클럭, "이 디지몬으로 어택할 수 있다") run once the effect queue is empty and no attack is in progress (mirrors main.js startAttack)
+        if (effAtkQ.length && !state.attackCtx && !state.winner) { const q = effAtkQ.shift(); try { await runEffectAttack(q); } catch (e) { onError('effectAttack', e); } continue; }
+        return;
+      }
       let cxs = null;
       try {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
@@ -55,7 +58,7 @@ export function createSim(state, opts = {}) {
         }
         if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t }))) onceMark = null; } catch (e) { /* keep the mark */ } }
         if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, attack: () => state.attackCtx, endAttack() {},
+        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) effAtkQ.push({ p, uid, direct, o: o || {} }); }, attack: () => state.attackCtx, endAttack() {},
           choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
         if (CX) cxs = CX.before(state, t, script);
         H.effectBegin && H.effectBegin(t, script);
@@ -95,9 +98,25 @@ export function createSim(state, opts = {}) {
       if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, p, uid, 'trash', 'battle');
     }
   }
-  async function attack(p, uid, target) {
+  const effAtkQ = [];
+  // effect-granted attack (mirror of main.js attackFlow force=true): no legal target -> not declared; the CPU picks player > weakest beatable digimon
+  async function runEffectAttack(q) {
+    const { p, uid, direct, o } = q; const st = find(p, uid); if (!st || state.winner) return;
+    if (o.anyActive) st.anyActiveOnce = true;
+    let tg = [], hit = false;
+    try { tg = S.legalDigimonTargets(state, p, uid); hit = !o.digimonOnly && S.canAttackPlayer(state, p, uid); } catch (e) { tg = []; }
+    delete st.anyActiveOnce;
+    let target = null;
+    if (direct === 'PLAYER' && hit) target = 'PLAYER';
+    else if (direct && tg.includes(direct)) target = direct;
+    else if (hit) target = 'PLAYER';
+    else if (tg.length) { const op = S.opponentOf(p), me = S.effectiveDP(state, p, st); const dp = (u) => { const d = find(op, u); return d ? S.effectiveDP(state, op, d) : 1e9; }; target = tg.slice().sort((a, b) => (dp(a) < me ? 0 : 1) - (dp(b) < me ? 0 : 1) || dp(b) - dp(a))[0]; }
+    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); return; }
+    await attack(p, uid, target, o);
+  }
+  async function attack(p, uid, target, dopts) {
     const op = S.opponentOf(p);
-    const dec = S.declareAttack(state, p, uid);
+    const dec = S.declareAttack(state, p, uid, dopts || {});
     if (!dec.ok) return false;
     stats.attacks++;
     const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
@@ -105,15 +124,14 @@ export function createSim(state, opts = {}) {
     H.attackDeclared && H.attackDeclared({ p, op, uid, target, dec, pa });
     S.queueTriggersForStack(state, p, dec.stack, 'attack');
     S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
-    await drain(); await drainRepl();
-    { // UI parity (main.js enterRedirectTiming): once the target is fixed, 'attackTarget' (+ 'attackOnDigimon') fire so ST15-05 / ST16-05 / BT2-084 style triggers work headlessly (slice1 r2, Q810/Q822/Q1036)
+    { // UI parity (main.js enterRedirectTiming): once the target is fixed, 'attackTarget' (+ 'attackOnDigimon') fire together with 【어택 시】 (11-2-2 / 11-2-8: the declaration triggers all at once, resolved afterwards in the pending queue) so ST15-05 / ST16-05 / BT2-084 style triggers work headlessly
       const aT = find(p, uid);
-      if (aT && !pa.ended && !state.winner) {
+      if (aT && !state.winner) {
         S.s1AttackTargeted(state, p, aT, pa.targetKind, pa.targetUid);
         if (pa.targetKind === 'digimon') { const dT = find(op, pa.targetUid); const aT2 = find(p, uid); if (aT2 && dT) S.emitGameEvent(state, 'attackOnDigimon', { owner: p, stack: aT2, cause: null, target: dT }); }
-        await drain(); await drainRepl();
       }
     }
+    await drain(); await drainRepl();
     const end = async () => { H.attackEnd && H.attackEnd({ p, op, uid, pa }); const st = find(p, uid); state.attackCtx = null; if (st) { S.s8AttackEnded(state, p, uid); S.queueTriggersForStack(state, p, st, 'attackEnd'); S.emitGameEvent(state, 'attackEnd', { owner: p, stack: st, cause: null }); } await drain(); };
     if (state.winner || pa.ended || !find(p, uid) || (pa.targetKind === 'digimon' && !find(op, pa.targetUid))) { await end(); return true; }
     // counter timing (defender)
@@ -165,6 +183,7 @@ export function createSim(state, opts = {}) {
       case 'evolve': if (!S.digivolve(state, p, act.uid, act.cardId, act.cost, 'hand')) rejected = true; break;
       case 'jogress': if (!S.fuseStacks(state, p, act.a, act.b, act.cardId, act.cost, 'hand')) rejected = true; break;
       case 'train': if (!S.useTraining(state, p, act.uid)) rejected = true; break;
+      case 'delay': { const st = find(p, act.uid); const body = st ? S.parseDelayEffect(S.card(st.cardId).effectKo) : null; if (!st || !body || state.turnNumber <= st.placedTurn) { rejected = true; break; } const cid = S.discardForDelay(state, p, act.uid); if (cid) state.pending.push({ uid: 'delay' + rid(), player: p, cardId: cid, stackUid: null, tags: ['메인'], text: body, resolved: false }); break; }
       case 'main': { const st = find(p, act.uid); if (!st) break; const zone = pl.raising && pl.raising.uid === st.uid ? 'raising' : 'battle'; const ab = S.activatableMainAbilities(state, p, st, zone)[act.idx]; if (ab) state.pending.push({ uid: 'main' + rid(), player: p, cardId: ab.cardId, stackUid: st.uid, tags: ab.tags, text: ab.text, resolved: false }); break; }
       case 'attack': if (!(await attack(p, act.uid, act.target))) { const c0 = cfgOf(p); if (c0 && c0.banned && act.key) c0.banned.add(act.key); await drain(); return false; } break; // declaration rejected: never retry it this turn
       default: break;

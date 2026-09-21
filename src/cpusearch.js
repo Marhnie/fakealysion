@@ -14,7 +14,7 @@ import * as S from './state.js';
 import * as SN from './snapshot.js';
 import * as Cpu from './cpu.js';
 import { createSim } from './cpusim.js';
-import { logOdds, EVAL_SCALE } from './cpueval.js';
+import { logOdds, weightsFor, EVAL_SCALE } from './cpueval.js';
 
 const { stackValue, handCardValue, lethalPlan, canDeclareAttack, isDigi } = Cpu.HX;
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
@@ -71,24 +71,25 @@ export function determinize(state, p, rng) {
 
 // ---------- evaluation (from p's point of view) ----------
 function memFor(state, p) { return p === 'p1' ? state.memory : -state.memory; }
-export function evaluate(state, p) {
+export function evaluate(state, p, P) {
   const o = opp(p);
   if (state.winner) return state.winner === p ? WIN : state.winner === o ? -WIN : 0;
   const me = state.players[p], op = state.players[o];
   const myTurn = state.activePlayer === p;
   if (SEARCH.evalModel) { // fitted win-probability model (src/cpueval.js) + the tactical terms a linear model cannot see
-    const z = logOdds(state, p);
+    const z = logOdds(state, p, P ? weightsFor(P) : undefined);
     if (z != null) {
       let v = EVAL_SCALE * z;
-      if (myTurn) { try { if (lethalPlan(state, p).lethal) v += W.lethal; } catch (e) { /* ignore */ } }
+      const lethalW = P ? P.lethalW : W.lethal, threatW = P ? P.threatW : W.threat, deckLowW = P ? P.deckLowW : W.deckLow;
+      if (myTurn) { try { if (lethalPlan(state, p).lethal) v += lethalW; } catch (e) { /* ignore */ } }
       else {
         const opAtk = op.battle.filter((s) => isDigi(s)).length;
         const myBl = me.battle.filter((s) => isDigi(s) && !s.suspended && Cpu.HX.hasKw(state, p, s, '블로커')).length;
         const through = Math.max(0, opAtk - myBl);
-        if (through > me.security.length) v -= W.lethal * 0.5 * W.threat; else v -= W.threat * Math.min(through, me.security.length) * 3;
+        if (through > me.security.length) v -= lethalW * 0.5 * threatW; else v -= threatW * Math.min(through, me.security.length) * 3;
       }
-      if (me.deck.length <= 1) v -= W.deckLow;
-      if (op.deck.length <= 1) v += W.deckLow;
+      if (me.deck.length <= 1) v -= deckLowW;
+      if (op.deck.length <= 1) v += deckLowW;
       return v;
     }
   }
@@ -121,10 +122,10 @@ export function evaluate(state, p) {
 }
 
 // ---------- action generation ----------
-function genAttacks(state, p) {
+function genAttacks(state, p, P) {
   const out = [];
   let base = [];
-  try { base = Cpu.attackCandidates(state, p, { level: 'hard' }); } catch (e) { base = []; }
+  try { base = Cpu.attackCandidates(state, p, { level: 'hard', params: P || null }); } catch (e) { base = []; }
   const seen = new Set();
   for (const a of base) { const k = a.uid + '>' + a.target; seen.add(k); out.push({ ...a, key: 'atk:' + a.uid }); }
   const o = opp(p), opl = state.players[o];
@@ -141,11 +142,11 @@ function genAttacks(state, p) {
   }
   return out;
 }
-export function genActions(state, p, beam, banned) {
+export function genActions(state, p, beam, banned, P) {
   const ban = banned || new Set();
   let acts = [];
   try { acts = Cpu.enumerateActions(state, p).filter((a) => !ban.has(a.key)); } catch (e) { acts = []; }
-  let atks = []; try { atks = genAttacks(state, p).filter((a) => !ban.has(a.key)); } catch (e) { atks = []; }
+  let atks = []; try { atks = genAttacks(state, p, P).filter((a) => !ban.has(a.key)); } catch (e) { atks = []; }
   const all = [...acts, ...atks].sort((a, b) => b.score - a.score);
   const list = all.slice(0, Math.max(1, beam - 1));
   list.push({ type: 'pass', score: -99, key: 'pass' });
@@ -162,6 +163,7 @@ export function actLabel(a) {
       case 'jogress': return card(a.cardId).nameKo + ' 조그레스';
       case 'attack': return '어택→' + (a.target === 'PLAYER' ? '시큐리티' : '디지몬');
       case 'train': return '트레이닝';
+      case 'delay': return '딜레이';
       case 'main': return '메인효과';
       default: return a.type;
     }
@@ -183,6 +185,8 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
   if (!state || state.winner || state.phase !== 'main' || state.activePlayer !== p || state.turnEnding || state.uiChoice) return null;
   if (state.pending.some((t) => !t.resolved) || (state.pendingReplacements && state.pendingReplacements.length) || state.attackCtx) return null;
   const banned = cfg.banned || new Set();
+  const P = cfg.params || null; // injected params (self-play tuned 'expert' / arena candidates); null = built-in defaults
+  const prior = P && P.priorW != null ? P.priorW : O.prior;
   const t0 = now();
   const ctx = { state, p, nodes: 0, t0, lastYield: t0, yields: 0, tt: new Map(), maxDepthSeen: 0 };
   let baseSnap = null, restored = false;
@@ -200,7 +204,7 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
     const seed0 = O.seed != null ? O.seed : strHash(visibleKey(state, p));
     curRng = mulberry32(seed0 ^ 0x9e3779b9);
     const R = mulberry32(seed0); // the ONE generator behind Math.random / cpu noise inside the search; re-seeded at fixed points (common random numbers across candidates)
-    const cpuCfg = { level: 'hard', banned: new Set() }, oppCfg = { level: 'hard', banned: new Set() };
+    const cpuCfg = { level: 'hard', banned: new Set(), params: P }, oppCfg = { level: 'hard', banned: new Set() };
     const sim = createSim(state, { cfgOf: (q) => (q === p ? cpuCfg : oppCfg), onError: () => {} });
 
     // the heuristic move (prior) — computed on the live, undeterminized state exactly as the caller would
@@ -208,8 +212,8 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
     let policy = null, rootActs = [];
     curRng = mulberry32(seed0 ^ 0x51ed270b); enter();
     try {
-      try { policy = Cpu.planMain(state, p, { level: 'hard', banned: new Set(banned) }); } catch (e) { policy = null; }
-      if (!(policy && policy.type === 'attack' && policy.lethal)) rootActs = genActions(state, p, O.rootBeam, banned);
+      try { policy = Cpu.planMain(state, p, { level: 'hard', banned: new Set(banned), params: P }); } catch (e) { policy = null; }
+      if (!(policy && policy.type === 'attack' && policy.lethal)) rootActs = genActions(state, p, O.rootBeam, banned, P);
     } finally { leave(); }
     if (policy && policy.type === 'attack' && policy.lethal) return { act: policy, depth: 0, nodes: 0, ms: 0, line: '확정 승리', values: [] };
     if (policy && !rootActs.some((a) => sameAct(a, policy))) rootActs.splice(Math.max(0, rootActs.length - 1), 0, policy);
@@ -271,30 +275,30 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
         await playOppTurn();
         if (!state.winner && state.activePlayer === p && state.phase === 'unsuspend') await sim.beginTurn(p);
       }
-      return evaluate(state, p);
+      return evaluate(state, p, P);
     }
 
     // value of the position for p, `rem` plies left.  The live state must be at a stable point (nothing pending).
     async function value(rem, top) {
-      if (state.winner) return [evaluate(state, p) + (state.winner === p ? rem : -rem), []];
+      if (state.winner) return [evaluate(state, p, P) + (state.winner === p ? rem : -rem), []];
       if (rem <= 0) return [await leaf(), []];
       if (state.activePlayer !== p) {
         await tick();
         await playOppTurn();
-        if (state.winner) return [evaluate(state, p) + (state.winner === p ? rem : -rem), []];
+        if (state.winner) return [evaluate(state, p, P) + (state.winner === p ? rem : -rem), []];
         rem -= 1;
         if (rem <= 0) return [await leaf(), ['(상대 턴)']];
         await sim.beginTurn(p);
-        if (state.winner) return [evaluate(state, p), []];
-        if (state.phase !== 'main' || state.activePlayer !== p) return [evaluate(state, p), []];
+        if (state.winner) return [evaluate(state, p, P), []];
+        if (state.phase !== 'main' || state.activePlayer !== p) return [evaluate(state, p, P), []];
         const [v, l] = await value(rem, false);
         return [v, ['(상대 턴)', ...l]];
       }
-      if (state.phase !== 'main' || state.turnEnding) return [evaluate(state, p), []];
+      if (state.phase !== 'main' || state.turnEnding) return [evaluate(state, p, P), []];
       const key = hashState(state, p) + '#' + rem;
       const hit = ctx.tt.get(key);
       if (hit) return hit;
-      const acts = top ? top : genActions(state, p, O.beam);
+      const acts = top ? top : genActions(state, p, O.beam, undefined, P);
       const snap = SN.snapshotState(state);
       await tick();
       let best = -Infinity, bestLine = [];
@@ -310,7 +314,7 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
         } catch (e) { if (e === ABORT) throw e; v = -Infinity; line = []; }
         if (v > best) { best = v; bestLine = [actLabel(a), ...line]; }
       }
-      const res = [best === -Infinity ? evaluate(state, p) : best, bestLine];
+      const res = [best === -Infinity ? evaluate(state, p, P) : best, bestLine];
       if (!top) ctx.tt.set(key, res);
       return res;
     }
@@ -345,7 +349,7 @@ export async function searchMain(state, p, cfg = {}, opts = {}) {
       } catch (e) { if (e !== ABORT) throw e; break; }
       // depth d complete
       let bi = 0, bv = -Infinity;
-      const vals = rootActs.map((a, i) => { const adj = sums[i] + (sameAct(a, policy) ? O.prior : 0); if (adj > bv) { bv = adj; bi = i; } return adj; });
+      const vals = rootActs.map((a, i) => { const adj = sums[i] + (sameAct(a, policy) ? prior : 0); if (adj > bv) { bv = adj; bi = i; } return adj; });
       result = { act: rootActs[bi], depth: d, nodes: ctx.nodes, values: vals, line: lines[bi].join(' → '), policyAgrees: sameAct(rootActs[bi], policy) };
       ctx.bestLabel = actLabel(rootActs[bi]);
       if (softUp() || ctx.nodes > O.maxNodes) break;

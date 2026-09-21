@@ -44,3 +44,12 @@ sc('*::__연계', async (ctx) => {
   if (!liveAttack(ctx)) return;
   if (S.useChain(state, ctx.self, pa.uid, uid)) { const a = stackOfUid(state, ctx.self, pa.uid); if (a) pa.dp = S.effectiveDP(state, ctx.self, a); }
 });
+
+// BT4-101 (granted "진화원을 갖지 않은 상대 디지몬에게 어택했을 때, 그 디지몬을 소멸시킨다", state.s1AttackTargeted): the digimon attacked at declaration, if it still has no evolution sources
+sc('*::__어택소멸', async (ctx) => {
+  const { state } = ctx; const uid = ctx.trigger && ctx.trigger.evtTargetUid; if (!uid) return;
+  const oppP = S.opponentOf(ctx.self); const t = state.players[oppP].battle.find((s) => s.uid === uid);
+  if (!t || t.sources.length > 0) return;
+  S.log(state, `${ctx.self} ${C(state.players[ctx.self].battle.find((s) => s.uid === ctx.sourceStackUid)?.cardId || ctx.sourceCardId).nameKo} 효과: 진화원이 없는 ${C(t.cardId).nameKo} 소멸`);
+  S.deleteStack(state, oppP, t.uid, 'trash', 'effect');
+});

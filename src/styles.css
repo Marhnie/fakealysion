@@ -761,3 +761,18 @@ body.pr-replay #app .board { overflow: auto; }
 .su-start { min-height: 56px; font-size: 18px; font-weight: 900; border-radius: 14px; letter-spacing: .5px; box-shadow: 0 8px 24px rgba(78,168,222,.25); }
 .su-more { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; } .su-more .pr-start { display: flex; gap: 8px; flex-wrap: wrap; } .su-more button { min-height: 42px; }
 @media (max-width: 640px) { .su-grid { grid-template-columns: 1fr; } .su-title { font-size: 24px; } .su-wrap { padding-top: 16px; } }
+
+/* 어택 진행 순서 표시 */
+.atk-guide { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--holo-line); border-radius: 10px; background: rgba(0,0,0,.25); }
+.atk-stepper { display: flex; align-items: flex-start; gap: 0; }
+.atk-step { flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 3px; position: relative; color: var(--muted); font-size: 11px; }
+.atk-step::before { content: ''; position: absolute; top: 12px; left: -50%; width: 100%; height: 2px; background: var(--border); z-index: 0; }
+.atk-step:first-child::before { display: none; }
+.atk-step.done::before, .atk-step.now::before { background: var(--ok); }
+.atk-dot { z-index: 1; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: #14161a; border: 2px solid var(--border); font-weight: 800; font-size: 12px; }
+.atk-step.done .atk-dot { background: var(--ok); border-color: var(--ok); color: #06210e; }
+.atk-step.now .atk-dot { background: var(--holo-accent); border-color: var(--holo-accent); color: #1a1408; transform: scale(1.25); box-shadow: 0 0 12px rgba(217,179,108,.7); }
+.atk-step.now .atk-lbl { color: var(--holo-accent); font-weight: 800; } .atk-step.done .atk-lbl { color: var(--ok); }
+.atk-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 14px; } .atk-actor { font-size: 12px; color: var(--holo-accent); font-weight: 700; }
+.atk-desc { font-size: 12.5px; line-height: 1.4; } .atk-next { font-size: 11.5px; color: var(--muted); }
+@media (max-width: 640px) { .atk-lbl { font-size: 10px; } .atk-desc { font-size: 12px; } }
