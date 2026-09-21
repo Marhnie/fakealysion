@@ -42,6 +42,7 @@ function h(tag, attrs = {}, children = []) {
 
 async function init() {
   await S.loadData();
+  try { await Cpu.loadParams(); } catch (e) { /* data/cpu-params.json is optional: the 전문가 level falls back to built-in params */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
   PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
@@ -89,6 +90,14 @@ const cpuApiObj = {
   jogress: async (p, a, b, cardId) => { await runJogress(p, a, b, cardId); jgCache.clear(); render(); },
   attack: (p, uid, target) => attackFlow(p, uid, target),
   train: (p, uid) => { S.useTraining(state, p, uid); render(); },
+  useDelay: (p, uid) => { // 16-17 ≪딜레이≫ (CPU): same as the 🗑딜레이 button in stackActionList
+    const st = findStack({ player: p, uid });
+    const body = st ? S.parseDelayEffect(S.card(st.cardId).effectKo) : null;
+    if (!st || !body || state.turnNumber <= st.placedTurn) return;
+    const cardId = S.discardForDelay(state, p, uid);
+    if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: body, resolved: false });
+    render();
+  },
   useMain: (p, uid, idx) => {
     const st = findStack({ player: p, uid });
     if (!st) return;
@@ -158,8 +167,8 @@ function renderCpuBar() {
     h('button', { onClick: () => { cpuDrv.setPaused(!cpuDrv.paused); render(); } }, cpuDrv.paused ? '▶ 재개' : '⏸ 일시정지'),
     h('label', { className: 'meta' }, ['속도 ', h('select', { onchange: (e) => { CPU_CFG.speed = e.target.value; saveCpuCfg(); cpuDrv.setSpeed(CPU_CFG.speed); } },
       Object.entries(Cpu.SPEED_LABEL).map(([v, l]) => { const o = h('option', { value: v }, l); if (v === CPU_CFG.speed) o.selected = true; return o; }))]),
-    CPU_CFG.level === 'hard' ? h('label', { className: 'meta', title: '어려움: 4수(내 행동·상대 턴 포함) 앞을 탐색해 행동을 고릅니다' }, [h('input', { type: 'checkbox', checked: CPU_CFG.search !== false, onchange: (e) => { CPU_CFG.search = !!e.target.checked; saveCpuCfg(); cpuApplySearchCfg(); } }), ' 4수 읽기']) : null,
-    CPU_CFG.level === 'hard' && CPU_CFG.search !== false ? h('label', { className: 'meta', title: '읽은 수순을 효과 로그에 남깁니다' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.showLine, onchange: (e) => { CPU_CFG.showLine = !!e.target.checked; saveCpuCfg(); cpuApplySearchCfg(); } }), ' 수순 로그']) : null,
+    Cpu.isHardLike(CPU_CFG.level) ? h('label', { className: 'meta', title: '어려움/전문가: 4수(내 행동·상대 턴 포함) 앞을 탐색해 행동을 고릅니다' }, [h('input', { type: 'checkbox', checked: CPU_CFG.search !== false, onchange: (e) => { CPU_CFG.search = !!e.target.checked; saveCpuCfg(); cpuApplySearchCfg(); } }), ' 4수 읽기']) : null,
+    Cpu.isHardLike(CPU_CFG.level) && CPU_CFG.search !== false ? h('label', { className: 'meta', title: '읽은 수순을 효과 로그에 남깁니다' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.showLine, onchange: (e) => { CPU_CFG.showLine = !!e.target.checked; saveCpuCfg(); cpuApplySearchCfg(); } }), ' 수순 로그']) : null,
     h('label', { className: 'meta' }, [h('input', { type: 'checkbox', checked: !!CPU_CFG.reveal, onchange: (e) => { CPU_CFG.reveal = !!e.target.checked; saveCpuCfg(); render(); } }), ' CPU 패 보기']),
     cpuLastActionLine(),
     cpuHintLine(),
@@ -262,7 +271,7 @@ function renderSetup() {
   const cpu = CPU_CFG.mode === 'cpu';
   const seg = (items, cur, onPick) => h('div', { className: 'su-seg', role: 'group' }, items.map(([v, l, tip]) => h('button', { className: 'su-segbtn' + (v === cur ? ' on' : ''), title: tip || '', onClick: () => onPick(v) }, l)));
   const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
-  const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
+  const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대', expert: '자가대전으로 조정한 파라미터 + 더 깊은 수 읽기' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
 
   const ext = PR.startScreenExtras();
   app.appendChild(h('div', { className: 'su-wrap' }, [
@@ -2666,16 +2675,31 @@ function renderVsBattle(leftCardId, leftDp, rightCardId, rightDp, result, leftOw
 // parsing a paragraph each stage.
 const ATTACK_STEP_ORDER = ['targetChoice', 'redirectTiming', 'counterTiming', 'blockCheck', 'digimonResult', 'result'];
 const ATTACK_STEP_LABEL = { targetChoice: '대상', redirectTiming: '대상 변경', counterTiming: '카운터', blockCheck: '블록', digimonResult: '결과', result: '결과' };
-function renderAttackSteps(currentStage) {
-  const seen = new Set();
-  const steps = ATTACK_STEP_ORDER.filter(s => { const label = ATTACK_STEP_LABEL[s]; if (seen.has(label)) return false; seen.add(label); return true; });
-  const currentIdx = ATTACK_STEP_ORDER.indexOf(currentStage);
-  return h('div', { className: 'actions-row' }, steps.map((s) => {
-    const idx = ATTACK_STEP_ORDER.indexOf(s);
-    const isPast = idx < currentIdx || (currentStage === 'result' && s === 'digimonResult');
-    const isNow = s === currentStage || (currentStage === 'digimonResult' && s === 'result') || (currentStage === 'result' && s === 'digimonResult');
-    return h('span', { className: `zone-pill${s === currentStage ? ' step-now' : ''}${isPast ? ' step-done' : ''}` }, ATTACK_STEP_LABEL[s]);
-  }));
+// 어택 진행 순서 표시: 번호 붙은 5단계 + 지금 단계의 쉬운 설명 + 누가 결정하는지 (사람이 보기 쉽게)
+const ATTACK_GUIDE = [
+  { keys: ['targetChoice'], icon: '⚔', label: '대상 선택', who: 'atk', text: '공격하는 쪽이 상대 플레이어(시큐리티) 또는 상대 디지몬 중에서 공격 대상을 고릅니다.' },
+  { keys: ['redirectTiming'], icon: '🔀', label: '대상 변경', who: 'atk', text: '어택 대상을 바꾸는 효과(《돌진》 등)를 쓸 수 있는 타이밍입니다. 쓸 게 없으면 자동으로 넘어갑니다.' },
+  { keys: ['counterTiming'], icon: '🃏', label: '카운터', who: 'def', text: '방어하는 쪽이 【카운터】 효과를 쓸 수 있는 타이밍입니다. 쓰지 않으면 넘어갑니다.' },
+  { keys: ['blockCheck'], icon: '🛡', label: '블록', who: 'def', text: '방어하는 쪽이 《블로커》 디지몬으로 이 어택을 대신 받을 수 있는 타이밍입니다.' },
+  { keys: ['digimonResult', 'result'], icon: '💥', label: '결과', who: null, text: '디지몬끼리는 DP를 비교해 배틀하고, 플레이어 어택이면 시큐리티를 체크합니다.' },
+];
+function renderAttackSteps(pa) {
+  const stage = typeof pa === 'string' ? pa : pa.stage;
+  const cur = ATTACK_GUIDE.findIndex(g => g.keys.includes(stage));
+  const nm = (p) => (p || '').toUpperCase();
+  const steps = h('div', { className: 'atk-stepper', role: 'list' }, ATTACK_GUIDE.map((g, i) => h('div', { className: `atk-step${i < cur ? ' done' : i === cur ? ' now' : ''}`, role: 'listitem', 'aria-current': i === cur ? 'step' : null }, [
+    h('span', { className: 'atk-dot' }, i < cur ? '✓' : String(i + 1)),
+    h('span', { className: 'atk-lbl' }, g.label),
+  ])));
+  const g = ATTACK_GUIDE[Math.max(0, cur)];
+  const actor = typeof pa === 'string' || !g.who ? '' : (g.who === 'atk' ? `지금 결정: ${nm(pa.attacker)} (공격측)` : `지금 결정: ${nm(pa.opp)} (수비측)`);
+  const next = ATTACK_GUIDE[cur + 1];
+  return h('div', { className: 'atk-guide' }, [
+    steps,
+    h('div', { className: 'atk-now' }, [h('b', {}, `${g.icon} ${cur + 1}/${ATTACK_GUIDE.length} ${g.label}`), actor ? h('span', { className: 'atk-actor' }, actor) : null]),
+    h('div', { className: 'atk-desc' }, g.text),
+    next ? h('div', { className: 'atk-next' }, `다음 → ${next.icon} ${next.label}`) : null,
+  ].filter(Boolean));
 }
 
 function renderPendingAttack() {
@@ -2684,7 +2708,7 @@ function renderPendingAttack() {
   const attackerStackNow = state.players[pa.attacker].battle.find(s => s.uid === pa.uid);
   const rows = [
     h('div', { className: 'section-title' }, `${attackerStackNow ? S.card(attackerStackNow.cardId).nameKo : '(소멸됨)'} DP${pa.dp} 공격 중`),
-    renderAttackSteps(pa.stage),
+    renderAttackSteps(pa),
   ];
 
   // Step pacing controls + the current step's explanation (see stepPause).
