@@ -587,7 +587,18 @@ function dbTile(id) {
   return chip;
 }
 
-function dbRefreshResults() {
+// 목록을 통째로 다시 그릴 때 잠깐 문서 높이가 줄어 스크롤이 맨 위로 튀는 것을 막는다 (+ 버튼 등)
+function dbKeepScroll(fn) {
+  const sc = [dbEls && dbEls.board, document.scrollingElement].filter(Boolean).map(el => [el, el.scrollTop]);
+  const minH = dbEls && dbEls.board ? dbEls.board.scrollHeight : 0;
+  if (dbEls && dbEls.board && minH) dbEls.board.style.minHeight = minH + 'px'; // 다시 그리는 동안 높이 유지
+  try { fn(); } finally {
+    for (const [el, t] of sc) el.scrollTop = t;
+    if (dbEls && dbEls.board) dbEls.board.style.minHeight = '';
+  }
+}
+function dbRefreshResults() { dbKeepScroll(dbRefreshResultsInner); }
+function dbRefreshResultsInner() {
   if (!dbEls) return;
   const r = DBS.runSearch(dbFilter, S.CARDS, dbIndex, dbCtx());
   dbMatched = r.ids; dbTerms = r.terms;
@@ -601,7 +612,8 @@ function dbRefreshResults() {
   if (dbPreview) dbRefreshPreview(); // ◀ ▶ position / highlight follow the new results
 }
 
-function dbRefreshDeck() {
+function dbRefreshDeck() { dbKeepScroll(dbRefreshDeckInner); }
+function dbRefreshDeckInner() {
   if (!dbEls) return;
   const els = dbEls;
   const v = DB.validate(dbDraft);
