@@ -541,6 +541,26 @@ function optionalCostAnswer(state, who, pay, level) {
   }
   return true;
 }
+// ≪연계≫ (16-24-3): player attack -> rest the weakest other active digimon (the DP is added and 《S 어택 +1》 is gained); digimon attack -> only when a rested digimon's DP turns a loss into a win.
+function cpuChainPick(state, who, uids, level) {
+  const pa = state.attackCtx; if (!pa || pa.attacker !== who) return null;
+  const pl = state.players[who], atk = pl.battle.find(x => x.uid === pa.uid); if (!atk) return null;
+  const dpOf = (u) => S.effectiveDP(state, who, pl.battle.find(x => x.uid === u));
+  const sorted = uids.slice().sort((x, y) => dpOf(x) - dpOf(y));
+  if (pa.targetKind === 'player') return sorted[0];
+  const t = state.players[pa.opp].battle.find(x => x.uid === pa.targetUid); if (!t) return null;
+  const need = S.effectiveDP(state, pa.opp, t) - S.effectiveDP(state, who, atk);
+  if (need < 0) return null;
+  return sorted.find(u => dpOf(u) > need) || null;
+}
+// ≪돌진≫ (16-23): the CPU redirects only when its attacker beats the highest-DP active digimon outright (a redirect away from the player is otherwise a wasted attack)
+function cpuChargePick(state, who, uids, level) {
+  const pa = state.attackCtx; if (!pa || pa.attacker !== who) return null;
+  const atk = state.players[who].battle.find(x => x.uid === pa.uid); if (!atk) return null;
+  const opp = state.players[pa.opp].battle;
+  const best = uids.map(u => opp.find(x => x.uid === u)).filter(Boolean).sort((a, b) => S.effectiveDP(state, pa.opp, a) - S.effectiveDP(state, pa.opp, b))[0];
+  return best && S.effectiveDP(state, who, atk) > S.effectiveDP(state, pa.opp, best) + 1000 && level !== 'easy' ? best.uid : null;
+}
 export function answerChoice(state, kind, payload, who, cfg) {
   const level = (cfg && cfg.level) || 'normal';
   const pay = payload || {};
@@ -572,6 +592,8 @@ export function answerChoice(state, kind, payload, who, cfg) {
       case 'pickStack': {
         const uids = pay.uids || [];
         if (!uids.length) return null;
+        if (pay.chainKw) return cpuChainPick(state, who, uids, level); // ≪연계≫ (16-24): a triggered effect now — the CPU decides here whether to pay the rest
+        if (pay.chargeKw) return cpuChargePick(state, who, uids, level); // ≪돌진≫ (16-23)
         const ownerP = pay.player;
         const stacks = uids.map((u) => findAny(state, ownerP, u)).filter(Boolean);
         if (!stacks.length) return uids[0];
@@ -694,7 +716,7 @@ export function createUiDriver(api) {
   function paDecider(st, pa) {
     switch (pa.stage) {
       case 'targetChoice': return pa.attacker;
-      case 'redirectTiming': return pa.paused ? null : ((pa.redirectOptions && pa.redirectOptions.length) ? pa.opp : pa.attacker);
+      case 'redirectTiming': return pa.paused || pa.declWait ? null : ((pa.redirectOptions && pa.redirectOptions.length) ? pa.opp : pa.attacker);
       case 'counterTiming': return pa.paused ? null : pa.opp;
       case 'blockCheck': return pa.paused ? null : pa.opp;
       case 'digimonResult': return pa.paused ? null : pa.attacker;
@@ -745,20 +767,6 @@ export function createUiDriver(api) {
     if (pa.stage === 'targetChoice') {
       const tgt = force ? (pa.canHitPlayer ? 'PLAYER' : pa.digimonTargets[0]) : chooseAttackTarget(st, pa, cfg());
       if (tgt == null) { api.pa.close(pa); return true; }
-      if (!pa.chainUsed && api.pa.chain && !force) { // ≪연계≫: 플레이어 어택이면 가장 DP 낮은 액티브 디지몬으로, 디지몬 어택이면 이기기 위해 필요한 만큼의 디지몬으로 사용
-        try {
-          const opts = S.chainOptions(st, pa.attacker, pa.uid);
-          if (opts.length) {
-            const dpOf = (u) => S.effectiveDP(st, pa.attacker, st.players[pa.attacker].battle.find(x => x.uid === u));
-            const sorted = opts.slice().sort((x, y) => dpOf(x) - dpOf(y));
-            const atk = st.players[pa.attacker].battle.find(x => x.uid === pa.uid);
-            let pick = null;
-            if (tgt === 'PLAYER') pick = sorted[0];
-            else { const td = S.effectiveDP(st, pa.opp, st.players[pa.opp].battle.find(x => x.uid === tgt)); const need = td - S.effectiveDP(st, pa.attacker, atk); if (need >= 0) pick = sorted.find(u => dpOf(u) > need) || null; }
-            if (pick != null) api.pa.chain(pa, pick);
-          }
-        } catch (e) { /* 연계는 선택 사항 */ }
-      }
       api.pa.chooseTarget(pa, tgt);
     } else if (pa.stage === 'redirectTiming') {
       api.pa.passRedirect(pa);
