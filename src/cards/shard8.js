@@ -419,7 +419,9 @@ OPS.s8_evolve = async (i, ctx) => {
     const id = pl[z][k];
     const chk = ctx.E.canEvolveAny(st.cardId, id, S.evoExtraArg(ctx.state, null, st), null);
     const printed = chk.ok ? chk.cost : (C(id).evoNormal?.cost ?? 0);
-    const cost = i.free ? 0 : Math.max(0, printed + ((i.delta || 0) < 0 && S.isEvoCostLocked(state, ctx.self) ? 0 : (i.delta || 0))); // QA-S6 Q6869: cost-minus lock
+    const evoLocked = S.isEvoCostLocked(state, ctx.self);
+    const wantsFreeEvo = i.free && !evoLocked; // g7 audit (official Q&A, BT26-099 등): 「지불하는 진화 코스트를 마이너스할 수 없다」도 "코스트를 지불하지 않고 진화" 자체를 막는다 — 발휘는 되지만 코스트는 원래대로 지불해야 함
+    const cost = wantsFreeEvo ? 0 : Math.max(0, printed + ((i.delta || 0) < 0 && evoLocked ? 0 : (i.delta || 0))); // QA-S6 Q6869: cost-minus lock
     if (z !== 'hand') pl[z].splice(k, 1);
     S.digivolve(state, ctx.self, st.uid, id, cost, z === 'hand' ? 'hand' : 'trash');
     const ns = findStack(state, ctx.self, st.uid);
@@ -470,8 +472,10 @@ OPS.s8_playOrUse = async (i, ctx) => {
       return;
     }
     if (S.s1HookAny(state, 's1cannotPlay', { p: ctx.self }) || S.timedLocked(state, ctx.self, 'effectPlay')) { S.log(state, `${ctx.self} 효과로 디지몬을 등장시킬 수 없음`); return; } // slice6: effect-play ban — activated, but nothing is played and no cost is paid
-    const selfDc = (!i.free && (z === 'hand' || z === 'trash') && ucat(id) !== 'option' && !S.isPlayCostLocked(state)) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
-    const cost = i.free ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && S.isPlayCostLocked(state) ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
+    const playLocked = S.isPlayCostLocked(state);
+    const wantsFree = i.free && !playLocked; // g7 audit (official Q&A, EX12-013/027/041/043/050/EX13-045/BT26-054 등): 「지불하는 등장 코스트를 마이너스할 수 없다」도 "코스트를 지불하지 않고 등장" 자체를 막는다 — 발휘는 되지만 코스트는 원래대로 지불해야 함
+    const selfDc = (!wantsFree && (z === 'hand' || z === 'trash') && ucat(id) !== 'option' && !playLocked) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
+    const cost = wantsFree ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && playLocked ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
     if (cost > 0) S.spendMemory(state, cost);
     const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
     const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);

@@ -376,8 +376,15 @@ sc('BT20-005::자신의 턴', async (ctx) => { const st = me(ctx); if (st) S.gra
 
 // ================================================================== more dead effects found by the audit
 // BT20-015 / BT20-074 (inherited, 자신의 턴): 이 디지몬이 체크한 옵션 카드의 【시큐리티】 효과는 발휘하지 않는다. BT20-071: 특징 「SoC」/「시커즈」를 가진 이 디지몬이 체크한 …
+// g6-batch4/chunk1 감사: BT7-014/BT17-014 아루다몬도 같은 문구("특징으로 「하이브리드체」/「10투사」를 가진 이 디지몬이 체크한
+// 옵션 카드의 【시큐리티】 효과는 발휘하지 않는다.")를 가졌는데 등록이 안 돼 있었다 (Q2741). 이 카드 자신은 그 특징을 인쇄돼
+// 있지 않고(마인형) 진화원으로 얻는 계열이라(같은 이름의 BT4-016 참고: "진화원에 「하이브리드체」…존재하는 동안"),
+// 진화원에 해당 특징을 가진 카드가 있는지로 판정한다.
 for (const [id, needTrait] of [['BT20-015', null], ['BT20-074', null], ['BT20-071', ['SoC', '시커즈']]]) {
   hk(id, { tag: '자신의 턴', src: 'inheritedKo', has: '체크한 옵션 카드의 【시큐리티】', suppressSecurity: (state, hp, h, revealedId) => C(revealedId).category === 'option' && (!needTrait || hasType(C(h.cardId), ...needTrait)) });
+}
+for (const id of ['BT7-014', 'BT17-014']) {
+  hk(id, { tag: '자신의 턴', src: 'inheritedKo', has: '체크한 옵션 카드의 【시큐리티】', suppressSecurity: (state, hp, h, revealedId) => C(revealedId).category === 'option' && h.sources.some(sid => hasType(C(sid), '하이브리드체', '10투사')) });
 }
 // BT20-028 (서로의 턴, 턴에 1회): 진화원에서 자신의 디지몬이 등장했을 때, 상대의 디지몬 1마리를 《퇴화 2》.
 hk('BT20-028', { tag: '서로의 턴', has: '진화원에서 자신의 디지몬이 등장했을 때', limit: 1, events: { play: (state, hp, h, info) => info.owner === hp && !!info.stack && !!info.stack.playedFromSources } });

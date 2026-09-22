@@ -42,7 +42,7 @@ sc('BT18-019::등장 시', async (ctx, R) => {
   const { state } = ctx; const op = opp(ctx.self); const h = me(ctx); const pl = state.players[op];
   await R.runOne({ op: 'destroy', target: 'opponent', mode: 'choose' }, ctx);
   if (!h || !h.viaFusion) return;
-  const levels = [...new Set(pl.trash.filter((id) => C(id).category === 'digimon').map((id) => C(id).level))].sort((a, b) => a - b);
+  const levels = [...new Set(pl.trash.filter((id) => C(id).category === 'digimon' && C(id).level != null).map((id) => C(id).level))].sort((a, b) => a - b); // Q2929: Lv.- 카드는 "Lv.이 서로 다른" 대상에서 제외
   let n = 0;
   for (const lv of levels) {
     const idxs = pl.trash.map((id, i) => (C(id).category === 'digimon' && C(id).level === lv ? i : -1)).filter((i) => i >= 0);

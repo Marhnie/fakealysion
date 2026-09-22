@@ -65,7 +65,11 @@ async function pickStack(ctx, who, stacks, prompt, o = {}) {
   stacks = targets(ctx, who, stacks, o.kind);
   if (!stacks.length) return null;
   if (o.mandatory && stacks.length === 1) return stacks[0];
-  const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map((s) => s.uid), prompt, fxKind: o.kind });
+  // g6-batch4 audit: wrapChoose() infers required/optional from the WHOLE printed 【tag】 segment text, which is wrong
+  // whenever that segment mixes a mandatory clause with a later optional one ("…레스트시키고, …할 수 있다" reads as
+  // optional as a whole even though the rest is mandatory, AD1-024/Q6916). o.mandatory is the caller's explicit say-so
+  // for THIS pick and must win over that heuristic — only set when true so calls that don't pass it keep the old inference.
+  const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map((s) => s.uid), prompt, fxKind: o.kind, ...(o.mandatory ? { required: true } : {}) });
   return stacks.find((s) => s.uid === uid) || null;
 }
 // pick an index from a player's real zone
@@ -1905,7 +1909,7 @@ H('AD1-024', { tag: '서로의 턴', has: '등장/진화했을때', limit: 1, ev
 SCRIPTS['AD1-024::서로의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const e = evtOf(ctx);
-  const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp), '레스트시킬 상대 디지몬 선택', { kind: 'rest' });
+  const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp), '레스트시킬 상대 디지몬 선택', { kind: 'rest', mandatory: true }); // Q6916: "…레스트 시키고,"는 필수 — 뒤의 "액티브 시킬 수 있다"만 선택
   if (t) await restIt(ctx, ctx.opp, t);
   const h = holderOf(ctx);
   if (h && h.suspended && await confirm(ctx, '이 디지몬을 액티브로 할까요?')) S.unsuspendStack(state, self, h.uid);

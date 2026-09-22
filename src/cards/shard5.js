@@ -170,7 +170,10 @@ async function playDiscounted(ctx, pred, discount, prompt) {
   if (!idxs.length) return null;
   const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone: 'hand', eligibleIdxs: idxs, prompt: prompt || '등장시킬 카드 선택' });
   if (idx == null) return null;
-  const cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - discount);
+  // Q4295 (BT20-013 family): "서로는 지불하는 등장 코스트를 마이너스할 수 없다" (ST12-03 등) still lets the effect
+  // activate and summon the card — only the discount itself is nullified, paying the full printed cost.
+  const eff = S.isPlayCostLocked(state) ? 0 : discount;
+  const cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - eff);
   if (cost > 0) S.spendMemory(state, cost);
   return S.playDigimonFresh(state, who, idx);
 }
