@@ -811,6 +811,8 @@ body.pr-replay #app .board { overflow: auto; }
   .zone-row { flex-direction: row; flex-wrap: nowrap; align-items: flex-start; gap: 4px; }
   .zone-row > .zone:first-child { flex: 0 0 96px; }
   .zone-row > .zone:last-child { flex: 1 1 0; min-width: 0; }
+  /* 육성+패 줄: 패는 위쪽 규칙(.hand-zone{flex:none!important})을 이 줄 안에서만 다시 늘려서 채운다 (좁은 육성 옆 남는 폭을 채움) */
+  .raising-hand-row > .hand-zone { flex: 1 1 0 !important; min-width: 0; }
   .zone-pill { writing-mode: horizontal-tb; white-space: nowrap; font-size: 9px; padding: 1px 6px; } .zone-pill .desk, .zone-pill .touch-only { display: none; }
   .zone .card-chip, .zone .stack-wrap { width: 44px; }
   .zone .card-chip .nm { font-size: 9px; } .zone .card-chip .meta { display: none; }

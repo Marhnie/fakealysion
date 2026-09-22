@@ -1808,10 +1808,12 @@ function renderPlayerPanel(p) {
     }))),
   ]);
 
+  // 육성 에어리어는 패 옆으로 붙이고, 배틀 에어리어는 혼자 한 줄 전체를 써서 더 넓게 보이도록 한다.
+  const raisingHandRow = h('div', { className: 'zone-row raising-hand-row' }, [raisingZone, handZone]);
   const fieldRow = h('div', { className: 'field-row' }, [
       h('div', { className: 'field-zones' }, p === 'p2'
-        ? [handZone, h('div', { className: 'zone-row' }, [raisingZone, battleZone])] // 위쪽 플레이어: 패가 필드보다 위(테이블 맞은편에 앉은 배치)
-        : [h('div', { className: 'zone-row' }, [raisingZone, battleZone]), handZone]),
+        ? [raisingHandRow, battleZone] // 위쪽 플레이어: 육성+패가 필드보다 위(테이블 맞은편에 앉은 배치)
+        : [battleZone, raisingHandRow]),
       pileRail,
     ]);
   fieldRow.insertBefore(secZone, p === 'p2' ? null : fieldRow.firstChild);
