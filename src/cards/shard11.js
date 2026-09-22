@@ -548,7 +548,7 @@ sc('BT14-065::등장 시', async (ctx) => {
   const k = revealed.filter(id => C(id).category === 'digimon').length;
   if (k > 0) {
     const t = await pickStack(ctx, ctx.opp, digs(state, ctx.opp), `《퇴화 ${k}》할 상대 디지몬 선택`, 'retreat');
-    if (t) S.retreat(state, ctx.opp, t.uid, k);
+    if (t) S.retreat(state, ctx.opp, t.uid, k); // 공개된 디지몬 카드 1장마다 《퇴화 1》 반복 — 매번 1장뿐이라 선언 단계가 없다
   }
   await returnTopOrBottom(ctx, ctx.opp, revealed);
 });

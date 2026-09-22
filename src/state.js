@@ -4851,6 +4851,17 @@ export function rotateTopStackToBottom(state, p, stack, cause = 'effect') {
   return oldTop;
 }
 
+// 16-12-1: ≪퇴화 N≫에서 실제로 파기할 매수(1~N)는 효과를 발휘하는 플레이어가 선언한다 — 카드 스크립트가 N을 계산해
+// 그대로 밀어붙이지 않도록, 여러 shard 카드가 공유하는 "선언 후 퇴화" 헬퍼. n<=1이면 물을 것도 없이 그대로 진행한다.
+export async function declareAndRetreat(ctx, p, uid, n) {
+  let count = n;
+  if (n > 1) {
+    const i = await ctx.choose('multipleChoice', { prompt: `《퇴화 ${n}》 — 몇 장 파기할까요? (1~${n})`, options: Array.from({ length: n }, (_, k) => `${k + 1}장`) });
+    count = (typeof i === 'number' && i >= 0 && i < n) ? i + 1 : n;
+  }
+  return retreat(ctx.state, p, uid, count);
+}
+
 // Retreat (de-evolve) N stages: peel top cards off the stack back to trash,
 // revealing the previous card each time. Returns list of trashed card ids.
 export function retreat(state, p, uid, stages) {

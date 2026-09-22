@@ -301,7 +301,7 @@ SCRIPTS['BT19-065::진화 시'] = SCRIPTS['BT19-065::등장 시'];
 sc('BT19-073::진화 시', async (ctx) => {
   const { state } = ctx, o = opp(ctx.self);
   const target = await pickStack(ctx, o, digs(state, o), '퇴화시킬 상대 디지몬 선택');
-  if (target) S.retreat(state, o, target.uid, digs(state, ctx.self).length);
+  if (target) S.retreat(state, o, target.uid, digs(state, ctx.self).length); // "자신의 디지몬 1마리마다 《퇴화 1》" 반복 — 매번 1장뿐이라 선언 단계가 없다
   const t2 = await pickStack(ctx, o, digs(state, o), '진화할 수 없게 할 상대 디지몬 선택');
   if (t2) { t2.cannotEvolveUntil = oppTurnEnd(state, ctx.self); S.log(state, `${o} ${C(t2.cardId).nameKo} 상대의 턴 종료까지 진화 불가`); }
 });
@@ -1001,7 +1001,7 @@ sc('BT21-060::진화 시', async (ctx) => {
   const n = Math.floor(st.sources.filter(id => C(id).nameKo === '벰몬').length / 2);
   if (!n) return;
   const t = await pickStack(ctx, o, digs(state, o), '퇴화시킬 상대 디지몬 선택');
-  if (t) S.retreat(state, o, t.uid, n);
+  if (t) S.retreat(state, o, t.uid, n); // "「벰몬」 2장마다 《퇴화 1》" 반복 — 매번 1장뿐이라 선언 단계가 없다
 });
 hk('BT21-060', { tag: '상대의 턴', src: 'inheritedKo', limit: 1, events: { attack: (state, hp, h, info) => info.owner !== hp && h.sources.slice(S.fdCount(h)).filter(id => C(id).nameKo === '벰몬').length >= 2 } });
 sc('BT21-060::상대의 턴', async (ctx) => {
@@ -1027,7 +1027,7 @@ sc('BT21-061::등장 시', async (ctx) => {
   const n = Math.floor(tamerColors(state, ctx.self) / 2);
   if (!n) return;
   const t = await pickStack(ctx, o, digs(state, o), '퇴화시킬 상대 디지몬 선택');
-  if (t) S.retreat(state, o, t.uid, n);
+  if (t) S.retreat(state, o, t.uid, n); // "테이머의 색 2색마다 《퇴화 1》" 반복 — 매번 1장뿐이라 선언 단계가 없다
 });
 SCRIPTS['BT21-061::진화 시'] = SCRIPTS['BT21-061::등장 시'];
 async function useOptionFree(ctx, zone, idx) {

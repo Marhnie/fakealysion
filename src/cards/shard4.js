@@ -795,7 +795,7 @@ OPS.s4_retreatByFaceUp = async (instr, ctx) => {
   const st = ctx.state, n = S.secFaceUpCount(st.players[ctx.self]);
   if (!n) { log(ctx, '앞면의 시큐리티가 없어 퇴화하지 않음'); return; }
   const t = await pickStackOf(ctx, ctx.opp, digimonOf(st, ctx.opp), `《퇴화 ${n}》 할 상대의 디지몬 선택`, 'retreat');
-  if (t) S.retreat(st, ctx.opp, t.uid, n);
+  if (t) S.retreat(st, ctx.opp, t.uid, n); // "앞면 시큐리티 1장마다 《퇴화 1》" 반복 — 매번 1장뿐이라 선언 단계가 없다
 };
 // cost: trash a hand card that mentions the name → shield one own digimon
 OPS.s4_trashHandNamed = async (instr, ctx) => {

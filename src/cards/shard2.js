@@ -1013,7 +1013,7 @@ OPS.s2_retreatPlaced = async (instr, ctx) => { // EX3-013: 《퇴화 N》 on one
   const n = scratch(ctx).placed || 0;
   if (n <= 0) return;
   const st = await pickStackOf(ctx, ctx.opp, digimonStacks(ctx.state, ctx.opp), `《퇴화 ${n}》 할 상대 디지몬 선택`);
-  if (st) S.retreat(ctx.state, ctx.opp, st.uid, n);
+  if (st) S.retreat(ctx.state, ctx.opp, st.uid, n); // "X마다 《퇴화 1》" 반복(공식 룰링 Q2437/Q2982) — 매번 1장뿐이라 선언 단계가 없다
 };
 OPS.s2_costRest = async (instr, ctx, helpers) => { // rest an own Digimon (cost) then run `then`
   const opts = digimonStacks(ctx.state, ctx.self).filter(s => !s.suspended && instr.pred(C(s.cardId)));
