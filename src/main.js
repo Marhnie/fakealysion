@@ -2192,12 +2192,16 @@ function renderUiChoice() {
       h('button', { onClick: () => resolve(false) }, payload.noLabel || '발동하지 않는다'),
     ]));
   } else if (kind === 'pickStack') {
+    // uids are usually payload.player's own stacks, but some pickers (《돌진》의 어택 대상 변경 등) hand over the OPPONENT's
+    // uids while payload.player stays the decision-maker — looking them up only on payload.player's side silently found
+    // nothing, so the picker rendered as if there were no targets at all. Fall back to the other side before giving up.
     const cards = payload.uids.map(uid => {
-      const pl = state.players[payload.player];
-      const st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
-      return { uid, cardId: st?.cardId };
+      let owner = payload.player, pl = state.players[owner];
+      let st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
+      if (!st) { owner = S.opponentOf(payload.player); pl = state.players[owner]; st = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid); }
+      return { uid, cardId: st?.cardId, owner };
     }).filter(x => x.cardId);
-    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { owner: x.player, onClick: () => resolve(x.uid) }))));
+    rows.push(h('div', { className: 'stack-list' }, cards.map(x => cardChip(x.cardId, { owner: x.owner, onClick: () => resolve(x.uid) }))));
     if (!(payload.required && cards.length)) rows.push(h('button', { onClick: () => resolve(null) }, '대상 없음 / 취소')); // 1-3-6: a required choice can't pick zero
   } else if (kind === 'pickStackAnySide') {
     const cards = payload.entries.map(({ player, uid }) => {
@@ -2252,7 +2256,13 @@ function renderUiChoice() {
     })));
     { // eligible cards are marked in the list above ("✔ 선택 가능" chips are clickable); with none, say so and let the player just continue
       const noEl = !payload.eligible.length;
-      const DEST_TXT = { play: '코스트 없이 등장', hand: '패에 추가', trash: '파기', evolve: '코스트 없이 진화', useOption: '코스트 없이 사용', use: '코스트 없이 사용', security: '시큐리티 위에 놓기', sourcesThis: '진화원 아래에 놓기', srcThis: '진화원 아래에 놓기', srcOwn: '진화원 아래에 놓기', sourcesOf: '진화원 아래에 놓기', tamerUnder: '테이머 아래에 놓기' };
+      const DEST_TXT = {
+        play: '코스트 없이 등장', hand: '패에 추가', trash: '파기', evolve: '코스트 없이 진화', useOption: '코스트 없이 사용', use: '코스트 없이 사용', security: '시큐리티 위에 놓기',
+        srcThis: '진화원 아래에 놓기', srcOwn: '진화원 아래에 놓기', tamerUnder: '테이머 아래에 놓기', sourcesOf: '진화원 아래에 놓기',
+        // moveEach 연산(effects.js case 'moveEach')이 쓰는 dest 값들 — 위의 srcThis/srcOwn/sourcesOf(다른 메커니즘)와는 이름이 다르다
+        thisSources: '이 카드의 진화원 아래에 놓기', otherSources: '다른 디지몬의 진화원 아래에 놓기', securityBottom: '시큐리티 아래에 놓기',
+        eggBottom: '디지타마 덱 아래로 되돌림', deckTop: '덱 위로 되돌림', deckBottom: '덱 아래로 되돌림',
+      };
       const destTxt = !payload.dest ? '패에 추가' : (DEST_TXT[payload.dest] || payload.dest);
       const lookOnly = payload.dest === 'none'; // reveal-only prompt (nothing may be picked): just show the cards
       rows.push(h('div', { className: 'step-info' }, lookOnly ? '오픈한 카드를 확인하세요 — 확인을 누르면 계속합니다.' : noEl ? '조건에 맞는 카드가 없습니다 — 그대로 진행합니다.' : `조건에 맞는 카드 ${payload.eligible.length}장 (${destTxt}) — 선택 가능한 카드만 클릭할 수 있습니다.${payload.required ? ' (반드시 선택)' : ''}`));
