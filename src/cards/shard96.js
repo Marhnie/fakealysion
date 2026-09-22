@@ -24,7 +24,9 @@ sc('*::__돌진', async (ctx) => {
   const { state } = ctx; const pa = liveAttack(ctx); if (!pa) return;
   const targets = S.chargeRedirectTargets(state, ctx.self, pa.uid).filter((u) => !(pa.targetKind === 'digimon' && u === pa.targetUid));
   if (!targets.length) { S.log(state, `${ctx.self} ${C(state.players[ctx.self].battle.find((s) => s.uid === pa.uid).cardId).nameKo} 《돌진》 — 변경할 수 있는 대상이 없음`); return; }
-  const uid = await ctx.choose('pickStack', { player: ctx.self, uids: targets, prompt: '《돌진》 — 어택의 대상을 가장 DP가 높은 액티브 상태의 상대 디지몬으로 변경할 수 있습니다 (취소=변경하지 않음)', chargeKw: true, optional: true });
+  // pickStack의 player는 관례상 "선택 대상 uid들이 속한 플레이어"다 (CPU 응답은 hints.pendingOwner로 ctx.self에게 정상 라우팅되지만,
+  // 사람이 두는 화면의 렌더러는 이 필드로 uid를 찾으므로 ctx.self를 넘기면 상대 쪽 대상이 하나도 안 보여 "대상 없음"처럼 보인다)
+  const uid = await ctx.choose('pickStack', { player: S.opponentOf(ctx.self), uids: targets, prompt: '《돌진》 — 어택의 대상을 가장 DP가 높은 액티브 상태의 상대 디지몬으로 변경할 수 있습니다 (취소=변경하지 않음)', chargeKw: true, optional: true });
   if (uid == null || !targets.includes(uid)) return;
   if (pa.ended || !liveAttack(ctx)) return;
   const aSt = stackOfUid(state, ctx.self, pa.uid);

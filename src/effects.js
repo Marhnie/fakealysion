@@ -1526,7 +1526,7 @@ async function runOneCore(instr, ctx) {
         if (!destSt) break;
       }
       const ids = entries.map(e => e.id);
-      const pickedIdx = await pickByGroups(ctx, who, ids, instr.groups, 'pickFromRevealed', instr.prompt || '카드 선택', (el, prompt) => ({ player: who, revealed: ids, eligible: el.map(i => ({ id: ids[i], i })), min: 0, max: 1, prompt, ...(instr.required != null ? { required: instr.required } : {}) }));
+      const pickedIdx = await pickByGroups(ctx, who, ids, instr.groups, 'pickFromRevealed', instr.prompt || '카드 선택', (el, prompt) => ({ player: who, revealed: ids, eligible: el.map(i => ({ id: ids[i], i })), min: 0, max: 1, prompt, dest: instr.dest, ...(instr.required != null ? { required: instr.required } : {}) }));
       let chosen = pickedIdx.map(i => entries[i]);
       if (!chosen.length) break;
       if (instr.ordered && chosen.length > 1 && instr.dest !== 'play') { // "원하는 순서대로": the player orders the group (first = top)

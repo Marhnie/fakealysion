@@ -169,11 +169,15 @@ function snapshot() {
   });
 }
 function findTiles(p, msgOrName, exact) {
-  const out = [];
+  let out = [];
   for (const e of known.values()) {
     if (p && e.p !== p) continue;
     if (exact ? e.name === msgOrName : msgOrName.includes(e.name)) out.push(e);
   }
+  // 진화 전/후 이름이 서로 포함 관계인 카드가 아주 많다(그레이몬 ⊂ 메탈그레이몬, 아구몬 ⊂ 스노우아구몬 …). 로그 한 줄을
+  // 부분 문자열로만 찾으면(!exact) 실제로는 진화형 하나만 바뀌었는데 필드의 기본형에도 같은 이펙트가 잘못 튄다 —
+  // 더 길게(더 구체적으로) 매치된 이름이 같이 있으면 그 안에 포함되는 짧은 이름은 우연한 매치로 보고 후보에서 뺀다.
+  if (!exact && out.length > 1) out = out.filter(e => !out.some(o => o !== e && o.name.length > e.name.length && o.name.includes(e.name)));
   out.sort((a, b) => (b.seen - a.seen) || (b.name.length - a.name.length));
   const best = out.filter(x => x.seen);
   return best.length ? best : out.slice(0, 1);
