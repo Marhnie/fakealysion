@@ -677,12 +677,16 @@ const BT20_102_ON = [X(async (ctx, run) => {
 SCRIPTS['BT20-102::등장 시'] = BT20_102_ON;
 SCRIPTS['BT20-102::진화 시'] = BT20_102_ON;
 // 【자신의 턴 종료 시】[턴에 1회] 턴 종료까지 자신의 디지몬 1마리는 《속공》을 얻고, 그 디지몬으로 레스트시키지 않고 어택할 수 있다.
+// Q4417 (official ruling): despite the "…할 수 있다" wording, the attack itself is NOT optional once granted —
+// the Digimon attacks as much as possible ("가능한 한 레스트하지 않고 어택합니다"). Only which Digimon receives
+// ≪속공≫ is a real choice; whether it then attacks is not. (attackFlow/declareAttack still no-op this if the
+// attack is actually illegal, e.g. no legal target or already mid-attack — Q4419.)
 SCRIPTS['BT20-102::자신의 턴 종료 시'] = [X(async (ctx) => {
   const mine = digs(ctx); if (!mine.length) return;
   const st = await pickS(ctx, ctx.self, mine, '《속공》을 얻고 레스트시키지 않고 어택할 자신의 디지몬 1마리 선택');
   if (!st) return;
   S.grantKeyword(ctx.state, ctx.self, st.uid, '속공', undefined, 'turn');
-  if (ctx.startAttack && await ask(ctx, `${C(st.cardId).nameKo}(으)로 레스트시키지 않고 어택할까요?`)) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
+  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid, undefined, { noRest: true });
 })];
 
 // @@END@@

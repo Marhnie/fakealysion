@@ -627,6 +627,19 @@ function moveStackUnder(state, p, from, to) {
   placeSources(state, p, to, [...from.sources, from.cardId], 'bottom');
   return true;
 }
+// EX10-056: forcing an OPPONENT's Digimon under another Digimon's/Tamer's evolution sources only moves that
+// single card — it leaves the battle area, so its own evolution sources are discarded to trash at the same time
+// (official Q5145), not carried along under `to`.
+function moveOnlyUnder(state, p, from, to) {
+  const pl = state.players[p];
+  const i = pl.battle.indexOf(from);
+  if (i === -1) return false;
+  pl.battle.splice(i, 1);
+  pl.trash.push(...(from.linkCards || []).map(l => l.cardId));
+  if (from.sources.length) { pl.trash.push(...from.sources); S.log(state, `${p} ${C(from.cardId).nameKo}의 진화원 ${from.sources.length}장 파기`); }
+  placeSources(state, p, to, [from.cardId], 'bottom');
+  return true;
+}
 const effMem = (ctx) => (ctx.self === 'p1' ? ctx.state.memory : -ctx.state.memory);
 const dpEvo = (o) => RUN(async (ctx) => { await evolveEffect(ctx, o); });
 
@@ -1070,7 +1083,7 @@ SC('EX10-056', '등장 시', '상대의 디지몬 1마리를 다른 상대의 �
   if (!from) return;
   const dests = [...digimonsOf(state, o), ...tamersOf(state, o)].filter(s => s !== from);
   const to = await pickStackOf(ctx, o, dests, '카드를 놓을 상대 디지몬/테이머 선택', 'other');
-  if (to) moveStackUnder(state, o, from, to);
+  if (to) moveOnlyUnder(state, o, from, to);
 }));
 
 // #86 EX10-059

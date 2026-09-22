@@ -44,9 +44,9 @@ const isTamerCard = (id) => C(id).category === 'tamer';
 const isOptionCard = (id) => C(id).category === 'option';
 const hasSourceEffect = (id) => !!(C(id).inheritedKo || '').trim();
 
-async function pickStackOf(ctx, who, stacks, prompt, fxKind) {
+async function pickStackOf(ctx, who, stacks, prompt, fxKind, required) {
   if (!stacks.length) return null;
-  const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map(s => s.uid), prompt, ...(fxKind ? { fxKind } : {}) });
+  const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map(s => s.uid), prompt, ...(fxKind ? { fxKind } : {}), ...(required !== undefined ? { required } : {}) });
   return stacks.find(s => s.uid === uid) || null;
 }
 // pick one card of pl[zone] matching pred (null = none eligible or player declined)
@@ -268,12 +268,15 @@ OPS.s4_destroy = async (instr, ctx) => {
 OPS.s4_destroySum = async (instr, ctx) => {
   const st = ctx.state;
   let left = typeof instr.limit === 'function' ? instr.limit(ctx) : instr.limit;
-  const statOf = (s) => instr.stat === 'dp' ? S.effectiveDP(st, ctx.opp, s) : instr.stat === 'level' ? lvOf(s.cardId) : (C(s.cardId).cost || 0);
+  const statOf = (s) => instr.stat === 'dp' ? S.effectiveDP(st, ctx.opp, s) : instr.stat === 'level' ? (C(s.cardId).level ?? Infinity) : (C(s.cardId).cost || 0); // Q2807: Lv.-(레벨 없음) 카드는 "Lv. 합계 N까지" 소멸의 대상이 될 수 없다 — lvOf()의 ??0 폴백을 여기서만 우회(다른 <=/>= 사용처는 그대로 둠)
   const chosen = [];
   for (;;) {
     const cands = st.players[ctx.opp].battle.filter(s => C(s.cardId).category === 'digimon' && !chosen.includes(s.uid) && statOf(s) <= left);
     if (!cands.length) break;
-    const t = await pickStackOf(ctx, ctx.opp, cands, `소멸시킬 상대의 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : instr.stat === 'level' ? 'Lv.' : '등장 코스트'} 합계 ${left})`, 'delete');
+    // official Q&A (LM-021/Q4018 family): only the FIRST pick is mandatory (1-3-6) — after that the player may stop short of the cap,
+    // unlike a fixed-count "N마리를 소멸시킨다" destroy. Without this, ctx.choose's whole-text optional heuristic (effects.js wrapChoose)
+    // sees no "수 있다"/"까지" in this sentence and marks every iteration required, hiding the "stop early" option past the first pick.
+    const t = await pickStackOf(ctx, ctx.opp, cands, `소멸시킬 상대의 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : instr.stat === 'level' ? 'Lv.' : '등장 코스트'} 합계 ${left})`, 'delete', chosen.length === 0);
     if (!t) break;
     chosen.push(t.uid); left -= statOf(t);
   }
@@ -338,7 +341,7 @@ OPS.s4_shield = async (instr, ctx) => {
 // End-of-turn destruction of this digimon (e.g. after a temporary evolution).
 OPS.s4_endOfTurnDestroyThis = async (instr, ctx) => {
   const st = ctx.state, p = ctx.self, uid = ctx.sourceStackUid;
-  S.scheduleEndOfTurn(st, () => { const s = stackByUid(st, p, uid); if (s) S.deleteStack(st, p, uid, 'trash', 'ownEffect'); }, { player: p, label: '이 턴 종료 시 소멸' });
+  S.scheduleEndOfTurn(st, () => { const s = stackByUid(st, p, uid); if (s && C(s.cardId).category === 'digimon') S.deleteStack(st, p, uid, 'trash', 'ownEffect'); }, { player: p, label: '이 턴 종료 시 소멸' }); // Q2729/2760: 턴 종료 전에 ≪퇴화≫ 등으로 테이머까지 벗겨져 디지몬이 아니게 됐다면 대상이 없어 소멸하지 않는다
   log(ctx, `${p} 이 턴 종료 시 이 디지몬을 소멸시킴 (예약)`);
 };
 
@@ -1035,14 +1038,23 @@ OPS.s4_parasite = async (instr, ctx) => {
   target.sources.unshift(ctx.sourceCardId);
   S.recomputeStackGrants(target);
   log(ctx, `${p} 패러사이몬을 ${C(target.cardId).nameKo}의 진화원 아래에 놓음`);
+  // Q2804: 레스트시키는 것과 그 디지몬으로 어택하는 것은 하나로 묶인 처리다 — 레스트만 시키고 어택을 안 하는 건 안 된다.
+  // 실제로 어택할 수 있는 상황일 때만 상대를 레스트시키고, 그렇지 않으면(대상 없음/거절) 둘 다 하지 않는다.
+  if (target.suspended) return; // 이 디지몬이 이미 레스트라 애초에 어택할 수 없음
   const o = await pickStackOf(ctx, ctx.opp, digimonOf(st, ctx.opp), '레스트시킬 상대의 디지몬 선택', 'rest');
-  if (o) S.restStack(st, ctx.opp, o.uid);
-  if (target.suspended) return;
+  if (!o) return;
+  // 어택 대상은 기본적으로 레스트 상태여야 하므로(legalDigimonTargets), 실제로 레스트시키기 전에는 방금 고른 o조차
+  // 아직 액티브라 후보에 안 잡힌다 — 레스트를 임시로 가정해(부수효과 없는 단순 필드 토글) 진짜로 어택이 가능한지 미리 본다.
+  const wasSuspended = o.suspended; o.suspended = true;
   const legal = S.legalDigimonTargets(st, p, target.uid);
+  o.suspended = wasSuspended;
   if (!legal.length) return;
-  if (!(await confirm(ctx, p, `${C(target.cardId).nameKo}(으)로 상대의 디지몬에게 어택할까요?`))) return;
-  const tgt = await pickStackOf(ctx, ctx.opp, legal.map(u => stackByUid(st, ctx.opp, u)).filter(Boolean), '어택할 상대의 디지몬 선택');
-  if (tgt && ctx.startAttack) ctx.startAttack(p, target.uid, tgt.uid);
+  if (!(await confirm(ctx, p, `${C(o.cardId).nameKo}을(를) 레스트시키고 ${C(target.cardId).nameKo}(으)로 상대의 디지몬에게 어택할까요? (아니오 = 레스트도 하지 않음)`))) return;
+  S.restStack(st, ctx.opp, o.uid); // 이미 수락했으므로 이제부터는 확정 — 대상 고르기도 필수(취소해도 레스트는 되돌리지 않음)
+  const legal2 = S.legalDigimonTargets(st, p, target.uid);
+  const tgt = await pickStackOf(ctx, ctx.opp, legal2.map(u => stackByUid(st, ctx.opp, u)).filter(Boolean), '어택할 상대의 디지몬 선택', 'attack', true);
+  if (!tgt) return;
+  if (ctx.startAttack) ctx.startAttack(p, target.uid, tgt.uid);
 };
 SCRIPTS['BT17-050::메인'] = [{ op: 's4_parasite' }];
 OPS.s4_putThisUnderOther = async (instr, ctx) => {

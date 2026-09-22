@@ -30,8 +30,11 @@ const S_COLOR_EN = { 레드: 'red', 블루: 'blue', 옐로: 'yellow', 옐로우:
 // S.effectiveInfo (원래 명칭/색 변경, 〈룰〉 alias names, hook-granted names/traits/colors, 디지몬으로도 취급) — `state` is then required
 // (falls back to the printed card when omitted). Printed cards use S.cardNameInfo (〈룰〉 aliases) and `types` (특징 incl. 속성/형태).
 const BEAST_TRAIT_EXCL = ['수장룡형', '수생형', '수생포유류형', '정보수집 타입', '정보수집 유형'];
+// 2-3-3-3 (Ver.4.3): a "≪X≫를 가진 카드" REFERENCE only matches cards that ALWAYS have the keyword (printed / live
+// continuous grant), not one obtained through a one-shot or even permanent-duration effect GRANT — so this checks
+// S.hasAlwaysKeyword (not the broader S.hasKeyword, which folds every source together for a card's own play legality).
 function stackHasKeywordNow(S, state, target, kw) {
-  if (S.hasKeyword(target, kw)) return true;
+  if (S.hasAlwaysKeyword(target, kw)) return true;
   const p = ['p1', 'p2'].find(x => state.players[x].battle.includes(target) || state.players[x].raising === target);
   if (!p) return false;
   try { if (S.hookGrantedKeywords(state, p, target).includes(kw)) return true; } catch (e) { /* ignore */ }
@@ -536,7 +539,10 @@ function wrapChoose(ctx) {
       const entries = payload.entries.filter(e => { if (e.player === ctx.self) return true; const pl = state.players[e.player]; const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === e.uid); return !st || !S.effectBlocked(state, e.player, st, fk); });
       payload = { ...payload, entries };
     }
-    if (kind === 'confirmEffect' && state._forceOptional > 0) { S.log(state, '강제 효과가 발휘한 효과의 임의 처리 조건은 강제로 처리함 (룰 15-15-7-4)'); return true; }
+    // 룰 15-15-7-4 (Ver.4.3에서 변경): 예전에는 "다른 효과를 발휘시키는 효과가 강제 효과면, 선택된 다른 효과의
+    // 임의 처리 조건도 강제로 처리한다"였으나, Ver.4.3부터는 강제 효과라도 그 임의 처리 조건을 처리할지는
+    // 플레이어가 선택할 수 있다. 따라서 여기서 confirmEffect를 강제로 true 처리하지 않고, 일반적인 선택 흐름
+    // (UI 프롬프트/CPU 판단)에 맡긴다.
     const res = await orig(kind, payload);
     if (kind === 'pickStack' && res && payload?.player) { ctx._lastPick = { player: payload.player, uid: res }; recordPickInfo(ctx, payload.player, res); } // "그 디지몬…" refers to the Digimon chosen last
     else if (kind === 'pickStackAnySide' && res && res.uid) ctx._lastPick = { player: res.player, uid: res.uid };
@@ -844,6 +850,11 @@ async function runOne(instr, ctx) {
   try { await runOneCore(instr, ctx); }
   finally { fxDepth--; state._fxOp = prevOp; if (top) { state._secDecBatch = null; state._discardBatch = null; state._delBatch = null; } }
   if (resBefore) ctx._res = resDiff(resBefore, resSnap(state, ctx.self), instr.op); // what THIS instruction did, for a later "이 효과로 …했다면"
+  // official Q&A (EX2-012 Q3302, BT9-017 Q1814): resDiff's battle-area-length-based "deleted" count is fooled by a
+  // ≪디코이≫/≪수호≫ replacement — the specifically targeted stack survives, but a DIFFERENT stack in the same battle
+  // area is removed instead, so the raw length delta still reads "something died". The 'destroy' op already tracks
+  // whether ITS OWN intended target(s) were actually removed (ctx._lastDestroyed) — trust that instead here.
+  if (instr.op === 'destroy' && ctx._lastDestroyed != null && ctx._res) ctx._res = { ...ctx._res, deleted: ctx._lastDestroyed ? 1 : 0 };
 
   // a deletion parked on an optional survive prompt (state.deleteStack → pendingReplacements) must be settled before the next op runs
   if (state.pendingReplacements?.length) await new Promise(r => (state._replWaiters ||= []).push(r));
@@ -956,27 +967,33 @@ async function runOneCore(instr, ctx) {
       }
       if (filter || instr.excludeSelf || instr.anyKind) uids = candidateStacks(ctx, targetPlayer, { filter, excludeSelf: instr.excludeSelf, anyKind: !!instr.anyKind }).map(s => s.uid);
       const dcause = targetPlayer === ctx.self ? 'ownEffect' : 'effect';
-      const destroyedBefore = pl.battle.length;
+      // official Q&A (EX2-012 Q3302, BT9-017 Q1814): "이 효과로 소멸하지 않았을 때" is judged by whether the
+      // SPECIFICALLY TARGETED stack(s) actually died, not by whether the player's battle area shrank overall —
+      // a ≪디코이≫/≪수호≫ replacement removes a DIFFERENT stack instead, which must still count as "not destroyed".
+      let anyActuallyDestroyed = false;
       try {
       if (instr.mode === 'last') {
-        const lp = resolveLast(ctx); if (lp) S.deleteStack(state, lp.player, lp.uid, 'trash', lp.player === ctx.self ? 'ownEffect' : 'effect');
+        const lp = resolveLast(ctx); if (lp && S.deleteStack(state, lp.player, lp.uid, 'trash', lp.player === ctx.self ? 'ownEffect' : 'effect')) anyActuallyDestroyed = true;
       } else if (instr.mode === 'thisStack') {
         recordPickInfo(ctx, targetPlayer, ctx.sourceStackUid); // "이 디지몬을 소멸시키는 것으로, 소멸한 디지몬의 DP/Lv. 이하…" (pass2-b8: ref was dropped -> no cap)
-        S.deleteStack(state, targetPlayer, ctx.sourceStackUid, 'trash', dcause);
+        if (S.deleteStack(state, targetPlayer, ctx.sourceStackUid, 'trash', dcause)) anyActuallyDestroyed = true;
       } else if (instr.mode === 'all') {
-        uids.forEach(uid => S.deleteStack(state, targetPlayer, uid, 'trash', dcause));
+        uids.forEach(uid => { if (S.deleteStack(state, targetPlayer, uid, 'trash', dcause)) anyActuallyDestroyed = true; });
       } else if (instr.mode === 'lowestDP') {
         const withDp = pl.battle.filter(s => uids.includes(s.uid)).map(s => ({ uid: s.uid, dp: S.card(s.cardId).dp || 0 }));
         if (withDp.length) {
           const min = Math.min(...withDp.map(x => x.dp));
-          withDp.filter(x => x.dp === min).forEach(x => S.deleteStack(state, targetPlayer, x.uid, 'trash', dcause));
+          withDp.filter(x => x.dp === min).forEach(x => { if (S.deleteStack(state, targetPlayer, x.uid, 'trash', dcause)) anyActuallyDestroyed = true; });
         }
       } else {
-        const pick = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '소멸시킬 디지몬 선택' });
+        // Q3976/Q4936 (EX8-073/BT22-074): a plain "…소멸시킨다" (not "…소멸시킬 수 있다/까지") is
+        // mandatory — a legal target can't be waved off just to satisfy a later "이 효과로 소멸하지
+        // 않았다면" branch. Only an explicitly optional/"upTo" destroy may skip target selection.
+        const pick = await ctx.choose('pickStack', { player: targetPlayer, uids, required: !instr.optional, prompt: instr.prompt || '소멸시킬 디지몬 선택' });
         if (pick && targetPlayer === ctx.self) { const ds = pl.battle.find(s => s.uid === pick); if (ds) (ctx._ownDestroyedIds ||= []).push(ds.cardId); } // for "이 효과로 명칭에 「X」를 포함하는 자신의 디지몬이 소멸하고 있었다면"
-        if (pick) S.deleteStack(state, targetPlayer, pick, 'trash', dcause);
+        if (pick && S.deleteStack(state, targetPlayer, pick, 'trash', dcause)) anyActuallyDestroyed = true;
       }
-      } finally { ctx._lastDestroyed = pl.battle.length < destroyedBefore; } // for "이 효과로 소멸하지 않았다면"
+      } finally { ctx._lastDestroyed = anyActuallyDestroyed; } // for "이 효과로 소멸하지 않았다면"
       break;
     }
     case 'retreat': {
@@ -1226,7 +1243,9 @@ async function runOneCore(instr, ctx) {
       let targetUid = instr.thisStack ? ctx.sourceStackUid : null;
       if (!targetUid) {
         const uids = candidateStacks(ctx, targetPlayer, instr).map(s => s.uid);
-        targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || `${instr.keyword} 부여할 디지몬 선택` });
+        // Q4565 (BT21-061): a plain "…1마리는 《X》를 얻는다" grant (not "…얻을 수 있다") is mandatory —
+        // the player can't wave off target selection to duck the whole triggered ability.
+        targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, required: !instr.optional, prompt: instr.prompt || `${instr.keyword} 부여할 디지몬 선택` });
       }
       if (targetUid && instr.distinct) ((ctx._distinctPicks ||= {})[instr.distinct] ||= new Set()).add(targetUid);
       if (targetUid) S.grantKeyword(state, targetPlayer, targetUid, instr.keyword, instr.value, instr.duration || 'turn');
@@ -1393,7 +1412,7 @@ async function runOneCore(instr, ctx) {
       for (;;) {
         const opts = state.players[ctx.opp].battle.filter(st => S.card(st.cardId).category === 'digimon' && !chosen.includes(st.uid) && statOf(st) <= left);
         if (!opts.length) break;
-        const uid = await ctx.choose('pickStack', { player: ctx.opp, uids: opts.map(x => x.uid), prompt: `소멸시킬 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : '등장 코스트'} 합계 ${left})` });
+        const uid = await ctx.choose('pickStack', { player: ctx.opp, uids: opts.map(x => x.uid), required: chosen.length === 0, prompt: `소멸시킬 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : '등장 코스트'} 합계 ${left})` }); // official Q&A (ST7-12/Q693): only the FIRST pick is mandatory — the player may stop short of the cap afterward, unlike a fixed-count "N마리를 소멸시킨다" destroy
         if (!uid) break;
         const st = opts.find(x => x.uid === uid);
         if (!st) break;
@@ -1947,7 +1966,8 @@ async function runOneCore(instr, ctx) {
       await runScript(ok ? instr.then : instr.else, ctx);
       break;
     }
-    case 'effectChoice': { // 15-15-7-2 / 15-15-7-4
+    case 'effectChoice': { // 15-15-7-2 (순차 선택-발휘 반복); 15-15-7-4(Ver.4.3): "모두 발휘"가 강제라도 각 효과의 임의
+      // 처리 조건은 여전히 플레이어의 선택 — wrapChoose가 confirmEffect를 더 이상 자동으로 강제 처리하지 않는다.
       const all = instr.allIf ? await evalCondition({ test: instr.allIf }, ctx) : false;
       if (!all) {
         const idx = await ctx.choose('multipleChoice', { options: instr.options.map(o => o.label), prompt: '발휘할 효과를 1개 선택하세요' });
@@ -1955,15 +1975,12 @@ async function runOneCore(instr, ctx) {
         break;
       }
       const rest = instr.options.slice();
-      state._forceOptional = (state._forceOptional || 0) + 1; // 15-15-7-4: a forced effect forces the chosen effects' optional processing conditions
-      try {
-        while (rest.length) {
-          let i = 0;
-          if (rest.length > 1) { const k = await ctx.choose('multipleChoice', { options: rest.map(o => o.label), prompt: `모든 효과를 발휘합니다 — 먼저 발휘할 효과를 선택하세요 (룰 15-15-7-2, 남은 ${rest.length}개)` }); i = k == null || k < 0 || k >= rest.length ? 0 : k; }
-          const [o] = rest.splice(i, 1);
-          if (o.then.length) await runScript(o.then, ctx); else S.log(state, '자동 처리할 수 없는 효과 (수동 처리): ' + o.label);
-        }
-      } finally { state._forceOptional--; }
+      while (rest.length) {
+        let i = 0;
+        if (rest.length > 1) { const k = await ctx.choose('multipleChoice', { options: rest.map(o => o.label), prompt: `모든 효과를 발휘합니다 — 먼저 발휘할 효과를 선택하세요 (룰 15-15-7-2, 남은 ${rest.length}개)` }); i = k == null || k < 0 || k >= rest.length ? 0 : k; }
+        const [o] = rest.splice(i, 1);
+        if (o.then.length) await runScript(o.then, ctx); else S.log(state, '자동 처리할 수 없는 효과 (수동 처리): ' + o.label);
+      }
       break;
     }
     case 'choice': {
@@ -2469,20 +2486,29 @@ function compileInner(text) {
   }
 
   // Destroy / delete opponent's Digimon.
+  // Q3976/Q4936 (EX8-073/BT22-074): a plain "…소멸시킨다" is mandatory (a legal target must be picked), but many
+  // OTHER printed cards (EX8-074, BT21-045, BT16-079 …) use "…소멸시킬 수 있다" with no "까지" at all — findTgt()'s
+  // upTo only fires on a numeric "까지", so it misses that verb-level optionality. Scope the "수 있다" check to the
+  // ONE sentence that actually contains this destroy clause (not the whole multi-sentence segment), so a later
+  // unrelated "그 후, …할 수 있다" tail can't leak "optional" onto an earlier, separate mandatory destroy.
+  const destroyClauseOptional = (side) => {
+    const sent = splitSentences(t).find(s => s.includes('소멸') && s.includes(side));
+    return /소멸시킬\s*수\s*있다/.test(sent || t);
+  };
   { const tgO = findTgt(t, '상대', '(?:디지몬\/테이머|디지몬|테이머)', String.raw`(?:를|을)?\s*소멸`), tgS = findTgt(t, '자신', '디지몬', String.raw`(?:를|을)?\s*소멸`);
     if (/^이\s*(?:디지몬|테이머)(?:을|를)\s*소멸시킨다[.。]?$/.test(t)) {
       script.push({ op: 'destroy', target: 'self', mode: 'thisStack' });
     } else if (tgO) {
       if (tgO.all) script.push({ op: 'destroy', target: 'opponent', mode: 'all', ...tgtProps(tgO) });
-      else for (let i = 0; i < tgO.n; i++) script.push({ op: 'destroy', target: 'opponent', mode: 'choose', ...(tgO.upTo ? { optional: true } : {}), ...(tgO.noun === '디지몬/테이머' ? { anyKind: true } : {}), ...tgtProps(tgO), ...(tgO.noun === '테이머' ? { filter: { ...(tgO.filter || {}), category: 'tamer' } } : {}) });
+      else for (let i = 0; i < tgO.n; i++) script.push({ op: 'destroy', target: 'opponent', mode: 'choose', ...(tgO.upTo || destroyClauseOptional('상대') ? { optional: true } : {}), ...(tgO.noun === '디지몬/테이머' ? { anyKind: true } : {}), ...tgtProps(tgO), ...(tgO.noun === '테이머' ? { filter: { ...(tgO.filter || {}), category: 'tamer' } } : {}) });
     } else if (/가장\s*(?:DP가\s*)?낮은[^。\n]*상대[^。\n]*디지몬[^。\n]*소멸|상대[^。\n]*가장\s*(?:DP가\s*)?낮은[^。\n]*디지몬[^。\n]*소멸/.test(t)) {
       // official ruling (slice6 G40/G41 area): "가장 DP가 낮은 상대의 디지몬 1마리를 소멸시킨다" destroys ONE (the player picks among ties); only "전부/모두" destroys every tied one.
       const dsent = t.split(/[.。]/).find((x) => /소멸/.test(x) && /가장\s*(?:DP가\s*)?낮은/.test(x)) || t;
       if (/전부|모두|모든/.test(dsent)) script.push({ op: 'destroy', target: 'opponent', mode: 'lowestDP' });
-      else script.push({ op: 'destroy', target: 'opponent', mode: 'choose', filter: { extreme: { stat: 'dp', dir: 'min' } } });
+      else script.push({ op: 'destroy', target: 'opponent', mode: 'choose', ...(destroyClauseOptional('상대') ? { optional: true } : {}), filter: { extreme: { stat: 'dp', dir: 'min' } } });
     }
     if (tgS && !/^이\s*디지몬을/.test(t) && !tgS.all) {
-      for (let i = 0; i < tgS.n; i++) script.push({ op: 'destroy', target: 'self', mode: 'choose', ...(tgS.upTo ? { optional: true } : {}), ...tgtProps(tgS) });
+      for (let i = 0; i < tgS.n; i++) script.push({ op: 'destroy', target: 'self', mode: 'choose', ...(tgS.upTo || destroyClauseOptional('자신') ? { optional: true } : {}), ...tgtProps(tgS) });
     } else if (tgS && tgS.all && !/^이\s*디지몬을/.test(t)) {
       script.push({ op: 'destroy', target: 'self', mode: 'all', ...tgtProps(tgS) });
     } }
@@ -2764,10 +2790,10 @@ function compileInner(text) {
   // no compiler pattern ever producing it (confirmed via the audit: every
   // real occurrence of this exact sentence, however commonly printed, fell
   // through uncompiled). "양 측의"(both)/"자신의"/"상대의" all appear.
-  if ((m = t.match(/(양\s*측|자신|상대)(?:의)?\s*시큐리티를?\s*(위\s*또는\s*아래|위|아래)에서(?:부터)?\s*(\d+)\s*장\s*파기(?:한다|하고)/))) {
+  if ((m = t.match(/(양\s*측|서로|자신|상대)(?:의)?\s*시큐리티를?\s*(위\s*또는\s*아래|위|아래)에서(?:부터)?\s*(\d+)\s*장\s*파기(?:한다|하고)/))) {
     const position = /또는/.test(m[2]) ? 'either' : m[2] === '아래' ? 'bottom' : 'top';
     const n = Number(m[3]);
-    const whos = /^양\s*측$/.test(m[1]) ? ['self', 'opponent'] : m[1] === '상대' ? ['opponent'] : ['self'];
+    const whos = /^(?:양\s*측|서로)$/.test(m[1]) ? ['self', 'opponent'] : m[1] === '상대' ? ['opponent'] : ['self']; // g3: "서로의" (mutual) is the same as "양 측의" (both sides) — BT16-036/BT19-043/BT25-038 all print "서로의 시큐리티를 …"
     // slice6 G321 (BT26-103 "…시큐리티를 위에서부터 1장 파기하고, 《리커버리 +2》"): textual order wins — trash first, THEN recover (with 0 security the recover must not be undone by the trash)
     const rmOps = []; for (const who of whos) for (let i = 0; i < n; i++) rmOps.push({ op: 'removeSecurity', who, position });
     const recIdx = script.findIndex((o) => o.op === 'recoverTop' || (o.op === 'condition' && (o.then || []).some((x) => x.op === 'recoverTop')));
@@ -3214,6 +3240,11 @@ function parseConditionText(c) {
   const descPred = (ctx, desc) => { const pr = ctx.S.cardDescPredicate(desc); if (!pr) ctx.S.log(ctx.state, `조건 "${desc}"을(를) 판정할 수 없어 효과를 건너뜀 (수동 확인)`); return pr; };
   if ((m = c.match(/^(?:자신의\s*)?메모리가\s*(-?\d+)\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(mem(ctx)); }
   if ((m = c.match(/^메모리가\s*상대\s*쪽의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
+  // g7 audit (EX13-060/BT26-078; also BT25-019, whose own bespoke script already handled it): "상대의 메모리가 N 이상/이하(이)라면"
+  // — the OPPONENT's own signed memory count, not "메모리가 상대 쪽의 N" (word order differs: 상대의 precedes 메모리가 here).
+  // Before this branch existed, condTestFor fell through to `undefined`, which evalCondition({test: undefined}, ctx) treats as
+  // always-true — silently granting the effect unconditionally regardless of memory.
+  if ((m = c.match(/^상대의\s*메모리가\s*(-?\d+)\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(-mem(ctx)); }
   if ((m = c.match(/^상대의\s*디지몬이\s*(있다면|없다면)$/))) return (ctx) => (digimonCount(ctx, opp(ctx)) > 0) === (m[1] === '있다면');
   if ((m = c.match(/^자신의\s*테이머가\s*(\d+)\s*명\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(own(ctx).battle.filter(s => cat(ctx, s.cardId) === 'tamer').length); }
   if ((m = c.match(/^자신의\s*「([^」]+)」의\s*진화원이\s*(\d+)\s*장\s*이상\s*있다면$/))) return (ctx) => [...own(ctx).battle].filter(Boolean).some(s => ctx.S.effectiveInfo(ctx.state, s).names.includes(m[1]) && s.sources.length >= Number(m[2])); // EX2-053 "자신의 「마더 디·리퍼」의 진화원이 5장 이상 있을 때"
@@ -3886,8 +3917,9 @@ function compileToScriptCore(text) {
       return out;
     } }
 
-  // 15-15-7-2/4: "이하의 효과에서 1개를 발휘한다. <조건>이라면 대신 이하의 효과 전부를 발휘한다." + bullet lines. One of them, or (condition) ALL of them
-  // in an order the player picks; when all are run by a forced effect their optional processing conditions are forced too.
+  // 15-15-7-2/4: "이하의 효과에서 1개를 발휘한다. <조건>이라면 대신 이하의 효과 전부를 발휘한다." + bullet lines. One of them, or (condition) ALL of them,
+  // resolved one at a time in an order the player picks each step (15-15-7-2); Ver.4.3부터 15-15-7-4는 "전부 발휘"가 강제라도
+  // 각 효과의 임의 처리 조건은 여전히 플레이어가 선택한다 (더 이상 자동으로 강제 처리하지 않음 — wrapChoose 참고).
   { const om = text.trim().match(/^이하의\s*효과\s*(?:에서|중(?:에서)?)\s*1개를\s*(?:선택하여\s*)?발휘한다\.(.*?)\n((?:\s*·[^\n]*(?:\n|$))+)\s*$/s);
     if (om) {
       const bullets = om[2].split('\n').map(s => s.trim()).filter(Boolean).map(s => s.replace(/^·\s*/, ''));

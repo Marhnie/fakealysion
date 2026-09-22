@@ -515,6 +515,12 @@ sc('EX9-068::자신의 턴', async (ctx) => {
   if (t && state.players[p].hand.length && (await ask(ctx, '패 1장을 그 디지몬의 진화원 아래에 뒷면으로 놓을까요?'))) await placeFD(ctx, t, 'hand', () => true, '뒷면으로 놓을 패 선택');
 });
 // EX9-074: 트래시의 「DM」 Lv.4 이하 1장을 진화원 위에 (선택) → 진화원과 같은 색의 상대 디지몬 1마리 소멸 (진화원이 6색 이상이면 대신 색이 서로 다른 상대 디지몬 1마리씩)
+// QA (id 5004/5005): mandatory (not "…소멸시킬 수 있다") — one same-colour opponent Digimon per DISTINCT
+// colour, chosen so as many opponent Digimon as possible are destroyed (a single colour can't be spent on
+// two Digimon). This is a bipartite max-matching (Digimon x colour): a naive "mark every colour on the
+// destroyed Digimon as used" greedy can starve a single-colour Digimon that shares its only colour with an
+// already-picked multi-colour one (the FAQ's own red-only + red&blue example), so this uses an augmenting-
+// path match (Kuhn's algorithm) to guarantee the maximum set is found regardless of pick order.
 sc('EX9-074::등장 시', async (ctx) => {
   const { state } = ctx, p = ctx.self, o = opp(p), pl = state.players[p], h = me(ctx); if (!h) return;
   const idx = await pickOwnCard(ctx, 'trash', c => c.category === 'digimon' && hasType(c, 'DM') && (c.level || 0) <= 4, '진화원 위에 놓을 「DM」 Lv.4 이하 디지몬 선택 (취소=안 함)');
@@ -522,17 +528,26 @@ sc('EX9-074::등장 시', async (ctx) => {
   const cols = new Set(h.sources.flatMap(id => C(id).colors || []));
   const opps = () => digs(state, o).filter(s => !S.effectBlocked(state, o, s, 'delete'));
   if (cols.size >= 6) {
-    const used = new Set();
-    while (true) {
-      const c = opps().filter(s => S.stackColors(s).some(x => !used.has(x)));
-      const t = await pickStack(ctx, o, c, '색이 서로 다른 상대 디지몬 소멸 (취소=그만)');
-      if (!t) break;
-      S.stackColors(t).forEach(x => used.add(x));
-      S.deleteStack(state, o, t.uid, 'trash', 'effect');
-    }
+    const cand = opps();
+    const matchOf = new Map(); // colour -> candidate stack currently assigned to it
+    const tryAssign = (s, seen) => {
+      for (const c of S.stackColors(s)) {
+        if (seen.has(c)) continue;
+        seen.add(c);
+        const cur = matchOf.get(c);
+        if (!cur || tryAssign(cur, seen)) { matchOf.set(c, s); return true; }
+      }
+      return false;
+    };
+    for (const s of cand) tryAssign(s, new Set());
+    for (const t of new Set(matchOf.values())) if (digs(state, o).includes(t)) S.deleteStack(state, o, t.uid, 'trash', 'effect');
   } else {
-    const t = await pickStack(ctx, o, opps().filter(s => S.stackColors(s).some(x => cols.has(x))), '진화원과 같은 색의 상대 디지몬 소멸');
-    if (t) S.deleteStack(state, o, t.uid, 'trash', 'effect');
+    const list = opps().filter(s => S.stackColors(s).some(x => cols.has(x)));
+    if (list.length) {
+      const uid = await ctx.choose('pickStack', { player: o, uids: list.map(s => s.uid), required: true, prompt: '진화원과 같은 색의 상대 디지몬 소멸' });
+      const t = list.find(s => s.uid === uid);
+      if (t) S.deleteStack(state, o, t.uid, 'trash', 'effect');
+    }
   }
 });
 

@@ -81,7 +81,7 @@ sc('AD1-006::서로의 턴', async (ctx) => {
   for (let n = 0; n < 4; n++) {
     const el = idxs();
     if (!el.length) break;
-    const i = el.length === 1 && n === 0 ? el[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: el, prompt: `테이머 아래에 놓을 카드 선택 (${n + 1}/4, 선택 안 함 = 종료)` });
+    const i = el.length === 1 && n === 0 ? el[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: el, prompt: `테이머 아래에 놓을 카드 선택 (${n + 1}/4, 선택 안 함 = 종료)`, ...(n === 0 ? { required: true } : {}) }); // Q6062: 발동한 이상 최소 1장은 반드시 놓아야 한다(고르는 카드만 임의) — 2번째부터는 "4장까지" 선택
     if (i == null || !el.includes(i)) break;
     const id = pl.trash[i];
     pool.splice(pool.indexOf(id), 1);

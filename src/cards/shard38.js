@@ -181,6 +181,17 @@ hk('BT23-057', { tag: '__handPlay', handPlayOption: (state, p, cardId) => {
     return -5;
   } };
 } });
+// EX10-061 아포카리몬: 이 카드가 등장할 때, 자신의 시큐리티에서, 명칭이 서로 다른 특징 「어둠의 4천왕」을 가진 앞면의 카드 1장씩을 이 카드 아래에 놓는 것으로, 놓은 카드 1장마다, 지불하는 코스트 -4.
+// (Q5783/5784: same "명칭이 서로 다른 것 1장씩" rule as its own 【등장 시】 효과 — with 2+ distinct names present, all of them must be placed together, no partial pick.)
+hk('EX10-061', { tag: '__handPlay', handPlayOption: (state, p, cardId) => {
+  const pl = state.players[p];
+  const okC = (id) => C(id).category === 'digimon' && (C(id).types || []).includes('어둠의 4천왕');
+  const byName = new Map();
+  pl.security.forEach((id) => { if (okC(id) && (pl.secUp && pl.secUp[id]) > 0 && !byName.has(C(id).nameKo)) byName.set(C(id).nameKo, id); });
+  if (!byName.size) return null;
+  const ids = [...byName.values()];
+  return { label: `${C(cardId).nameKo}: 시큐리티의 「어둠의 4천왕」(명칭이 서로 다른 것 ${ids.length}장)을 이 카드 아래에 놓고 등장 코스트 -${4 * ids.length}?`, apply: () => { state._s2PlayMat = ids.map((id) => ({ kind: 'security', cardId: id })); return -4 * ids.length; } };
+} });
 
 // =====================================================================================================================
 // F. continuous "…자신의 디지몬 전부를 DP +N / 《키워드》를 얻는다" (generic parsers only cover "이 디지몬을 DP ±N"; the rest needs a per-card descriptor)

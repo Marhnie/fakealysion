@@ -619,6 +619,22 @@ SCRIPTS['BT6-105::메인'] = [fn(async (ctx) => {
 // ---- EX1-033 (진화원 / 어택 시): 다음에 곤충형/고대곤충형 카드로 진화할 때 코스트 -1
 SCRIPTS['EX1-033::어택 시'] = [fn(async (ctx) => { addEvoMod(ctx.state, ctx.self, { delta: -1, turn: ctx.state.turnNumber, traitAny: ['곤충형', '고대곤충형'] }); S.log(ctx.state, `${ctx.self} 이 턴 다음 곤충형 진화 코스트 -1`); })];
 
+// ---- BT6-111 (어택 시): 코스트를 5까지 지불하는 것으로, 이 턴 동안 이 효과로 지불한 코스트 1마다 이 디지몬의 DP를 +1000 한다.
+// (the generic compiler had no support for "pay up to N cost, effect scales per point actually paid" — it fell back to a
+// flat manualCost + a hardcoded +1000, ignoring however much the player really paid; only card in the DB with this shape)
+SCRIPTS['BT6-111::어택 시'] = [fn(async (ctx) => {
+  const st = srcStack(ctx);
+  if (!st) return;
+  let max = 0;
+  for (let n = 5; n >= 1; n--) { if (S.canPayCost(ctx.state, n)) { max = n; break; } }
+  if (!max) return;
+  const k = await ctx.choose('multipleChoice', { prompt: '코스트를 몇 지불할까요? (지불한 코스트 1마다 DP +1000)', options: ['지불 안 함', ...Array.from({ length: max }, (_, i) => `${i + 1} 지불 (DP +${(i + 1) * 1000})`)] });
+  const n = k || 0;
+  if (!n) return;
+  S.spendMemory(ctx.state, n);
+  S.modifyDP(ctx.state, ctx.self, st.uid, n * 1000, 'turn');
+})];
+
 // ---- EX1-037 (진화원 / 자신의 턴): 배틀에서 상대 디지몬만 소멸시켰을 때 레스트 상태 상대 디지몬 1마리는 다음 액티브 페이즈에 액티브가 되지 않는다
 SCRIPTS['EX1-037::자신의 턴'] = [fn(async (ctx) => {
   const st = await pickWhere(ctx, ctx.opp, s => isDigimon(s) && s.suspended, '다음 액티브 페이즈에 액티브가 되지 않을 레스트 상태의 상대 디지몬 선택');
