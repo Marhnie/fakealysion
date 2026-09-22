@@ -1537,7 +1537,7 @@ SCRIPTS['EX11-033::이동 시'] = [F(async (ctx) => {
 SCRIPTS['EX11-045::등장 시'] = [F(async (ctx) => {
   const { state } = ctx;
   const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp), '《퇴화 2》 대상 선택', { kind: 'retreat' });
-  if (t) S.retreat(state, ctx.opp, t.uid, 2);
+  if (t) await S.declareAndRetreat(ctx, ctx.opp, t.uid, 2); // 16-12-1: 1~2장 중 선언 (단일 《퇴화 2》, 반복 아님)
   const u = await pickStack(ctx, ctx.opp, state.players[ctx.opp].battle.filter((s) => ['digimon', 'tamer'].includes(C(s.cardId).category)), '진화할 수 없게 할 상대 디지몬/테이머 선택', { kind: 'other' });
   if (u) u.cannotEvolveUntil = untilOppEnd(ctx);
 })];
