@@ -59,6 +59,9 @@ for (const c of raw) {
     inheritedEn: eng?.sourceEffect || '',
     imgUrl: kor?.smallImgUrl || null,
   };
+  // DUAL cards (Digimon side + Option side; raw cardType DIGIMON + cardType2 OPTION): the option face's own use cost / colors (docs/dual-cards.md).
+  // The option-face TEXT lives in the KOR `sourceEffect` field (-> inheritedKo). null = the dump has no value (engine falls back, see state.js optionView).
+  if (c.cardType2 === 'OPTION') entry.dual = { cost: c.dualFaceCost ?? null, colors: (c.dualFaceColors || []).length ? c.dualFaceColors.map(x => x.toLowerCase()) : null };
   // Keep the highest-cardId (latest reprint metadata) entry when duplicate
   // cardNo variants exist (parallels); prefer non-parallel as canonical.
   if (!out[entry.id] || (out[entry.id].isParallel && !entry.isParallel)) {

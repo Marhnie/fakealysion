@@ -118,7 +118,7 @@ export async function drain(w) {
 // run one printed segment of a card's text (tag substring like '등장 시') as if triggered
 async function runSeg(w, p, uid, tagWanted, opts = {}) {
   const state = w.st; const stk = uid ? find(state, p, uid) : null; const id = opts.cardId || stk.cardId;
-  const segs = S.parseEffectSegments((opts.inherited ? S.card(id).inheritedKo : S.card(id).effectKo) || '').segments;
+  const segs = S.parseEffectSegments((opts.inherited ? (S.card(id).optionKo || S.card(id).inheritedKo) : S.card(id).effectKo) || '').segments;
   const seg = segs.find((s) => s.tags.some((x) => x.includes(tagWanted)));
   if (!seg) throw new Error('no segment ' + tagWanted + ' on ' + id);
   state.pending.push({ uid: 'qa' + Math.random(), player: p, cardId: id, stackUid: uid, topId: stk ? stk.cardId : undefined, tags: seg.tags, text: opts.body || seg.body, resolved: false, inherited: !!opts.inherited, ...(opts.trigger || {}) });

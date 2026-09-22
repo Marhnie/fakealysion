@@ -82,6 +82,7 @@ ${c.inheritedKo || ''}`.includes(`《${filter.keywordText}`)) return false;
     if (filter.srcMin != null && (target.sources || []).length < filter.srcMin) return false;
     if (filter.srcHas && !(target.sources || []).some(id => matchesFilter(S, id, filter.srcHas))) return false; // "진화원에 「X」/2색 이상인 카드를 가진 …" (any evolution-source card matches)
   }
+  if (!isStack && c.dual && c.cost == null && (filter.costMax != null || filter.costMin != null || filter.costEq != null)) return false; // 듀얼 카드의 디지몬 쪽에는 등장 코스트가 없다 -> 「등장 코스트 N 이하」 조건을 만족하지 않는다
   const costNow = isStack && state && S.effectiveCost ? S.effectiveCost(state, target) : (c.cost || 0); // battle-area cards: printed cost + 등장 코스트 modifiers
   if (filter.costMax != null && costNow > filter.costMax) return false;
   if (filter.costMin != null && costNow < filter.costMin) return false;
@@ -260,7 +261,7 @@ async function runRevealPick(instr, ctx) {
   const putSource = (i, tgt) => { const id = take(i); tgt.sources.splice(S.fdCount(tgt), 0, id); ctx._lastPlacedSource++; S.recomputeStackGrants(tgt); S.log(state, `${who} ${S.card(id).nameKo}을(를) ${S.card(tgt.cardId).nameKo}의 진화원 아래에 놓음`); };
   const canDo = (d, i) => {
     if (d.k === 'play') return S.card(revealed[i]).category !== 'option';
-    if (d.k === 'use') return S.card(revealed[i]).category === 'option' && !S.s1HookAny(state, 's1cannotUseOption', { p: who }) && !S.timedLocked(state, who, 'option') && S.optionColorOk(state, who, revealed[i]);
+    if (d.k === 'use') return S.isOptionLike(revealed[i]) && !S.s1HookAny(state, 's1cannotUseOption', { p: who }) && !S.timedLocked(state, who, 'option') && S.optionColorOk(state, who, revealed[i]);
     if (d.k === 'srcThis') return !!thisStk();
     if (d.k === 'srcOwn') return candidateStacks(ctx, who, { filter: d.filter }).length > 0;
     return true;
@@ -502,6 +503,7 @@ function fxSourceOf(ctx) {
     const st = [pl.raising, ...pl.battle].filter(Boolean).find(x => x.uid === ctx.sourceStackUid);
     if (st) { cat = S.card(st.cardId)?.category; also = cat !== 'digimon' && !!S.isAsDigimon(st); } // 「디지몬으로도 취급」: the effect counts as a Digimon's AND as its printed category's (Q6501/6505)
   }
+  if (ctx.trigger?.optSide || ctx._optSide) { cat = 'option'; also = false; } // 4-6-6-3: the option side of a dual card is an OPTION card's effect (official Q&A: not blocked by 「디지몬의 효과를 받지 않는다」)
   return { player: ctx.self, category: cat, cardId: ctx.sourceCardId, isDigimon: cat === 'digimon' || also, alsoDigimon: also };
 }
 const IMMUNE_SAFE_OPS = new Set(['destroy', 'destroySum', 'retreat', 'returnToHandStripSources', 'bounceToDeckBottomStripSources', 'rest', 'restAll', 'trashEvoSources', 'modifyDP', 'modifyDPAll', 'setDP', 'grantKeyword', 'restrictAttack', 'restrictAttackPlayer']);
@@ -749,7 +751,7 @@ function adaptRevealPick(ctx, who, pick, revealed) {
     let ids = null;
     if (dest === 'play') ids = revealed.filter(id => S.card(id).category !== 'option');
     else if (dest === 'evolve') { const sts = revealEvoTargets(ctx, who, { ...pick, ...g }); ids = revealed.filter(id => S.card(id).category === 'digimon' && sts.some(st => revealCanEvo(ctx, who, st, id))); }
-    else if (dest === 'useOption') ids = revealed.filter(id => S.card(id).category === 'option' && S.optionColorOk(state, who, id));
+    else if (dest === 'useOption') ids = revealed.filter(id => S.isOptionLike(id) && S.optionColorOk(state, who, id));
     return ids ? { ...g, filter: { ...(g.filter || {}), idIn: ids } } : g;
   };
   if (pick.groups) return { ...pick, groups: pick.groups.map(narrow) };
@@ -767,7 +769,7 @@ async function routeRevealed(ctx, who, instr, ids, dests, gps) {
     if (dest === 'trash') { pl.hand.splice(ix, 1); pl.trash.push(id); S.log(state, `${who} ${nm} 파기 (오픈한 카드)`); }
     else if (dest === 'security') { pl.hand.splice(ix, 1); S.addToSecurity(state, who, id, g.secPos || 'top'); }
     else if (dest === 'play') {
-      if (S.card(id).category === 'option') continue;
+      if (S.isOptionLike(id)) continue; // (a dual card has no 등장 코스트 either)
       const st = S.playFreeFromZone(state, who, 'hand', ix, { rested: !!g.rested, noTriggers: !!g.noTriggers, ...(await xrosOptsFor(ctx, who, 'hand', ix)) });
       if (st) { ctx._lastPick = { player: who, uid: st.uid }; ctx._revealPlayed = (ctx._revealPlayed || 0) + 1; }
     } else if (dest === 'evolve') {
@@ -776,7 +778,7 @@ async function routeRevealed(ctx, who, instr, ids, dests, gps) {
       const uid = cands.length === 1 ? cands[0].uid : await ctx.choose('pickStack', { player: who, uids: cands.map(s => s.uid), prompt: `${nm}(으)로 진화시킬 디지몬 선택` });
       if (uid && S.digivolve(state, who, uid, id, 0, 'hand')) ctx._revealEvolved = true;
     } else if (dest === 'useOption') {
-      if (S.card(id).category !== 'option' || !S.optionColorOk(state, who, id) || S.s1HookAny(state, 's1cannotUseOption', { p: who }) || S.timedLocked(state, who, 'option')) continue;
+      if (!S.isOptionLike(id) || !S.optionColorOk(state, who, id) || S.s1HookAny(state, 's1cannotUseOption', { p: who }) || S.timedLocked(state, who, 'option')) continue;
       pl.hand.splice(ix, 1); pl.trash.push(id);
       S.log(state, `${who} ${nm} 코스트를 지불하지 않고 사용`);
       ctx._lastUsedOption = true;
@@ -903,7 +905,7 @@ async function runOneCore(instr, ctx) {
       if (revealed.length) S.log(state, `${dWho} 덱 위 ${revealed.length}장 오픈: ${revealed.map(id => S.card(id).nameKo).join(', ')}`);
       instr = { ...instr, n: revealed.length, pick: adaptRevealPick(ctx, dWho, instr.pick, revealed) }; // (a deck with fewer cards than N reveals what is left)
       // "등장 코스트 N 이하" / "코스트를 지불하지 않고 등장" — Options have no appearance cost and can never be played, so they are not offered
-      const eligible = revealed.map((id, i) => ({ id, i })).filter(x => matchesFilter(S, x.id, instr.pick?.filter) && !(instr.pick?.action === 'play' && S.card(x.id).category === 'option'));
+      const eligible = revealed.map((id, i) => ({ id, i })).filter(x => matchesFilter(S, x.id, instr.pick?.filter) && !(instr.pick?.action === 'play' && S.isOptionLike(x.id)));
       let chosenIdxs;
       if (instr.pick?.noPick) chosenIdxs = []; // reveal only (BT18-068 / BT24-005): every card goes back
       else if (instr.pick?.all && !instr.pick?.groups) { // "…카드 전부를 패에 추가한다 / 파기한다": every matching card, no choice (the reveal is still shown)
@@ -1813,7 +1815,7 @@ async function runOneCore(instr, ctx) {
       const plO = state.players[who];
       if (S.s1HookAny(state, 's1cannotUseOption', { p: who }) || S.timedLocked(state, who, 'option')) { S.log(state, `${who} 옵션 카드를 사용할 수 없음 (효과)`); break; }
       ctx._lastUsedOption = false;
-      const okO = plO.hand.map((id, i) => i).filter(i => S.card(plO.hand[i]).category === 'option' && matchesFilter(S, plO.hand[i], instr.filter) && S.optionColorOk(state, who, plO.hand[i]));
+      const okO = plO.hand.map((id, i) => i).filter(i => S.isOptionLike(plO.hand[i]) && matchesFilter(S, plO.hand[i], instr.filter) && S.optionColorOk(state, who, plO.hand[i]));
       if (!okO.length) { S.log(state, `${who} 코스트 없이 사용할 수 있는 옵션 카드가 패에 없음`); break; }
       const ixO = await ctx.choose('pickFromZoneIndex', { player: who, zone: 'hand', eligibleIdxs: okO, prompt: instr.prompt || '코스트를 지불하지 않고 사용할 옵션 카드 선택' });
       if (ixO == null) break;

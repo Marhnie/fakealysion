@@ -68,6 +68,9 @@ export async function loadData() {
     if (FORM_KO[c.form]) add.push(FORM_KO[c.form]);
     for (const t of add) if (!(c.types || []).includes(t)) c.types = [...(c.types || []), t];
   }
+  // DUAL cards: the dump stores the OPTION half's text in the source-effect column, which would read as a 진화원 효과 (inherited) — it is not one (룰 4-6-6).
+  // Move it to `optionKo` (optionView() serves it as the Option card's effect text); a dual card has no inherited effect.
+  for (const c of Object.values(CARDS)) if (c.dual && c.inheritedKo && c.optionKo == null) { c.optionKo = c.inheritedKo; c.optionEn = c.inheritedEn || ''; c.inheritedKo = ''; c.inheritedEn = ''; }
   // ST1-08 prints 【진화시】 (no space) — the trigger tag must read 【진화 시】 or the effect never queues.
   for (const c of Object.values(CARDS)) for (const k of ['effectKo', 'inheritedKo']) if (c[k] && c[k].includes('【진화시】')) c[k] = c[k].replace(/【진화시】/g, '【진화 시】');
   // ST6-08 / BT6-079: a stray wrapping double quote around the whole printed text hides the leading 《블로커》/《길동무》 keyword line from every keyword scanner — strip it.
@@ -116,7 +119,7 @@ export async function loadData() {
   }
   S2.fixData(CARDS); // shard2: data repairs + pseudo cards (tokens)
   // 이미지 주소가 없는 카드(dgchub 원본에 이미지가 없는 최신 세트 등)는 공식 카드 목록 이미지로 대신한다 (일본어판 카드 그림; 없으면 화면이 글자 카드로 표시)
-  for (const c of Object.values(CARDS)) if (!c.imgUrl && c.id && !c.isToken && /^[A-Z]{1,3}\d{0,2}-\d{1,3}$/.test(c.id)) { c.imgUrl = `https://digimoncard.com/images/cardlist/card/${c.id}.png`; c.imgFallback = true; }
+  for (const c of Object.values(CARDS)) if (!c.imgUrl && c.id && !c.isToken && /^[A-Z]{1,3}\d{0,2}-\d{1,3}$/.test(c.id)) { c.imgUrl = `https://digimoncard.com/images/cardlist/card/${c.id}.png`; c.imgFallback = true; }
   // data: the trait is typed 「엑셀」 on the card data but printed 「액셀」 in BT20/LM texts (and 「엑셀」 in BT25): make every 엑셀 card also carry 액셀 so both spellings match (BT20-004/030/031/033/036/038/039/041/043 …)
   for (const c of Object.values(CARDS)) if (Array.isArray(c.types) && c.types.includes('엑셀') && !c.types.includes('액셀')) c.types.push('액셀');
   // data: BT21 texts print 「크로스하트」 (no space) for the trait typed 「크로스 하트」, and 「어플리 드라이버」 for the trait typed 「어플드라이버」
@@ -133,6 +136,39 @@ export async function loadData() {
 
 export function card(id) {
   return CARDS[id] || { id, nameKo: id, category: 'unknown', colors: [], types: [] };
+}
+
+// ---- DUAL cards (룰 4-6 / 4-20, docs/dual-cards.md) ----
+// A dual card is BOTH a Digimon card (top half: 〔진화〕 line, keywords, effects; category 'digimon', no 등장 코스트) and an Option card (bottom half: the
+// option name / 사용 코스트 / 색 / 《사용조건》 / 【메인】 / 〔아츠 진화〕). cards_full.json keeps the Digimon half in effectKo, the Option half text in inheritedKo and the
+// option face's cost/colors in `dual: { cost, colors }` (null = missing in the dump). optionView(id) is the card seen as an Option card (category 'option').
+const DUAL_FALLBACK_COST = 5; // dump has no dualFaceCost for a few EX12 cards; the printed option cost of every other Lv.6 dual is 4-6 (docs/dual-cards.md)
+const OPT_VIEW = new WeakMap();
+export function isDual(id) { return !!CARDS[id]?.dual; }
+// "Option card" in the sense of effects that look for/use Option cards: real Options AND the option side of a dual card.
+export function isOptionLike(id) { const c = CARDS[id]; return !!c && (c.category === 'option' || !!c.dual); }
+export function optionView(id) {
+  const c = CARDS[id];
+  if (!c || !c.dual) return card(id);
+  let v = OPT_VIEW.get(c);
+  if (!v) {
+    const lines = String(c.optionKo || '').split('\n');
+    let optName = null, printedCost = null;
+    const kept = [];
+    for (const ln of lines) {
+      const t = ln.trim();
+      if (/^〔아츠\s*진화〕/.test(t)) continue; // 4-20: the rule reminder is not an effect
+      const m = t.match(/^(.+?)\s*\/\s*코스트\s*(\d+)\s*$/); // "파미스 / 코스트 5" (option name / use cost line)
+      if (m && !/[【《〔]/.test(m[1])) { optName = m[1]; printedCost = Number(m[2]); continue; }
+      kept.push(ln);
+    }
+    v = { ...c, category: 'option', dualOf: c.id, level: null, dp: null, evoNormal: null,
+      cost: c.dual.cost ?? printedCost ?? DUAL_FALLBACK_COST,
+      colors: (c.dual.colors && c.dual.colors.length) ? c.dual.colors : (c.colors || []).slice(0, 1),
+      nameKo: optName || c.nameKo, effectKo: kept.join('\n').trim(), inheritedKo: '' };
+    OPT_VIEW.set(c, v);
+  }
+  return v;
 }
 
 // ---- deck construction legality (1-4-1-2, 1-4-1-3, 2-3-4-5/6 〈룰〉카드 넘버) ----
@@ -761,8 +797,16 @@ export function stackTopId(state, p, uid) {
   return st ? st.cardId : null;
 }
 
+// [턴 N회] 효과를 이번 턴에 이미 다 썼다면 발동 대기 목록에도 올리지 않는다 (룰 15-14-1: 사용 횟수를 넘은 효과는 발휘할 수 없으므로 선택창도 뜨지 않아야 한다)
+function onceExhaustedForQueue(state, p, stackUid, cardId, tags, body) {
+  const lm = String(body || '').trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); if (!lm || !stackUid) return false;
+  const pl = state.players[p]; const stO = pl && (pl.raising && pl.raising.uid === stackUid ? pl.raising : pl.battle.find(x => x.uid === stackUid));
+  return !!stO && turnUsesRemaining(stO, onceLimitKey(cardId, tags), Number(lm[1])) <= 0;
+}
 export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
-  const c = card(cardId);
+  const dualUse = eventKind === 'use' && isDual(cardId); // 4-6: a dual card being USED is an Option card -> its option-side text runs, as an Option effect
+  const c = dualUse ? optionView(cardId) : card(cardId);
+  const pend0 = state.pending.length;
   const wantTags = TRIGGER_TAGS[eventKind] || [];
   const parsedSegs = parseEffectSegments(c.effectKo);
   const segments = parsedSegs.segments;
@@ -778,12 +822,19 @@ export function queueTriggersFor(state, p, cardId, eventKind, stackUid = null) {
     if (hookDescriptorFor(cardId, seg.tags, seg.body)?.skipTrigger) continue; // queued by its own event hook instead (s3)
     const body = resolveBattleCondition(state, seg.body);
     if (body == null) continue;
+    if (onceExhaustedForQueue(state, p, stackUid, cardId, seg.tags, body)) continue; // 이번 턴 [턴 N회]를 이미 씀 -> 발동 대기하지 않음
     const applied = tryAutoApplySegment(state, p, body, cardId);
     if (applied) {
       log(state, `(자동 처리) ${card(cardId).nameKo} 【${seg.tags.join('】【')}】: ${body}`);
     } else {
       state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId, stackUid, tags: seg.tags, text: body, resolved: false, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, delToZone: state._deleteToZone || null, evt: { kind: eventKind } });
     }
+  }
+  if (dualUse) { // 4-20 / 9-1-5: after the 1st 【메인】 resolves the used card would be discarded — a dual card may instead be the target of 《아츠 진화》 (queued right behind the effect, before anything the effect triggered)
+    { const plU = state.players[p], tix = plU.trash.lastIndexOf(cardId); if (tix >= 0) { plU.trash.splice(tix, 1); (plU.limbo ||= []).push(cardId); } } // 9-1-4: the used card belongs to NO zone while its 【메인】 resolves (kept out of the trash so the effect cannot pick it up); resolvePending settles it
+    const queued = state.pending.length > pend0;
+    for (let k = pend0; k < state.pending.length; k++) { state.pending[k].optSide = true; state.pending[k].dualMain = cardId; } // resolvePending queues the Arts step the moment this 【메인】 has resolved
+    if (!queued) state.pending.unshift(artsPending(p, cardId)); // (nothing left to wait for: 【메인】 was applied on the spot / has no text)
   }
 }
 
@@ -818,6 +869,9 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
   if (!c.inheritedKo) return;
   const wantTags = TRIGGER_TAGS[eventKind] || [];
   const { segments } = parseEffectSegments(c.inheritedKo);
+  // 시큐리티에서 체크된 카드 자신의 【시큐리티】 효과는 inheritedKo 필드(진화원 효과와 같은 인쇄란)에 같이 들어 있을 뿐, 진화원 효과(4-3-3)가 아니다 —
+  // eventKind==='security'로 이 함수를 부르는 유일한 호출부(runSecurityCheck)가 바로 그 경우이므로, 여기서는 '진화원' 표시를 붙이지 않는다.
+  const ownSecurity = eventKind === 'security';
   for (const seg of segments) {
     const hit = seg.tags.some(tag => wantTags.some(w => tag.includes(w)));
     if (!hit) continue;
@@ -825,11 +879,12 @@ function queueInheritedTriggersFor(state, p, sourceCardId, eventKind, stackUid) 
     if (stackUid && state.players[p]?.raising?.uid === stackUid && !(seg.zoneMarker || '').includes('육성')) continue; // 3-4-7-4
     const body = resolveBattleCondition(state, seg.body);
     if (body == null) continue;
+    if (onceExhaustedForQueue(state, p, stackUid, sourceCardId, seg.tags, body)) continue; // 진화원 효과도 같은 규칙
     const applied = tryAutoApplySegment(state, p, body, sourceCardId);
     if (applied) {
-      log(state, `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
+      log(state, ownSecurity ? `(자동 처리) ${c.nameKo} 【${seg.tags.join('】【')}】: ${body}` : `(자동 처리, 진화원효과: ${c.nameKo}) 【${seg.tags.join('】【')}】: ${body}`);
     } else {
-      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: true, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, delToZone: state._deleteToZone || null, evt: { kind: eventKind } });
+      state.pending.push({ uid: 'p' + (pendingUid++), player: p, cardId: sourceCardId, stackUid, tags: seg.tags, text: body, resolved: false, inherited: !ownSecurity, topId: stackTopId(state, p, stackUid), delStack: state._deleteStack || null, delToZone: state._deleteToZone || null, evt: { kind: eventKind } });
     }
   }
 }
@@ -1198,6 +1253,8 @@ export function resolvePending(state, uid) {
     if (++state._resolvedCount > 1500 && !state.winner) { state.winner = 'draw'; log(state, '영구 순환 발생 — 멈출 수단이 없어 무승부 (18-3-2)'); }
   }
   if (t) t.resolved = true;
+  if (t && t.dualMain && !state.pending.some(x => x.artsFor === t.dualMain && !x.resolved)) state.pending.unshift(artsPending(t.player, t.dualMain)); // 4-20 / 9-1-5: right behind the 【메인】, before anything the effect triggered
+  if (t && t.artsFor) settleLimbo(state, t.player, t.artsFor); // 9-1-5: the used dual card that was not Arts-evolved is discarded now
   state.pending = state.pending.filter(x => !x.resolved);
   purgeTokens(state);
 }
@@ -3401,6 +3458,7 @@ export function playDigimonFresh(state, p, handIndex, opts = {}) {
   const pl = state.players[p];
   // slice6 (official Q&A: 「効果でデジモンを登場できない」 field ban): the card effect can be activated, but the digimon is not played
   if ((opts.byEffect != null ? !!opts.byEffect : !!state._fxSrc) && (s1HookAny(state, 's1cannotPlay', { p }) || timedLocked(state, p, 'effectPlay'))) { log(state, `${p} 효과로 디지몬을 등장시킬 수 없음`); return null; }
+  if (isDual(pl.hand[handIndex])) { log(state, `${p} ${card(pl.hand[handIndex]).nameKo}: 듀얼 카드의 디지몬 쪽에는 등장 코스트가 없어 등장시킬 수 없음 (진화 또는 옵션 사용만 가능, 룰 4-6-2)`); return null; }
   const [id] = pl.hand.splice(handIndex, 1);
   if (!id) return null;
   const stack = makeStack(id, state.turnNumber);
@@ -3501,7 +3559,7 @@ export function playFreeToRaising(state, p, zone, index, opts = {}) {
 // that together have every color the Option has (multicolor Options need all of their colors).
 // "…색 조건을 무시할 수 있다" printed on the card lifts it (conditions we can evaluate are checked).
 export function optionColorOk(state, p, cardId) {
-  const c = card(cardId);
+  const c = optionView(cardId); // dual cards: the option face's own colors / text (룰 4-6-6)
   const need = c.colors || [];
   if (!need.length) return true;
   const pl = state.players[p];
@@ -3671,32 +3729,29 @@ export function addSelfToHand(state, p, cardId) {
   return true;
 }
 
-// ---- Arts Digivolve (4-20) ----
-// A DUAL-type card is simultaneously an Option and a Digimon. Per 9-1-5, an
-// Option normally gets trashed after its last effect resolves if it still
-// belongs to no zone — but a DUAL card can instead evolve for free onto an
-// eligible in-play Digimon (becoming its new top card) in place of that
-// trash step. STUB, intentionally unwired to any UI/compiler pattern: as of
-// this dataset's snapshot (raw dump cardType enum is only
-// DIGITAMA/DIGIMON/TAMER/OPTION — zero DUAL cards, zero "아츠진화" text hits
-// anywhere), there is no real card to verify the condition-line wording
-// against, so this mirrors digivolve()'s mechanics on a best-effort basis
-// and should be re-checked against dgchub data once a real DUAL card ships.
+// ---- Arts Digivolve (4-20, docs/dual-cards.md) ----
+// A dual card that was USED as an Option (9-1) is, after its 1st 【메인】 resolves, discarded by the pending step (9-1-5). 《아츠 진화》 REPLACES that
+// discard: one of the user's own cards in the area may digivolve into the dual card without paying the cost. The used card belongs to no zone until then
+// (9-1-4); this engine parks it provisionally in the trash (useOptionCard), so it is pulled back out here. The normal evolution CONDITION still applies
+// (official Q&A: the used card is no longer a hand card, so nothing can waive the condition) — the caller (shard140 dual_arts) filters candidates.
+// Goes through digivolve(): draws the digivolve bonus card, fires 【진화 시】, rule-checks DP (a DP-0 opponent digimon from the option's 【메인】 is deleted only afterwards).
+// depth 999: resolves before every other waiting effect of the turn player and needs no ordering prompt (main.js picks the deepest tier)
+function artsPending(p, cardId) { return { uid: 'p' + (pendingUid++), player: p, cardId, stackUid: null, tags: ['__아츠진화'], text: '〔아츠 진화〕', resolved: false, optSide: true, artsFor: cardId, depth: 999 }; }
+export function settleLimbo(state, p, cardId) {
+  const pl = state.players[p], ix = (pl.limbo || []).lastIndexOf(cardId);
+  if (ix >= 0) { pl.limbo.splice(ix, 1); pl.trash.push(cardId); }
+  if (pl.limbo && !pl.limbo.length) delete pl.limbo;
+}
 export function artsDigivolve(state, p, dualCardId, targetStackUid) {
   const pl = state.players[p];
-  const stack = pl.raising?.uid === targetStackUid ? pl.raising : pl.battle.find(s => s.uid === targetStackUid);
-  if (!stack) return null;
-  const idx = pl.trash.lastIndexOf(dualCardId); // useOptionCard already provisionally trashed it
-  if (idx !== -1) pl.trash.splice(idx, 1);
-  discardLinkCardsOnNewCard(state, p, stack);
-  stack.sources.push(stack.cardId);
-  stack.cardId = dualCardId; resetUsesForNewTop(stack); /* 15-14-1-5-2 */
-  log(state, `${p} 《아츠진화》: ${card(dualCardId).nameKo}으로 무료 진화 (DUAL 카드)`);
-  drawCards(state, p, 1); // universal digivolve bonus draw
-  recomputeStackGrants(stack);
-  ruleCheckDP(state, p, stack); ruleSweepDP(state, stack);
-  queueTriggersForStack(state, p, stack, 'digivolve');
-  return stack;
+  const idx = (pl.limbo || []).lastIndexOf(dualCardId);
+  if (idx === -1) return null; // the card is no longer in its "no zone" spot (moved by its own effect)
+  pl.limbo.splice(idx, 1);
+  const res = digivolve(state, p, targetStackUid, dualCardId, 0, 'arts');
+  if (!res) { pl.limbo.push(dualCardId); return null; }
+  if (!pl.limbo.length) delete pl.limbo;
+  log(state, `${p} 《아츠 진화》: ${card(dualCardId).nameKo}으로 (코스트 없이)`);
+  return res;
 }
 
 export function hatchDigitama(state, p) {
@@ -6193,9 +6248,9 @@ export function s7QueueZoneTurnEnd(state, finishing) {
 // optionBaseCost: the automatic part (printed cost with every condition-only adjustment applied);
 // optionCostOptions: the optional "pay X to reduce" parts (UI confirms each, like hookPlayCostOptions).
 const XAB = (id) => card(id).nameKo === 'X항체' || /명칭\s*:\s*「X항체」로도\s*취급/.test(card(id).effectKo || '');
-const useCostLines = (cardId) => (card(cardId).effectKo || '').split('\n').map(s => s.trim()).filter(l => /사용\s*코스트|지불하는\s*코스트/.test(l) && !/^[【\[]/.test(l));
+const useCostLines = (cardId) => (optionView(cardId).effectKo || '').split('\n').map(s => s.trim()).filter(l => /사용\s*코스트|지불하는\s*코스트/.test(l) && !/^[【\[]/.test(l));
 export function optionBaseCost(state, p, cardId) {
-  const c = card(cardId);
+  const c = optionView(cardId);
   let cost = c.cost || 0;
   const pl = state.players[p], op = state.players[opponentOf(p)];
   const mine = pl.battle;
@@ -6211,7 +6266,7 @@ export function optionBaseCost(state, p, cardId) {
       if (names.length && names.every(hasName)) cost = 0;
       continue;
     }
-    if (/자신의\s*시큐리티\s*1장마다,?\s*이\s*카드의\s*사용\s*코스트\s*\+\s*1/.test(line)) { cost += pl.security.length; continue; } // BT26-097
+    if (/자신의\s*시큐리티\s*1장(?:마다|당),?\s*이\s*카드의\s*사용\s*코스트\s*\+\s*1/.test(line)) { cost += pl.security.length; continue; } // BT26-097
     if (!(m = line.match(/이\s*카드를\s*사용할\s*때,\s*(.*?)(?:지불하는\s*(?:사용\s*)?코스트|사용\s*코스트)\s*-\s*(\d+)\.?$/))) continue;
     const cond = m[1].trim().replace(/[,，]$/, ''), n = Number(m[2]);
     if (/파기하는\s*것으로/.test(cond)) continue; // optional payment — see optionCostOptions
@@ -6234,7 +6289,7 @@ export function optionBaseCost(state, p, cardId) {
 export function optionCostOptions(state, p, cardId) {
   const out = [];
   const pl = state.players[p];
-  const nm = card(cardId).nameKo;
+  const nm = optionView(cardId).nameKo;
   for (const line of useCostLines(cardId)) {
     let m;
     if ((m = line.match(/자신의\s*시큐리티를\s*(\d+)장이\s*될\s*때까지\s*위에서부터\s*파기하는\s*것으로,\s*파기한\s*1장마다\s*지불하는\s*사용\s*코스트\s*-\s*(\d+)/))) { // BT16-100

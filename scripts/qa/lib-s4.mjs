@@ -44,7 +44,7 @@ export function makeCtx(st, { self = 'p1', cardId = null, stackUid = null, text 
 // run one effect segment of a card by tag (Korean, e.g. '등장 시'); text defaults to the first segment with that tag (effect, then inherited)
 export async function runEffect(st, cardId, tag, o = {}) {
   const c = S.card(cardId); let text = o.text;
-  if (!text) { for (const k of ['effectKo', 'inheritedKo']) { const segs = S.parseEffectSegments(c[k] || '').segments; const seg = segs.filter(s => s.tags.includes(tag))[o.idx || 0]; if (seg) { text = seg.body; break; } } }
+  if (!text) { for (const k of ['effectKo', 'inheritedKo', 'optionKo']) { const segs = S.parseEffectSegments(c[k] || '').segments; const seg = segs.filter(s => s.tags.includes(tag))[o.idx || 0]; if (seg) { text = seg.body; break; } } }
   const spec = Fx.lookupCardSpecific(cardId, [tag], text, !!o.inherited); const sc = spec || Fx.compileToScript(text);
   const ctx = makeCtx(st, { ...o, cardId, text, tags: [tag] });
   await Fx.runScript(sc, ctx); return ctx;

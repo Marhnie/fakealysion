@@ -101,6 +101,18 @@ async function main() {
   const starters = buildStarters();
   const baselines = buildBaselines(12, 777);
   log(`starters ${starters.length} baselines ${baselines.length} avoid ${AVOID.length} workers ${NW}`);
+  // ---- optional human decklist corpus (--human f.json [--human-stats f2.json]): train split seeds the population + joins the gauntlet, holdout split is only used by verify
+  const HUMAN_F = flag('human', null); let humanTrain = [], humanHold = [], humanHashes = new Set();
+  if (HUMAN_F && HUMAN_F !== true) {
+    if (flag('human-stats', null)) log('human stats priors: ' + D.setHumanStats(JSON.parse(fs.readFileSync(String(flag('human-stats')), 'utf8'))));
+    const all = JSON.parse(fs.readFileSync(String(HUMAN_F), 'utf8')).decks.filter((d) => d.src !== 'local-dcgo' || true);
+    const av = new Set(AVOID); const hr = D.mulberry32(20260921); const seenH = new Set(); const pool = [];
+    for (const d of all) { const dk = { main: d.main, digitama: d.digitama }; const h = D.deckHash(dk); humanHashes.add(h); if (seenH.has(h)) continue; seenH.add(h); if (Object.keys(d.main).some((i) => av.has(i))) continue; pool.push({ name: 'H' + pool.length + (d.place ? 'p' + d.place : ''), colors: D.deckColors(dk), main: d.main, digitama: d.digitama, place: d.place, hash: h }); }
+    pool.sort(() => hr() - 0.5); const sc = (d) => (d.place && d.place <= 8 ? 1 : 0);
+    const half = Math.floor(pool.length / 2); humanTrain = pool.slice(0, half).sort((a, b) => sc(b) - sc(a)); humanHold = pool.slice(half);
+    log(`human corpus ${all.length} decks -> ${pool.length} unique w/o avoid cards -> train ${humanTrain.length} / holdout ${humanHold.length}`);
+  }
+  const HUMAN_SEED = Number(flag('human-seed', 0.5)), HUMAN_OPPS = Number(flag('human-opps', 3));
 
 
   // ============================================================ opponents
@@ -188,6 +200,15 @@ async function main() {
         const deck = D.compile(ge, rng); if (!deck) continue; const h = D.deckHash(deck); if (seen.has(h)) continue; seen.add(h);
         st.pop.push({ g: D.syncGenome(ge, deck), deck: slim(deck), hash: h, fit: null, games: 0, born: 0 });
       }
+      if (humanTrain.length && HUMAN_SEED > 0) { // replace part of the population with human decks (exact, converted to genomes) and mutants of them
+        const want = Math.round(POP * HUMAN_SEED); const hr2 = D.mulberry32(SEED * 55 + 3); const hs = new Set(st.pop.map((x) => x.hash)); const seeds = []; let k = 0;
+        for (const hd of humanTrain) { if (seeds.length >= Math.ceil(want / 2)) break; const r = D.genomeFromDeck({ main: hd.main, digitama: hd.digitama }, hr2); if (!r) continue; seeds.push(r); }
+        const made = []; const addP = (g, deck) => { const h = D.deckHash(deck); if (hs.has(h)) return false; hs.add(h); made.push({ g: D.syncGenome(g, deck), deck: slim(deck), hash: h, fit: null, games: 0, born: 0, human: true }); return true; };
+        for (const r of seeds) addP(r.g, r.deck);
+        let gg = 0; while (made.length < want && seeds.length && gg++ < want * 40) { const r = seeds[Math.floor(hr2() * seeds.length)]; const ge = D.mutate(r.g, hr2); if (!ge) continue; const deck = D.compile(ge, hr2); if (deck) addP(ge, deck); }
+        st.pop = [...made.slice(0, want), ...st.pop.slice(0, POP - Math.min(want, made.length))];
+        log(`HUMAN SEED: ${seeds.length} human genomes convertible, ${Math.min(want, made.length)} human-derived individuals in the initial population`);
+      }
       st.gen0 = st.pop.map((x) => slim(x.deck));
       log(`INIT population ${st.pop.length} (colour sets: ${[...new Set(st.pop.map((x) => pairKey(x.deck)))].length})`);
     }
@@ -198,7 +219,7 @@ async function main() {
       const level = FORCE_LEVEL || (frac < NORMAL_FRAC ? 'normal' : 'hard');
       // gauntlet for this generation (same opponents for everyone -> paired comparison)
       const gr = D.mulberry32(SEED * 977 + gen * 13 + 5); const shuffled = (a) => a.map((x) => [gr(), x]).sort((p, q) => p[0] - q[0]).map((x) => x[1]);
-      const opps = [...shuffled(starters).slice(0, 6).map((d) => asOpp(d, { tag: 'st' })), ...shuffled(baselines).slice(0, 4).map((d) => asOpp(d, { tag: 'bl' })), ...shuffled(st.hof).slice(0, 5).map((h) => asOpp(h.deck, { tag: 'hof' }))];
+      const opps = [...shuffled(starters).slice(0, 6).map((d) => asOpp(d, { tag: 'st' })), ...shuffled(baselines).slice(0, 4).map((d) => asOpp(d, { tag: 'bl' })), ...shuffled(st.hof).slice(0, 5).map((h) => asOpp(h.deck, { tag: 'hof' })), ...shuffled(humanTrain).slice(0, HUMAN_OPPS).map((h) => asOpp({ name: h.name, main: h.main, digitama: h.digitama }, { tag: 'human' }))];
       const ev = await evalAgainst(st.pop, opps, REPS, level, SEED * 100 + gen);
       st.pop.forEach((ind, i) => { const e = ev[i]; if (!e.n) return; const wr = e.w / e.n; ind.cur = wr; ind.fit = ind.fit == null ? wr : 0.5 * wr + 0.5 * ind.fit; ind.games += e.n; ind.stall = (ind.stall || 0) + e.stall; ind.err = (ind.err || 0) + e.err; ind.lastLevel = level; });
       const ranked = st.pop.slice().sort((a, b) => b.fit - a.fit);
@@ -258,7 +279,7 @@ async function main() {
     for (const h of st.hof) if (!fin.some((f) => f.hash === h.hash)) fin.push({ deck: h.deck, hash: h.hash, gen: h.gen, g: h.g, evolvedFit: h.fit });
     for (const p of st.pop) if (!fin.some((f) => f.hash === p.hash)) fin.push({ deck: p.deck, hash: p.hash, gen: p.born, g: p.g, evolvedFit: p.fit });
     // full gauntlet: every starter + every baseline + hall of fame + the champions of every colour pair
-    const opps = [...starters.map((d) => asOpp(d, { tag: 'st' })), ...baselines.map((d) => asOpp(d, { tag: 'bl' })), ...st.hof.map((h) => asOpp(h.deck, { tag: 'hof' }))];
+    const opps = [...starters.map((d) => asOpp(d, { tag: 'st' })), ...baselines.map((d) => asOpp(d, { tag: 'bl' })), ...st.hof.map((h) => asOpp(h.deck, { tag: 'hof' })), ...humanTrain.slice(0, Number(flag('human-final', 12))).map((h) => asOpp({ name: h.name, main: h.main, digitama: h.digitama }, { tag: 'human' }))];
     log(`FINALIZE: ${fin.length} finalists x ${opps.length} opponents x 2 games (hard), then stage 2`);
     const ev = await evalAgainst(fin, opps, 1, 'hard', 90210 + SEED);
     fin.forEach((f, i) => { f.w = ev[i].w; f.games = ev[i].n; f.stall = ev[i].stall; f.err = ev[i].err; f.wr = f.w / Math.max(1, f.games); });
@@ -277,13 +298,14 @@ async function main() {
       for (const f of arr.filter((x) => x.stage2)) {
         if (n >= PER_PAIR_EXPORT) break;
         if (f.wr < 0.5) continue;
+        if (humanHashes.has(D.deckHash(f.deck))) { log('  drop (identical to a human deck): ' + f.deck.name); continue; }
         const chk = D.checkDeck(f.deck); if (!chk.ok) { log('  drop (checkup): ' + f.deck.name + ' ' + chk.errors.join('; ')); continue; }
         n++;
         decks.push({ name: `${f.deck.name} #${n}`, colors: f.deck.colors, main: f.deck.main, digitama: f.deck.digitama, winrate: +f.wr.toFixed(4), games: f.games, generation: f.gen });
       }
     }
     decks.sort((a, b) => b.winrate - a.winrate);
-    const out = { version: 1, note: 'evolved by scripts/evolve-decks.mjs; winrate = win rate vs the full gauntlet (starters + baselines + hall of fame), CPU hard, both seats', generations: st.gen, avoid: AVOID, decks };
+    const out = { version: 1, ...(humanTrain.length ? { source: 'human-seeded' } : {}), note: 'evolved by scripts/evolve-decks.mjs; winrate = win rate vs the full gauntlet (starters + baselines + hall of fame), CPU hard, both seats', generations: st.gen, avoid: AVOID, decks };
     fs.writeFileSync(OUT, JSON.stringify(out));
     fs.writeFileSync(path.join(SCRATCH, 'finalists.json'), JSON.stringify(fin.map((f) => ({ name: f.deck.name, colors: f.deck.colors, wr: f.wr, games: f.games, gen: f.gen, evolvedFit: f.evolvedFit }))));
     log(`EXPORT ${decks.length} decks in ${Object.keys(by).length} colour sets -> ${OUT}`);
@@ -327,10 +349,28 @@ async function main() {
     const outJ = String(flag('out-json', path.join(SCRATCH, 'verify.json')));
     fs.writeFileSync(outJ, JSON.stringify({ N, level: LEVEL, rows, controls, agg }, null, 1)); log('verify written ' + outJ);
   }
+  // ============================================================ h2h: group-vs-group head to head (fresh seeds, both seats), Wilson CIs
+  async function h2h() {
+    const N = Number(flag('n', 600)); const LEVEL = String(flag('level', 'hard')); const TOP = Number(flag('top', 12));
+    const dk = (d) => ({ name: d.name, main: d.main, digitama: d.digitama });
+    const newF = JSON.parse(fs.readFileSync(OUT, 'utf8')); const oldF = JSON.parse(fs.readFileSync(String(flag('old', path.join(SCRATCH, 'cpu-decks-old.json'))), 'utf8'));
+    const groups = { 'evolved-from-human': newF.decks.slice(0, TOP).map(dk), 'human-holdout': humanHold.slice(0, 40).map(dk), 'old-cpu-decks': oldF.decks.slice(0, TOP).map(dk), starters: starters.slice(0, 21), baselines: baselines.slice(0, 12) };
+    const names = Object.keys(groups); const res = []; let seedI = 0; const r = D.mulberry32(SEED + 99);
+    for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+      const A = groups[names[i]], B = groups[names[j]]; if (!A.length || !B.length) continue;
+      const jobs = []; for (let k = 0; k < Math.ceil(N / 2); k++) jobs.push({ a: A[k % A.length], b: B[Math.floor(r() * B.length)], reps: 1, level: LEVEL, seed: (7770000 + SEED * 131 + (seedI++) * 7919) >>> 0 });
+      const rs = await runJobs(jobs); const w = rs.reduce((x, q) => x + q.aw + 0.5 * q.draw, 0), n = rs.reduce((x, q) => x + q.n, 0), bad = rs.reduce((x, q) => x + q.stall + q.err, 0);
+      const [lo, hi] = wilson(w, n); res.push({ a: names[i], b: names[j], wr: w / n, lo, hi, n, bad }); log(`h2h ${names[i]} vs ${names[j]}: ${(w / n * 100).toFixed(1)}% [${(lo * 100).toFixed(1)}-${(hi * 100).toFixed(1)}] n=${n} stall/err ${bad}`);
+    }
+    // each individual evolved deck vs the human holdout
+    const per = []; for (const d of groups['evolved-from-human']) { const jobs = groups['human-holdout'].map((o, oi) => ({ a: d, b: o, reps: Math.max(1, Math.ceil(N / groups['human-holdout'].length / 2)), level: LEVEL, seed: (8880000 + oi * 31 + per.length * 977) >>> 0 })); const rs = await runJobs(jobs); const w = rs.reduce((x, q) => x + q.aw + 0.5 * q.draw, 0), n = rs.reduce((x, q) => x + q.n, 0); const [lo, hi] = wilson(w, n); per.push({ name: d.name, vsHumanHoldout: { wr: w / n, lo, hi, n } }); log(`  ${d.name} vs human holdout ${(w / n * 100).toFixed(1)}% [${(lo * 100).toFixed(1)}-${(hi * 100).toFixed(1)}] n=${n}`); }
+    fs.writeFileSync(String(flag('out-json', path.join(SCRATCH, 'h2h.json'))), JSON.stringify({ N, level: LEVEL, res, per }, null, 1));
+  }
   try {
     if (MODE === 'evolve') await evolve();
     else if (MODE === 'finalize') await finalize();
     else if (MODE === 'verify') await verify();
+    else if (MODE === 'h2h') await h2h();
     else console.log('unknown mode');
   } finally { shutdown(); }
 }

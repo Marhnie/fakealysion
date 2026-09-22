@@ -145,10 +145,16 @@ function genAttacks(state, p, P) {
 export function genActions(state, p, beam, banned, P) {
   const ban = banned || new Set();
   let acts = [];
-  try { acts = Cpu.enumerateActions(state, p).filter((a) => !ban.has(a.key)); } catch (e) { acts = []; }
+  try { acts = Cpu.enumerateActions(state, p, { level: 'hard', params: P || null }).filter((a) => !ban.has(a.key)); } catch (e) { acts = []; }
   let atks = []; try { atks = genAttacks(state, p, P).filter((a) => !ban.has(a.key)); } catch (e) { atks = []; }
   const all = [...acts, ...atks].sort((a, b) => b.score - a.score);
   const list = all.slice(0, Math.max(1, beam - 1));
+  // option / tamer / 【메인】 / 딜레이 candidates never made the beam (their heuristic scores rank below plays, evolutions and attacks): keep the best of each class in the search (hard / expert, params.optTam)
+  if ((P ? P.optTam : Cpu.TUNE.optTam) && all.length > list.length) {
+    const klass = (a) => (a.type === 'option' ? 'opt' : a.type === 'play' && card(a.cardId).category === 'tamer' ? 'tam' : a.type === 'main' ? 'main' : a.type === 'delay' ? 'delay' : null);
+    const have = new Set(list.map(klass).filter(Boolean));
+    for (const a of all.slice(list.length)) { const k = klass(a); if (k && !have.has(k)) { have.add(k); list.push(a); } }
+  }
   list.push({ type: 'pass', score: -99, key: 'pass' });
   return list;
 }

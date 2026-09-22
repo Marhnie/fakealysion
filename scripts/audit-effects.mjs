@@ -203,6 +203,7 @@ function auditText(cardId, source, text) {
 for (const c of cards) {
   auditText(c.id, 'effectKo', c.effectKo);
   auditText(c.id, 'inheritedKo', c.inheritedKo);
+  if (c.optionKo) auditText(c.id, 'optionKo', S.optionView(c.id).effectKo); // dual cards' option half
 }
 
 console.log(JSON.stringify({ totalSegments, compiledSegments, turnConditionalHandled, uncoveredCount: uncovered.length,

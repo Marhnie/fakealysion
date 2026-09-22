@@ -117,7 +117,7 @@ export async function playGame(deck1, deck2, spec1, spec2, seed, opts = {}) {
   const state = S.newGame(JSON.parse(JSON.stringify(deck1)), JSON.parse(JSON.stringify(deck2)));
   const res = { winner: null, turns: 0, stall: false, err: false, ms: { p1: 0, p2: 0 }, n: { p1: 0, p2: 0 }, maxMs: { p1: 0, p2: 0 }, errs };
   const t0 = Date.now();
-  const sim = createSim(state, { cfgOf: (p) => cfgs[p], onError: (w, e) => errs.push(w + ': ' + String(e && e.message).slice(0, 80)), stats });
+  const sim = createSim(state, { cfgOf: (p) => cfgs[p], onError: (w, e) => errs.push(w + ': ' + String(e && e.message).slice(0, 80)), stats, ...(opts.hooks ? { hooks: opts.hooks } : {}) });
   try {
     try {
       E.drawOpeningHand(state, 'p1'); E.drawOpeningHand(state, 'p2');
@@ -137,6 +137,7 @@ export async function playGame(deck1, deck2, spec1, spec2, seed, opts = {}) {
           let act = null;
           if (cfg.sopts) act = await Cpu.HOOKS.search(state, p, cfg, cfg.sopts);
           if (!act) act = Cpu.planMain(state, p, cfg);
+          if (opts.onDecide) opts.onDecide(state, p, act, cfg); // measurement probe (scripts/measure-options.mjs)
           const dt = performance.now() - t1; if (opts.trace && cfg.sopts) opts.trace.push({ ms: dt, depth: act && act.search ? act.search.depth : 0, nodes: act && act.search ? act.search.nodes : 0, side: p });
           res.ms[p] += dt; res.n[p]++; if (dt > res.maxMs[p]) res.maxMs[p] = dt;
           return act;

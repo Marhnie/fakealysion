@@ -14,13 +14,14 @@ import { peekWrap, peekNone, peekIdOf } from './peek.js'; // 👁 필드 보기:
 import { renderSecurityZone } from './securityui.js'; // 시큐리티 존 (스택/TOP/체크 연출)
 import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE_LABELS } from './fx.js'; // activation VFX overlay (presentation only)
 import * as CpuSearch from './cpusearch.js'; // 어려움 lookahead (registers itself into Cpu.HOOKS.search)
+import { spectateSection } from './spectate-ui.js'; // 🍿 CPU끼리 구경하기 (start screen)
 import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
 const app = document.getElementById('app');
 let state = null;
-let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; // UI selection only
+let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false }; // UI selection only (orderAutoRandom: 동시 유발 순서를 매번 묻지 않고 무작위로 고름, 게임마다 초기화)
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
 
@@ -47,7 +48,7 @@ async function init() {
   try { await CD.loadCpuDecks('./data/cpu-decks.json'); } catch (e) { /* optional data file: no CPU decks offered */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
-  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
   mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
@@ -303,6 +304,7 @@ function renderSetup() {
     ].filter(Boolean)),
     setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
     h('button', { className: 'primary su-start', onClick: startNewGame }, '⚔ 새 게임 시작'),
+    spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js)
     h('div', { className: 'su-more' }, [
       h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
       ext,
@@ -734,7 +736,7 @@ function dbRefreshPreview() {
   const COL_KO = Object.fromEntries(DBS.COLORS.map(([k, ko]) => [k, ko]));
   const line = (k, val) => (val == null || val === '' ? null : h('div', { className: 'db-pv-line' }, [h('b', {}, k + ' '), val]));
   const textBox = (label, text) => (text ? h('div', { className: 'db-pv-box' }, [h('div', { className: 'zone-label' }, label), h('div', { className: 'db-pv-text' }, dbHl(text))]) : null);
-  const all = (c.effectKo || '') + '\n' + (c.inheritedKo || '');
+  const all = (c.effectKo || '') + '\n' + (c.inheritedKo || '') + '\n' + (c.optionKo || '');
   const linesOf = (re) => all.split('\n').filter(l => re.test(l)).join('\n');
   const security = linesOf(/^\s*【시큐리티】/);
   const linkish = linesOf(/링크|크로스|조그레스|Xros|Jogress|링크/i);
@@ -759,6 +761,7 @@ function dbRefreshPreview() {
       line('진화', evo),
       textBox('효과', c.effectKo),
       textBox('진화원 효과', (c.inheritedKo || '').split('\n').filter(l => !/^\s*【시큐리티】/.test(l)).join('\n')), // (【시큐리티】 줄은 진화원 효과가 아니라 아래 시큐리티 효과)
+      c.dual ? textBox(`옵션 쪽 (사용 코스트 ${S.optionView(id).cost} · ${(S.optionView(id).colors || []).map(k => COL_KO[k] || k).join('/')})`, c.optionKo) : null, // 듀얼 카드 (룰 4-6)
       textBox('시큐리티 효과', security),
       textBox('링크 / 크로스 / 조그레스', linkish),
     ]),
@@ -869,6 +872,10 @@ function blockIfBusy() {
 
 // A deletion parked by state.deleteStack on an OPTIONAL survive ability (회피/세이브/디코이/printed "…하는 것으로 소멸하지 않는다"):
 // ask the owner whether to use it; resumeReplacement re-runs the deletion with that ability allowed / declined.
+// 대체 효과 확인창은 실제로 처리하기 전에 미리 돌려 본 로그 줄을 보여 준다. 시큐리티는 비공개 정보라서(주인도 내용을 볼 수 없다) 방벽처럼 시큐리티를 파기하는
+// 효과의 안내에는 파기될 시큐리티 카드의 이름이 나오면 안 된다 — 이름 부분을 지우고 "시큐리티 1장 파기"로만 보여 준다.
+const promptSafeLine = (l) => String(l).replace(/(시큐리티[^:]*(?:파기|공개|추가|되돌림)[^:]*):\s*.+$/, '$1').replace(/\s*\(효과 트리거 대상일 수 있음[^)]*\)/, '');
+const promptSafeLines = (lines) => (lines || []).map(promptSafeLine);
 function pumpReplacementPrompt() {
   const pr = state.pendingReplacements;
   if (!pr || !pr.length || state.uiChoice) return;
@@ -878,14 +885,14 @@ function pumpReplacementPrompt() {
   if (e.cands.length > 1) { // 18-2: several replacements could be used — the player picks which one (or none)
     state.uiChoice = {
       kind: 'multipleChoice',
-      payload: { player: e.p, prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 사용할 효과를 선택하세요 (룰 18-2, 즉시형 15-8-5)`, options: [...e.cands.map((c, i) => `${i + 1}. ${c.lines.filter(l => !/스택 소멸/.test(l)).join(' / ') || c.lines[0] || '(생존 효과)'}`), '사용하지 않는다'] },
+      payload: { player: e.p, prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 사용할 효과를 선택하세요 (룰 18-2, 즉시형 15-8-5)`, options: [...e.cands.map((c, i) => `${i + 1}. ${promptSafeLines(c.lines).filter(l => !/스택 소멸/.test(l)).join(' / ') || c.lines[0] || '(생존 효과)'}`), '사용하지 않는다'] },
       resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, val == null || val >= e.cands.length ? -1 : val); render(); },
     };
     return;
   }
   state.uiChoice = {
     kind: 'confirmEffect',
-    payload: { player: e.p, yesLabel: '사용한다', noLabel: '사용하지 않는다', prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 다음 효과를 사용할 수 있습니다: ${e.lines.join(' / ') || '(생존 효과)'}` },
+    payload: { player: e.p, yesLabel: '사용한다', noLabel: '사용하지 않는다', prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 다음 효과를 사용할 수 있습니다: ${promptSafeLines(e.lines).join(' / ') || '(생존 효과)'}` },
     resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, val ? 0 : -1); render(); },
   };
 }
@@ -982,7 +989,7 @@ function renderInner() {
   const newBoard = app.querySelector('.board');
   if (newBoard && prevScroll) newBoard.scrollTop = prevScroll;
   // vs CPU: at the start of MY turn bring my own area (hand + field) into view once — on small screens it sits below the CPU's board
-  if (cpuOn && newBoard && !state.winner && state.activePlayer !== CPU_P && state.phase && cpuScrollTurn !== state.turnNumber) { cpuScrollTurn = state.turnNumber; newBoard.scrollTop = newBoard.scrollHeight; }
+  if (cpuOn && !PR.isReplay() && newBoard && !state.winner && state.activePlayer !== CPU_P && state.phase && cpuScrollTurn !== state.turnNumber) { cpuScrollTurn = state.turnNumber; newBoard.scrollTop = newBoard.scrollHeight; }
   const newModal = app.querySelector('.modal-panel');
   if (newModal && prevModalScroll) newModal.scrollTop = prevModalScroll;
   const vanishToast = renderVanishToast();
@@ -1070,8 +1077,8 @@ function selectionActionButtons() {
   const out = [];
   if (busy()) return out;
   if (sel.hand && handPlayable(sel.hand.player)) {
-    const p = sel.hand.player, cat = S.card(state.players[p].hand[sel.hand.idx]).category;
-    out.push(h('button', { className: 'primary', onClick: () => { const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi); } }, cat === 'option' ? '▶ 사용' : '▶ 등장'));
+    const p = sel.hand.player, hcid = state.players[p].hand[sel.hand.idx], dualC = S.isDual(hcid), cat = S.card(hcid).category;
+    out.push(h('button', { className: 'primary', title: dualC ? '듀얼 카드: 옵션 쪽으로 사용 (사용 후 《아츠 진화》 가능). 디지몬 쪽으로 진화하려면 카드를 고른 뒤 진화시킬 디지몬을 탭/드래그' : '', onClick: () => { const hi = sel.hand.idx; sel.hand = null; doPlayFromHand(p, hi); } }, (cat === 'option' || dualC) ? (dualC ? '▶ 옵션으로 사용' : '▶ 사용') : '▶ 등장'));
     // 조그레스: a hand card with a 〔조그레스〕 line gets its own obvious action (a disabled-looking one still explains itself when tapped)
     const jinfo = cat === 'digimon' ? jogressInfo(p, state.players[p].hand[sel.hand.idx]) : null;
     if (jinfo) {
@@ -1442,6 +1449,15 @@ function renderJogressModal() {
   const nm = (id) => S.card(id).nameDisplayKo || S.card(id).nameKo;
   const memAfter = (cost) => Math.max(-10, Math.min(10, state.memory + (p === 'p1' ? -cost : cost)));
   const fmt = (n) => (n > 0 ? '+' : '') + n;
+  const posOf = (uid) => { const bl = state.players[p].battle; const i = bl.findIndex(x => x.uid === uid); return i >= 0 ? `배틀 ${i + 1}번째` : (state.players[p].raising && state.players[p].raising.uid === uid ? '육성' : '?'); };
+  const stInfo = (st) => `${posOf(st.uid)} · 진화원 ${st.sources.length}장 · ${st.suspended ? '레스트' : '액티브'} · DP ${S.effectiveDP(state, p, st)}`;
+  const srcNames = (st) => st.sources.length ? '진화원: ' + st.sources.slice().reverse().slice(0, 4).map(nm).join(', ') + (st.sources.length > 4 ? ' …' : '') : '진화원 없음';
+  const hl = (uid, on) => { document.querySelectorAll('[data-suid="' + uid + '"]').forEach(el => el.classList.toggle('jg-hl', on)); };
+  const matBox = (st, tag) => h('div', { className: 'jg-mat', onmouseenter: () => hl(st.uid, true), onmouseleave: () => hl(st.uid, false), ontouchstart: () => { hl(pr0uid, false); } }, [
+    h('span', { className: 'jg-tag' }, tag), cardChip(st.cardId, { owner: p, sourcesCount: st.sources.length }),
+    h('div', { className: 'jg-mat-info' }, stInfo(st)), h('div', { className: 'jg-mat-src' }, srcNames(st)),
+  ]);
+  const pr0uid = null;
   const rows = shown.map(pr => {
     const go = async () => {
       if (blockIfBusy()) return;
@@ -1451,8 +1467,8 @@ function renderJogressModal() {
     };
     return h('div', { className: 'jg-row' + (shown.length === 1 ? ' pre' : '') }, [
       h('div', { className: 'jg-cards' }, [
-        cardChip(pr.top.cardId, { owner: p, sourcesCount: pr.top.sources.length }), h('span', { className: 'jg-op' }, '＋'),
-        cardChip(pr.bottom.cardId, { owner: p, sourcesCount: pr.bottom.sources.length }), h('span', { className: 'jg-op' }, '→'),
+        matBox(pr.top, 'A'), h('span', { className: 'jg-op' }, '＋'),
+        matBox(pr.bottom, 'B'), h('span', { className: 'jg-op' }, '→'),
         cardChip(m.cardId, { owner: p }),
       ]),
       h('div', { className: 'jg-cost' }, [
@@ -1506,6 +1522,10 @@ function handHint(p, id, i) {
   const room = c.category !== 'digimon' || pl.battle.length < 6;
   const playOk = c.cost != null && room;
   if (evo && evo.cost <= mem) return { cls: 'hint-evo', title: `진화 가능: ${evo.from} → 코스트 ${evo.cost} (메모리 ${mem} 이내)` };
+  if (S.isDual(id) && !evo) { // 듀얼 카드: Digimon side has no play cost -> the only way to play it from hand is the Option side (룰 4-6-2)
+    let oc = null; try { if (S.optionColorOk(state, p, id)) oc = Math.max(0, S.optionBaseCost(state, p, id)); } catch (e) { oc = null; }
+    if (oc != null) return oc <= mem ? { cls: 'hint-free', title: `옵션으로 사용 가능 — 사용 코스트 ${oc} ≤ 내 메모리 ${mem} (사용 후 《아츠 진화》 가능)` } : { cls: 'hint-costly', title: `옵션으로 사용 가능하지만 사용 코스트 ${oc}가 메모리 ${mem}을 넘어 상대에게 턴이 넘어감` };
+  }
   if (playOk && c.cost <= mem) return { cls: 'hint-free', title: `지금 낼 수 있음 — 코스트 ${c.cost} ≤ 내 메모리 ${mem}` + (evo ? ` · 진화도 가능(${evo.cost})` : '') };
   if (evo || playOk) return { cls: 'hint-costly', title: `낼 수는 있지만 메모리 ${mem}을 넘어 상대에게 턴이 넘어감 (필요 ${evo ? Math.min(evo.cost, playOk ? c.cost : 99) : c.cost})` };
   return { cls: 'hint-none', title: c.category === 'digimon' && pl.battle.length >= 6 ? '배틀 에어리어가 가득 참' : '지금은 낼 수 없음' };
@@ -1571,6 +1591,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
         render();
       })),
   });
+  chip.dataset.suid = stack.uid; // 조그레스 창에서 같은 스택을 필드에서 강조하기 위한 표식
 
   chip.dataset.fxp = p; chip.dataset.fxu = stack.uid; chip.dataset.fxn = S.card(stack.cardId).nameKo; chip.dataset.fxc = stack.cardId; // VFX overlay anchors
   const fxHit = fxHitFor(p, stack);
@@ -1611,7 +1632,7 @@ const askYN = (player, prompt) => ctxChoose('confirmEffect', { player, prompt, y
 async function playFreshFromDrag(drag, p) {
   if (blockIfBusy()) return;
   if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
-  const category = S.card(drag.cardId).category;
+  const category = S.isDual(drag.cardId) ? 'option' : S.card(drag.cardId).category; // 4-6-2: a dual card dropped on the board is USED (option side); dropped on a Digimon it evolves (Digimon side)
   if (category === 'digimon' && S.isPlayRestricted(state, drag.player, drag.cardId)) { S.log(state, `${drag.player} ${S.card(drag.cardId).nameKo}: 효과로 등장시킬 수 없음 (DP 제한)`); dragData = null; render(); return; }
   if (category === 'option') {
     let optDelta = 0; // s8: HOOKS.playDiscount also applies to Option cards ("…옵션 카드를 사용할 때, …사용 코스트 -N")
@@ -2104,13 +2125,17 @@ function autoRunMandatoryPending() {
   pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
   pendingRunner = (async () => {
     let next = pool[0];
-    if (pool.length > 1) {
+    if (pool.length > 1 && sel.orderAutoRandom) { // 사용자가 "이후 전부 랜덤 순서로" 선택함 — 4-3-2는 어차피 턴 플레이어가 임의로 정할 수 있으므로 룰 위반 아님
+      next = pool[Math.floor(Math.random() * pool.length)];
+      S.log(state, `${pool[0].player} 동시 발동 효과 ${pool.length}개 — 무작위 순서로 처리: ${S.card(next.cardId).nameKo}`);
+    } else if (pool.length > 1) {
       const uid = await ctxChoose('pickPendingOrder', {
         player: pool[0].player,
         items: pool.map(t => ({ uid: t.uid, label: `${S.card(t.cardId).nameKo} 【${t.tags.map(tagLbl).join('】【')}】 ${t.text.replace(/\([^()]*\)/g, '').slice(0, 60)}` })),
         prompt: `${pool[0].player}: 동시에 발동 대기 중인 효과 ${pool.length}개 — 먼저 처리할 효과를 선택하세요 (룰 4-3-2${mine.length ? ', 턴 플레이어 우선' : ''})`,
       });
-      next = pool.find(t => t.uid === uid) || pool[0];
+      if (uid === '__random__') { sel.orderAutoRandom = true; next = pool[Math.floor(Math.random() * pool.length)]; S.log(state, `${pool[0].player} 이후 동시 발동 효과는 무작위 순서로 처리하도록 설정`); }
+      else next = pool.find(t => t.uid === uid) || pool[0];
     }
     if (state !== st0 || next.resolved) return; // the game was replaced (rematch / new game / undo / load) while the order prompt was open, or the effect was closed meanwhile
     autoRunAttempted.add(next.uid);
@@ -2158,6 +2183,9 @@ function renderUiChoice() {
       h('span', {}, `${i + 1}. ${it.label}`),
       h('button', { className: 'primary', onClick: () => resolve(it.uid) }, '먼저 처리'),
     ])));
+    rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
+      h('button', { title: '순서를 매번 묻지 않고, 이후 동시에 발동하는 효과는 전부 무작위 순서로 처리합니다 (직접 순서를 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => resolve('__random__') }, '🎲 이후 전부 랜덤 순서로 처리'),
+    ]));
   } else if (kind === 'confirmEffect') {
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', { className: 'primary', onClick: () => resolve(true) }, payload.yesLabel || '발동한다'),
@@ -2436,6 +2464,7 @@ function describeSelectedEffects() {
     const bits = [`${c.nameKo} (${id}) Lv.${c.level ?? '-'} ${c.colors?.join('/') || ''} 코스트${c.cost ?? "-"} DP${c.dp ?? '-'}`];
     if (c.evoNormal) bits.push(`진화: ${(c.evoNormal.colors||[]).join('/')} Lv.${c.evoNormal.level}→코스트${c.evoNormal.cost}`);
     if (c.effectKo) bits.push(c.effectKo);
+    if (c.dual) bits.push(`[옵션 쪽: 사용 코스트 ${S.optionView(id).cost}, 색 ${(S.optionView(id).colors || []).join('/')}] ${c.optionKo || ''}`);
     { const inhLines = (c.inheritedKo || '').split('\n'); const inh = inhLines.filter(l => !/^\s*【시큐리티】/.test(l)).join('\n'), secL = inhLines.filter(l => /^\s*【시큐리티】/.test(l)).join('\n'); if (inh) bits.push('[진화원효과] ' + inh); if (secL) bits.push('[시큐리티효과] ' + secL); } // 시큐리티 효과는 진화원 효과가 아니다
     parts.push(bits.join('\n'));
   };

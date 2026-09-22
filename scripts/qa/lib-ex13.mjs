@@ -16,7 +16,7 @@ export const onBoard = (st, p, id) => st.players[p].battle.some((s) => s.cardId 
 // queue one printed segment of `id` (by tag) on `stack` the way queueTriggersFor does, then resolve it
 export async function runSeg(st, p, stack, id, tag, { inherited = false, evt = null, text = null, has = null } = {}) {
   const c = S.card(id);
-  const seg = S.parseEffectSegments(inherited ? c.inheritedKo : c.effectKo).segments.find((s) => s.tags.includes(tag) && (!has || s.body.includes(has)));
+  const seg = S.parseEffectSegments(inherited ? (c.optionKo || c.inheritedKo) : c.effectKo).segments.find((s) => s.tags.includes(tag) && (!has || s.body.includes(has)));
   if (!seg) throw new Error(`no segment ${tag} on ${id}`);
   st.pending.push({ uid: 'q' + Math.random(), player: p, cardId: id, stackUid: stack ? stack.uid : null, tags: seg.tags, text: text ?? seg.body, resolved: false, topId: stack ? stack.cardId : null, inherited, evt });
   await drain(st);

@@ -431,12 +431,14 @@ OPS.s8_evolve = async (i, ctx) => {
 };
 
 // use an Option card (from hand/trash/this Digimon's sources) — cost = printed + delta (or free)
+// dual cards (룰 4-6) count as Option cards for "use" purposes (they have no 등장 코스트)
+const ucat = (id) => (S.isDual(id) ? 'option' : catOf(id));
 function useOptionFrom(ctx, zone, k, delta, free, srcStack) {
   const { state } = ctx;
   const pl = state.players[ctx.self];
   const id = zone === 'sources' ? srcStack.sources[k] : pl[zone][k];
   if (!S.optionColorOk(state, ctx.self, id)) { log(ctx, `${ctx.self} ${C(id).nameKo} 사용 불가: 색 조건 미충족`); return false; }
-  const cost = free ? 0 : Math.max(0, (C(id).cost || 0) + (delta || 0));
+  const cost = free ? 0 : Math.max(0, (S.optionView(id).cost || 0) + (delta || 0));
   if (zone === 'sources') { srcStack.sources.splice(k, 1); S.recomputeStackGrants(srcStack); } else pl[zone].splice(k, 1);
   if (cost > 0) S.spendMemory(state, cost);
   pl.trash.push(id);
@@ -454,11 +456,11 @@ OPS.s8_playOrUse = async (i, ctx) => {
   const me = stackOf(ctx);
   for (const z of (i.zones || ['hand'])) {
     const list = z === 'sources' ? (me ? me.sources : []) : pl[z];
-    const elig = list.map((id, k) => k).filter(k => kinds.includes(catOf(list[k])) && (z !== 'sources' || catOf(list[k]) === 'option' || (i.srcPlay && k >= S.fdCount(me))) && (!i.pred || i.pred(list[k], ctx)));
+    const elig = list.map((id, k) => k).filter(k => kinds.includes(ucat(list[k])) && (z !== 'sources' || ucat(list[k]) === 'option' || (i.srcPlay && k >= S.fdCount(me))) && (!i.pred || i.pred(list[k], ctx)));
     const k = z === 'sources' ? await pickFromList(ctx, list, elig, '사용할 진화원의 카드 선택') : await pickZone(ctx, z, elig, `${z === 'trash' ? '트래시' : '패'}에서 ${i.free ? '코스트 없이 ' : ''}등장/사용할 카드 선택`);
     if (k == null) continue;
     const id = list[k];
-    if (catOf(id) === 'option') { S8(ctx).played = useOptionFrom(ctx, z, k, dl, i.free, me); return; }
+    if (ucat(id) === 'option') { S8(ctx).played = useOptionFrom(ctx, z, k, dl, i.free, me); return; }
     if (z === 'sources') { // EX13-045 "이 디지몬의 진화원에서 … 등장/사용": a digimon/tamer source card is played for free (only when the op says srcPlay)
       if (!i.srcPlay || !me) continue;
       if (S.s1HookAny(state, 's1cannotPlay', { p: ctx.self }) || S.timedLocked(state, ctx.self, 'effectPlay')) { S.log(state, `${ctx.self} 효과로 디지몬을 등장시킬 수 없음`); return; }
@@ -468,10 +470,10 @@ OPS.s8_playOrUse = async (i, ctx) => {
       return;
     }
     if (S.s1HookAny(state, 's1cannotPlay', { p: ctx.self }) || S.timedLocked(state, ctx.self, 'effectPlay')) { S.log(state, `${ctx.self} 효과로 디지몬을 등장시킬 수 없음`); return; } // slice6: effect-play ban — activated, but nothing is played and no cost is paid
-    const selfDc = (!i.free && (z === 'hand' || z === 'trash') && catOf(id) !== 'option' && !S.isPlayCostLocked(state)) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
+    const selfDc = (!i.free && (z === 'hand' || z === 'trash') && ucat(id) !== 'option' && !S.isPlayCostLocked(state)) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
     const cost = i.free ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && S.isPlayCostLocked(state) ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
     if (cost > 0) S.spendMemory(state, cost);
-    const xo = catOf(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
+    const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
     const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
     if (st) { st.byEffect = { kind: 'play', effect: true, turn: state.turnNumber }; S8(ctx).played = true; }
     return;
@@ -658,12 +660,13 @@ OPS.s8_redirect = async (i, ctx) => {
 // "이 카드의 옵션측에 있는 【메인】 효과를 1개 발동한다." (BT25-104)
 OPS.s8_runInheritedMain = async (i, ctx, run) => {
   const c = C(ctx.sourceCardId);
-  const seg = S.parseEffectSegments(c.inheritedKo || '').segments.find(sg => sg.tags.includes('메인'));
+  const seg = S.parseEffectSegments(c.optionKo || c.inheritedKo || '').segments.find(sg => sg.tags.includes('메인'));
   if (!seg) return;
   const body = seg.body.replace(/〔아츠 진화〕[\s\S]*$/, '').trim();
   const script = lookupCardSpecific(ctx.sourceCardId, ['메인'], body) || compileToScript(body);
   if (!script || !script.length) { log(ctx, '옵션측 【메인】 효과를 자동 실행할 수 없음'); return; }
-  await run.runScript(script, ctx);
+  const was = ctx._optSide; ctx._optSide = true; // 4-6-6-3 / official Q&A (BT25-104): the option-side effect counts as an Option card's effect, not a Digimon's (no 디지몬의 효과 immunity)
+  try { await run.runScript(script, ctx); } finally { ctx._optSide = was; }
 };
 // BT25-091: "트래시에서 옵션 카드 1장을 패에 추가할 수 있다. 이 효과로 추가하지 않았다면, 《1 드로우》."
 OPS.s8_returnOrDraw = async (i, ctx) => {

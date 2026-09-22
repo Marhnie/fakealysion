@@ -309,6 +309,8 @@ function parseEvoConditionsRaw(targetCardId) {
     if (traitM) cond.trait = traitM[1];
     const bareNameM = desc.match(/^「([^」]+)」$/);
     if (bareNameM) cond.nameExact = bareNameM[1];
+    const pcNameM = desc.match(/^등장\s*코스트\s*(\d+)의\s*「([^」]+)」$/); // "〔진화〕 등장 코스트 12의 「케레스몬」" (BT26-032/080): a card named X whose PLAY cost is exactly N
+    if (pcNameM) { cond.playCostEq = Number(pcNameM[1]); cond.nameExact = pcNameM[2]; }
     conditions.push(cond);
   }
   return conditions;
@@ -389,6 +391,11 @@ function satisfiedEvoConditions(sourceCardId, targetCardId, extraColors = [], re
       { const umNames = [...um[3].matchAll(/「([^」]+)」/g)].map(x => x[1]); if (!srcNames.some(n => umNames.includes(n))) continue; }
       const cnt = (extraColors.under || []).filter(id => !um[1] || (S.card(id).types || []).includes(um[1])).length;
       if (cnt >= Number(um[2])) out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
+      continue;
+    }
+    if (cond.playCostEq != null) { // (checked before the generic descriptor parser, which knows nothing about 등장 코스트)
+      if (src.cost !== cond.playCostEq || !srcNames.includes(cond.nameExact)) continue;
+      out.push({ cost: cond.cost, raw: cond.raw, isNormal: false });
       continue;
     }
     { const gm = isNormalCond ? null : String(cond.raw || '').match(/^(.*?(?:동안|있다면)),\s*/); if (gm && restriction && restriction.evoGate && !restriction.evoGate(gm[1])) continue; } // state-dependent gate (EX10-023 「자신의 「최지석」이 있는 동안」 …)

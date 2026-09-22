@@ -24,7 +24,7 @@ for (const d of decks) {
   ok(sum(d.main) === 50, `${d.name}: main ${sum(d.main)}`); ok(sum(d.digitama) >= 3 && sum(d.digitama) <= 5, `${d.name}: digitama ${sum(d.digitama)}`);
   ok(d.colors.length >= 1 && d.colors.length <= 2, `${d.name}: colours ${d.colors}`);
   ok(typeof d.winrate === 'number' && d.games > 0 && Number.isInteger(d.generation), `${d.name}: meta`);
-  ok(Object.keys(d).every((k) => ['name', 'colors', 'main', 'digitama', 'winrate', 'games', 'generation'].includes(k)), `${d.name}: unexpected keys ${Object.keys(d)}`);
+  ok(Object.keys(d).every((k) => ['name', 'colors', 'main', 'digitama', 'winrate', 'games', 'generation', 'source'].includes(k)), `${d.name}: unexpected keys ${Object.keys(d)}`);
   for (const id of Object.keys({ ...d.main, ...d.digitama })) ok(!!S.CARDS[id] && !(raw.avoid || []).includes(id), `${d.name}: card ${id} unknown or manual-fallback`);
 }
 console.log(`shipped decks: ${decks.length}, colour sets: ${new Set(decks.map((d) => d.colors.join('+'))).size}`);

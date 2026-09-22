@@ -20,7 +20,7 @@ for (const id of G[196].cards) {
 const noAct = (s) => s.skipNextUnsuspend || s.cannotUnsuspendUntil != null;
 for (const id of ['EX12-052', 'BT26-032']) {
   scenario('G192', `${id} (option side 【메인】): the no-activate targets may be different from the rested ones`, async () => {
-    const seg = S.parseEffectSegments(C(id).inheritedKo).segments.find((s) => s.tags.includes('메인'));
+    const seg = S.parseEffectSegments(C(id).optionKo || C(id).inheritedKo).segments.find((s) => s.tags.includes('메인'));
     const w = W({ p1: { battle: [plain(3, 2)] }, p2: { battle: [plain(3, 0), plain(3, 1), plain(3, 3), plain(3, 4)] }, memory: 10 });
     let n = 0;
     w.answers.pickStack = (o) => { const k = n++; const late = k >= (id === 'EX12-052' ? 3 : 2); return late ? o.uids[o.uids.length - 1] : o.uids[0]; };

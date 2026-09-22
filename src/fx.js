@@ -164,7 +164,8 @@ function snapshot() {
     const r = el.getBoundingClientRect();
     if (r.width < 4) return;
     const k = el.dataset.fxp + '|' + el.dataset.fxu, prev = known.get(k);
-    known.set(k, { p: el.dataset.fxp, uid: el.dataset.fxu, name: el.dataset.fxn, cardId: el.dataset.fxc, rect: r, ts: now, seen: true, isNew: !prev, changed: !!prev && prev.cardId !== el.dataset.fxc });
+    const moved = !!prev && (Math.abs(prev.rect.left - r.left) + Math.abs(prev.rect.top - r.top) > 40); // 육성 → 배틀 에어리어 이동처럼 같은 스택이 다른 자리로 옮겨 감
+    known.set(k, { p: el.dataset.fxp, uid: el.dataset.fxu, name: el.dataset.fxn, cardId: el.dataset.fxc, rect: r, ts: now, seen: true, isNew: !prev, changed: !!prev && prev.cardId !== el.dataset.fxc, prevRect: moved ? prev.rect : (prev && prev.prevRect && now - prev.ts < 1500 ? prev.prevRect : null) });
   });
 }
 function findTiles(p, msgOrName, exact) {
@@ -436,6 +437,21 @@ function fxPlay(p, name, merge) {
     later(() => { landBurst(dest, col); if (merge) mergeFlash(dest); }, Math.round(dur * 0.66));
   }, wait);
 }
+// 육성 에어리어 → 배틀 에어리어 이동: 카드가 육성 자리에서 배틀 에어리어 자리로 날아가 안착 (등장과 같은 착지 연출)
+function fxMove(p, name) {
+  const t = findTiles(p, name, true).find(x => x.prevRect); if (!t) return;
+  const dest = t.rect, fr = t.prevRect, col = cardColor(t.cardId), full = mode === 'full', dur = full ? 800 : 460;
+  const wait = reserve(dur);
+  if (reducedMotion()) return;
+  hideTile(t, Date.now() + wait + dur - 60);
+  seqLater(() => {
+    const fc = center(fr), dc = center(dest);
+    const style = { '--c': col, '--dx': px(dc.x - fc.x), '--dy': px(dc.y - fc.y), '--sx': (dest.width / fr.width).toFixed(3), '--sy': (dest.height / fr.height).toFixed(3) };
+    if (full) for (let i = 2; i >= 1; i--) later(() => cardEl(t.cardId, fr, 'vfx-playfly vfx-trail2', { style: { ...style, '--o': (0.32 / i).toFixed(2) }, life: dur - 140 }), i * 55);
+    cardEl(t.cardId, fr, 'vfx-playfly' + (full ? '' : ' vfx-simple'), { style, life: dur - 140 });
+    later(() => landBurst(dest, col), Math.round(dur * 0.66));
+  }, wait);
+}
 function mergeFlash(r) {
   if (mode === 'full') { spawn('vfx-flashscreen', { style: { '--c': '#ffffff' }, life: 500 }); const c = center(r), s = Math.max(r.width, r.height); spawn('vfx-rays', { style: { left: px(c.x), top: px(c.y), '--c': '#ffffff', width: px(s * 3), height: px(s * 3) }, life: 1000 }); }
   spawn('vfx-ring vfx-ring2', { style: { left: px(center(r).x), top: px(center(r).y), '--c': '#ffffff', width: px(Math.max(r.width, r.height)), height: px(Math.max(r.width, r.height)) }, life: 900 });
@@ -485,11 +501,12 @@ function fxPlace(rect, col) {
 }
 const pendingMerge = { p1: false, p2: false };
 // log lines that mean "a card just entered / was placed" — these are also honoured when written from inside an effect (e.src set)
-const PLAYISH = /신규 등장 \(배틀|코스트 없이 등장 \(효과\)|\s→\s.+?\s진화 \(코스트|DNA\/조그레스 진화:|버스트 진화:|디지크로스:|디지타마 부화|\s사용 \(코스트|진화원 아래에 놓음|시큐리티 맨 (?:위|밑)에 추가:/;
+const PLAYISH = /육성→배틀 에어리어 이동|신규 등장 \(배틀|코스트 없이 등장 \(효과\)|\s→\s.+?\s진화 \(코스트|DNA\/조그레스 진화:|버스트 진화:|디지크로스:|디지타마 부화|\s사용 \(코스트|진화원 아래에 놓음|시큐리티 맨 (?:위|밑)에 추가:/;
 function playishLog(msg) {
   let m;
   if ((m = /^(p1|p2)\s+(?:버스트 진화:|디지크로스:)/.exec(msg))) { pendingMerge[m[1]] = true; return; }
   if ((m = /^(p1|p2)\s+(.+?)\s+(?:신규 등장 \(배틀 에어리어\)|코스트 없이 등장 \(효과\))/.exec(msg))) { const mg = pendingMerge[m[1]]; pendingMerge[m[1]] = false; fxPlay(m[1], m[2], mg); return; }
+  if ((m = /^(p1|p2)\s+(.+?)\s+육성→배틀 에어리어 이동/.exec(msg))) { fxMove(m[1], m[2]); return; }
   if ((m = /^(p1|p2)\s+DNA\/조그레스 진화:.*→\s(.+?)\s\(코스트/.exec(msg))) { pendingMerge[m[1]] = false; fxEvolve(m[1], m[2], true); return; }
   if ((m = /^(p1|p2)\s+.+?\s→\s(.+?)\s진화 \(코스트/.exec(msg))) { const mg = pendingMerge[m[1]]; pendingMerge[m[1]] = false; fxEvolve(m[1], m[2], mg); return; }
   if ((m = /^(p1|p2)\s+(.+?)\s사용 \(코스트/.exec(msg))) { fxOption(m[1], m[2]); return; }
@@ -501,6 +518,7 @@ function handleEv(e) {
   const p = e.p, name = e.name || (e.cardId ? cardOf(e.cardId).nameKo : '');
   if (e.kind === 'play') fxPlay(p, name, e.merge);
   else if (e.kind === 'evolve') fxEvolve(p, name, e.merge);
+  else if (e.kind === 'move') fxMove(p, name);
   else if (e.kind === 'option') fxOption(p, name, e.cardId);
   else if (e.kind === 'place') { const t = name && pickTile(p, name, 'changed'); fxPlace(t ? t.rect : (e.pile ? fixedRect(`[data-fxpile="${p}"] .pile-${e.pile}`) : null), e.color || '#9fc0ff'); }
 }
