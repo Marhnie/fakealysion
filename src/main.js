@@ -21,7 +21,7 @@ const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이�
 
 const app = document.getElementById('app');
 let state = null;
-let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false }; // UI selection only (orderAutoRandom: 동시 유발 순서를 매번 묻지 않고 무작위로 고름, 게임마다 초기화)
+let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false, declineAllRemaining: false }; // UI selection only (orderAutoRandom: 동시 유발 순서를 매번 묻지 않고 무작위로 고름; declineAllRemaining: 남은 임의 효과를 모두 "발휘하지 않는다"로 자동 응답 — 둘 다 게임마다 초기화)
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
 
@@ -48,7 +48,7 @@ async function init() {
   try { await CD.loadCpuDecks('./data/cpu-decks.json'); } catch (e) { /* optional data file: no CPU decks offered */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
-  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false, declineAllRemaining: false }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
   mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
@@ -1911,6 +1911,10 @@ function quickApplyButtonsFor(text, player) {
 async function ctxChoose(kind, payload) {
   // nothing to pick from: skip the "대상 없음 / 취소"-only prompt (same result as cancelling it)
   if (kind === 'pickStack' && payload && Array.isArray(payload.uids) && !payload.uids.length && !payload.required) return null;
+  // 사용자가 "이후 전부 발휘하지 않음"을 선택함 — confirmEffect는 항상 "아니오"가 유효한 응답이므로(강제 효과라도
+  // 룰 15-15-7-4에 의해 임의 처리 여부는 플레이어 선택) 사람 쪽 결정에 한해 자동으로 거절 처리한다. payload.player
+  // 가 CPU 좌석(CPU_P)이면 이 지름길을 타지 않고 그대로 진행시켜, CPU 자신의 판단(uc.by)에 맡긴다.
+  if (kind === 'confirmEffect' && sel.declineAllRemaining && payload && (!cpuOn || payload.player !== CPU_P)) return false;
   return new Promise(resolve => {
     // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
     // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
@@ -2190,6 +2194,9 @@ function renderUiChoice() {
     rows.push(h('div', { className: 'actions-row' }, [
       h('button', { className: 'primary', onClick: () => resolve(true) }, payload.yesLabel || '발동한다'),
       h('button', { onClick: () => resolve(false) }, payload.noLabel || '발동하지 않는다'),
+    ]));
+    rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
+      h('button', { title: '이 선택을 포함해, 이후 "발휘할지 말지" 묻는 임의 효과는 전부 발휘하지 않는 것으로 자동 응답합니다 (직접 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => { sel.declineAllRemaining = true; resolve(false); } }, '🚫 이후 전부 발휘하지 않음'),
     ]));
   } else if (kind === 'pickStack') {
     // uids are usually payload.player's own stacks, but some pickers (《돌진》의 어택 대상 변경 등) hand over the OPPONENT's
