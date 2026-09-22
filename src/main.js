@@ -21,7 +21,7 @@ const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이�
 
 const app = document.getElementById('app');
 let state = null;
-let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false, declineAllRemaining: false }; // UI selection only (orderAutoRandom: 동시 유발 순서를 매번 묻지 않고 무작위로 고름; declineAllRemaining: 남은 임의 효과를 모두 "발휘하지 않는다"로 자동 응답 — 둘 다 게임마다 초기화)
+let sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', declineAllRemaining: null }; // UI selection only. declineAllRemaining: 클릭 시점에 대기 중이던 효과 uid의 Set(단발성 — 그 묶음에만 적용, 이후 새로 발동 대기하는 효과는 다시 물어봄), 게임마다 초기화
 let dragData = null; // { kind: 'hand', player, idx, cardId } | { kind: 'stack', player, uid, zone }
 let panelsOpen = { actions: false, log: false, advancedTools: false }; // everything but the field starts collapsed
 
@@ -48,7 +48,7 @@ async function init() {
   try { await CD.loadCpuDecks('./data/cpu-decks.json'); } catch (e) { /* optional data file: no CPU decks offered */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
-  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', orderAutoRandom: false, declineAllRemaining: false }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', declineAllRemaining: null }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
   mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
@@ -1916,11 +1916,13 @@ async function ctxChoose(kind, payload) {
   // 사용자가 "이후 전부 발휘하지 않음"을 선택함 — confirmEffect는 항상 "아니오"가 유효한 응답이므로(강제 효과라도
   // 룰 15-15-7-4에 의해 임의 처리 여부는 플레이어 선택) 사람 쪽 결정에 한해 자동으로 거절 처리한다. payload.player
   // 가 CPU 좌석(CPU_P)이면 이 지름길을 타지 않고 그대로 진행시켜, CPU 자신의 판단(uc.by)에 맡긴다.
-  // payload._pendingResolution(발동 대기 큐 처리 중에만 runPendingScript가 붙임)이 없으면 건드리지 않는다 —
-  // 그렇지 않으면 카드를 낼 때의 《어셈블리》/《디지크로스》/코스트 할인 확인창(main.js의 askYN, 대기 큐와 무관)까지
-  // 전부 자동 거절돼 버려서, "이후 전부 발휘하지 않음"을 한 번 누르면 그 게임 내내 어셈블리 등을 영영 못 쓰게 되는
-  // 버그가 있었다 (실전 리포트: 슬레이어드라몬 《어셈블리》가 매번 먹통).
-  if (kind === 'confirmEffect' && sel.declineAllRemaining && payload && payload._pendingResolution && (!cpuOn || payload.player !== CPU_P)) return false;
+  // 단발성: sel.declineAllRemaining은 버튼을 누른 "그 순간 이미 대기 중이던" 효과 uid의 Set — 그 이후 새로 발동
+  // 대기하는 효과(payload._triggerUid가 Set에 없음)는 다시 정상적으로 물어본다. payload._pendingResolution(발동
+  // 대기 큐 처리 중에만 runPendingScript가 붙임)이 없으면 건드리지 않는다 — 그렇지 않으면 카드를 낼 때의
+  // 《어셈블리》/《디지크로스》/코스트 할인 확인창(main.js의 askYN, 대기 큐와 무관)까지 전부 자동 거절돼 버려서,
+  // "이후 전부 발휘하지 않음"을 한 번 누르면 그 게임 내내 어셈블리 등을 영영 못 쓰게 되는 버그가 있었다
+  // (실전 리포트: 슬레이어드라몬 《어셈블리》가 매번 먹통 / "내가 조작한 적 없는데 자꾸 진행된다").
+  if (kind === 'confirmEffect' && sel.declineAllRemaining && payload && payload._pendingResolution && sel.declineAllRemaining.has(payload._triggerUid) && (!cpuOn || payload.player !== CPU_P)) return false;
   return new Promise(resolve => {
     // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
     // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
@@ -2047,7 +2049,7 @@ async function runPendingScript(trigger, opts = {}) {
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, Math.round(1500 * READ_SPEEDS[READ.speed] / 1.7)));
   if (stale()) return;
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, k === 'confirmEffect' ? { ...pl, _pendingResolution: true } : pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, k === 'confirmEffect' ? { ...pl, _pendingResolution: true, _triggerUid: trigger.uid } : pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
     startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); },
     // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
     securityCheck: async (p, uid, op) => { if (stale() || !S.consumePierceCheck(state, p, uid)) return; await scriptedSecurityCheck(p, uid, op || S.opponentOf(p)); } };
@@ -2140,16 +2142,15 @@ function autoRunMandatoryPending() {
   pendingRunner = true; // set BEFORE the async body runs — ctxChoose renders synchronously and would re-enter here
   pendingRunner = (async () => {
     let next = pool[0];
-    if (pool.length > 1 && sel.orderAutoRandom) { // 사용자가 "이후 전부 랜덤 순서로" 선택함 — 4-3-2는 어차피 턴 플레이어가 임의로 정할 수 있으므로 룰 위반 아님
-      next = pool[Math.floor(Math.random() * pool.length)];
-      S.log(state, `${pool[0].player} 동시 발동 효과 ${pool.length}개 — 무작위 순서로 처리: ${S.card(next.cardId).nameKo}`);
-    } else if (pool.length > 1) {
+    if (pool.length > 1) {
       const uid = await ctxChoose('pickPendingOrder', {
         player: pool[0].player,
         items: pool.map(t => ({ uid: t.uid, label: `${S.card(t.cardId).nameKo} 【${t.tags.map(tagLbl).join('】【')}】 ${t.text.replace(/\([^()]*\)/g, '').slice(0, 60)}` })),
         prompt: `${pool[0].player}: 동시에 발동 대기 중인 효과 ${pool.length}개 — 먼저 처리할 효과를 선택하세요 (룰 4-3-2${mine.length ? ', 턴 플레이어 우선' : ''})`,
       });
-      if (uid === '__random__') { sel.orderAutoRandom = true; next = pool[Math.floor(Math.random() * pool.length)]; S.log(state, `${pool[0].player} 이후 동시 발동 효과는 무작위 순서로 처리하도록 설정`); }
+      // 단발성: 이 묶음만 무작위로 정하고 끝 — 예전에는 세션 내내 자동 랜덤으로 고정되는 플래그였는데,
+      // 그 뒤로 묻지도 않고 계속 자동 처리되는 게 "내가 조작한 적 없는데 자꾸 (알아서) 진행된다"는 혼란을 줘서 매번 다시 물어보도록 변경.
+      if (uid === '__random__') { next = pool[Math.floor(Math.random() * pool.length)]; S.log(state, `${pool[0].player} 동시 발동 효과 ${pool.length}개 — 이번만 무작위 순서로 처리: ${S.card(next.cardId).nameKo}`); }
       else next = pool.find(t => t.uid === uid) || pool[0];
     }
     if (state !== st0 || next.resolved) return; // the game was replaced (rematch / new game / undo / load) while the order prompt was open, or the effect was closed meanwhile
@@ -2199,7 +2200,7 @@ function renderUiChoice() {
       h('button', { className: 'primary', onClick: () => resolve(it.uid) }, '먼저 처리'),
     ])));
     rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
-      h('button', { title: '순서를 매번 묻지 않고, 이후 동시에 발동하는 효과는 전부 무작위 순서로 처리합니다 (직접 순서를 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => resolve('__random__') }, '🎲 이후 전부 랜덤 순서로 처리'),
+      h('button', { title: '이번에 동시에 발동 대기 중인 효과들 중 하나를 무작위로 골라 먼저 처리합니다 (이번 한 번만 — 다음에 또 동시 발동이 생기면 다시 물어봅니다)', onClick: () => resolve('__random__') }, '🎲 무작위로 하나 선택 (이번만)'),
     ]));
   } else if (kind === 'confirmEffect') {
     rows.push(h('div', { className: 'actions-row' }, [
@@ -2209,7 +2210,10 @@ function renderUiChoice() {
     // 발동 대기 큐를 처리 중인 확인창에서만 보여준다 — 카드를 낼 때의 《어셈블리》/《디지크로스》/코스트 할인
     // 확인창(main.js askYN)은 대기 큐와 무관하므로 여기서 끄면 안 됨 (ctxChoose의 payload._pendingResolution 체크와 짝)
     if (payload._pendingResolution) rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
-      h('button', { title: '이 선택을 포함해, 이후 "발휘할지 말지" 묻는 대기 중인 효과는 전부 발휘하지 않는 것으로 자동 응답합니다 (카드를 낼 때의 어셈블리/디지크로스/코스트 할인 확인창에는 영향 없음. 직접 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => { sel.declineAllRemaining = true; resolve(false); } }, '🚫 이후 전부 발휘하지 않음'),
+      h('button', {
+        title: '지금 대기 중인 효과들(이 선택 포함)만 전부 발휘하지 않는 것으로 자동 응답합니다 — 단발성이라 이후 새로 발동 대기하는 효과는 다시 물어봅니다',
+        onClick: () => { sel.declineAllRemaining = new Set(state.pending.filter(t => !t.resolved).map(t => t.uid)); resolve(false); },
+      }, '🚫 지금 대기 중인 효과 전부 발휘하지 않음'),
     ]));
   } else if (kind === 'pickStack') {
     // uids are usually payload.player's own stacks, but some pickers (《돌진》의 어택 대상 변경 등) hand over the OPPONENT's
