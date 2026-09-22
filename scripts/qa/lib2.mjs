@@ -52,7 +52,7 @@ export function world(o = {}) {
         if (t.schedFn) { t.schedFn(); S.resolvePending(st, t.uid); continue; }
         const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
         const script = specific || Fx.compileToScript(t.text);
-        const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, choose: W.choose };
+        const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, securityCheck: async () => {}, choose: W.choose };
         await Fx.runScript(script, ctx);
       } catch (e) { W.errors.push(String((e && e.stack) || e).split('\n').slice(0, 3).join(' | ')); }
       S.resolvePending(st, t.uid);

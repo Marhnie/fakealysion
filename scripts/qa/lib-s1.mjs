@@ -55,7 +55,11 @@ export async function drain(st) {
   let guard = 0;
   while (guard++ < 60) {
     if (st._rcPending && !(st._rcDepth > 0)) S.flushRuleChecks(st);
-    const t = st.pending.find(x => !x.resolved); if (!t) return;
+    // `_running`: a trigger whose script is already executing further up the call stack (ctx.securityCheck calling
+    // securityCheck()/drain() reentrantly mid-script) — skip it so a nested drain() only picks up genuinely NEW
+    // pending items, never re-runs the still-in-flight outer trigger a second time.
+    const t = st.pending.find(x => !x.resolved && !x._running); if (!t) return;
+    t._running = true;
     (st._qaResolved = st._qaResolved || []).push({ cardId: t.cardId, tags: t.tags, text: t.text, player: t.player });
     try {
       if (t.schedFn) { t.schedFn(); S.resolvePending(st, t.uid); continue; }
@@ -67,7 +71,8 @@ export async function drain(st) {
       const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); let onceMark = null;
       if (om && t.stackUid) { const s1 = findS(st, t.player, t.stackUid); if (s1) { const key = S.onceLimitKey(t.cardId, t.tags); if (S.turnUsesRemaining(s1, key, Number(om[1])) <= 0) { S.resolvePending(st, t.uid); continue; } onceMark = { stack: s1, key }; } }
       if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {}, choose: makeChoose(st) };
+      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {},
+        securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(st, p, uid)) return; await securityCheck(st, p, uid, op || S.opponentOf(p)); }, choose: makeChoose(st) };
       await Fx.runScript(script, ctx);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }
     } catch (e) { (st._qaErr = st._qaErr || []).push(String(e.stack || e).slice(0, 300)); }
@@ -94,7 +99,9 @@ async function securityCheck(st, p, uid, op) {
 // Full attack mirroring cpusim.attack. target = 'PLAYER' | uid. opts.block = uid of a blocker to use (default none). opts.counter = option chosen from findCounterOptions (default none).
 export async function attack(st, p, uid, target = 'PLAYER', opts = {}) {
   const op = S.opponentOf(p); const dec = S.declareAttack(st, p, uid, opts.declare || {}); if (!dec.ok) return { declined: dec };
-  const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target }; st.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
+  const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
+  pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
+  st.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
   st.qaLog = { blockers: [], battle: null };
   S.queueTriggersForStack(st, p, dec.stack, 'attack'); S.emitGameEvent(st, 'attack', { owner: p, stack: dec.stack, cause: null });
   { const aT = findS(st, p, uid); if (aT && !st.winner) { S.s1AttackTargeted(st, p, aT, pa.targetKind, pa.targetUid); const dT = pa.targetKind === 'digimon' ? st.players[op].battle.find(x => x.uid === pa.targetUid) : null; if (dT) S.emitGameEvent(st, 'attackOnDigimon', { owner: p, stack: aT, cause: null, target: dT }); } } // UI parity (main.js enterRedirectTiming): every declaration trigger is queued BEFORE any resolves
@@ -112,7 +119,7 @@ export async function attack(st, p, uid, target = 'PLAYER', opts = {}) {
   if (!findS(st, p, uid) || pa.ended || (pa.targetKind === 'digimon' && !findS(st, op, pa.targetUid))) { await end(); return { ended: true }; }
   let out = {};
   if (pa.targetKind === 'player') out = await securityCheck(st, p, uid, op);
-  else { const res = S.resolveDigimonBattle(st, p, uid, pa.targetUid); await drain(st); out = { battle: res }; { const sv = res && res.result === 'attackerWins' && res.destroyedOnlyOpponent ? findS(st, p, uid) : null; if (sv && S.hasKeyword(sv, '전투후액티브')) S.unsuspendStack(st, p, uid); } if (res && res.piercing && !st.winner) out.sec = await securityCheck(st, p, uid, op); }
+  else { const res = S.resolveDigimonBattle(st, p, uid, pa.targetUid); await drain(st); out = { battle: res }; { const sv = res && res.result === 'attackerWins' && res.destroyedOnlyOpponent ? findS(st, p, uid) : null; if (sv && S.hasKeyword(sv, '전투후액티브')) S.unsuspendStack(st, p, uid); } if (res && res.piercing && !st.winner && S.consumePierceCheck(st, p, uid)) out.sec = await securityCheck(st, p, uid, op); }
   await drain(st); await end(); return out;
 }
 export const atkSec = (st, p, uid, opts) => attack(st, p, uid, 'PLAYER', opts);

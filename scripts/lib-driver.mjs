@@ -27,7 +27,7 @@ export function makeDriver(rng) {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
         const specific = Fx.lookupCardSpecific(t.cardId, t.tags, t.text, !!t.inherited);
         const script = specific || Fx.compileToScript(t.text);
-        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {},
+        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack() {}, securityCheck: async () => {},
           choose: async (k, o) => { if (k === 'pickStack') return o.uids?.[rnd(o.uids.length || 1)] ?? null; if (k === 'pickStackAnySide') return o.entries?.[0] ?? null; if (k === 'pickFromZoneIndex') return o.eligibleIdxs?.[0] ?? null; if (k === 'pickFromHandIndexes') return (o.eligibleIdxs || []).slice(0, o.n || 1); if (k === 'pickFromRevealed') return o.eligible?.slice(0, o.max || 1).map(x => x.i) || []; if (k === 'confirmEffect') return rng() < 0.7; return null; } };
         await Fx.runScript(script, ctx);
       } catch (e) { /* swallow */ }

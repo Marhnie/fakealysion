@@ -283,7 +283,10 @@ const battleWithOpp = async (ctx) => {
   const a = await pickStack(ctx, ctx.self, mine, '배틀할 「드라코몬」/「엑자몬」 기술 디지몬 선택 (취소=하지 않음)', { optional: true });
   if (!a) { decline(ctx); return; }
   const b = await pickStack(ctx, ctx.self, digs(state, ctx.opp), '배틀할 상대의 디지몬 선택');
-  if (b && findStack(state, ctx.self, a.uid)) S.resolveDigimonBattle(state, ctx.self, a.uid, b.uid);
+  if (!b || !findStack(state, ctx.self, a.uid)) return;
+  const res = S.resolveDigimonBattle(state, ctx.self, a.uid, b.uid);
+  // 16-7-3/16-7-4 (official Q&A): this scripted battle can also win with ≪관통≫ — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+  if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(ctx.self, a.uid, ctx.opp);
 };
 sc('EX13-044::서로의 턴', battleWithOpp);
 
@@ -502,7 +505,10 @@ sc('EX13-076::등장 시', async (ctx) => {
   if (!st || !findStack(state, ctx.self, st.uid) || !findStack(state, ctx.opp, t.uid)) return;
   if (!(await ask(ctx, `이 디지몬으로 ${C(t.cardId).nameKo}와(과) 배틀합니까? (이 배틀에서는 DP가 아닌 진화원 매수를 비교)`))) return;
   state._battleCompareSources = true;
-  try { S.resolveDigimonBattle(state, ctx.self, st.uid, t.uid); } finally { delete state._battleCompareSources; }
+  let res;
+  try { res = S.resolveDigimonBattle(state, ctx.self, st.uid, t.uid); } finally { delete state._battleCompareSources; }
+  // 16-7-3/16-7-4 (official Q&A): this scripted battle can also win with ≪관통≫ — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+  if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(ctx.self, st.uid, ctx.opp);
 });
 SCRIPTS['EX13-076::진화 시'] = SCRIPTS['EX13-076::등장 시'];
 SCRIPTS['EX13-076::어택 시'] = SCRIPTS['EX13-076::등장 시'];
@@ -534,7 +540,11 @@ sc('EX13-077::등장 시', async (ctx, R) => {
     if (c === 0) {
       if (!st || !findStack(state, ctx.self, st.uid)) continue;
       const t = await pickStack(ctx, ctx.self, digs(state, ctx.opp), '배틀할 상대의 디지몬 선택');
-      if (t) S.resolveDigimonBattle(state, ctx.self, st.uid, t.uid);
+      if (t) {
+        const res = S.resolveDigimonBattle(state, ctx.self, st.uid, t.uid);
+        // 16-7-3/16-7-4: this scripted battle can also win with ≪관통≫ if granted dynamically — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+        if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(ctx.self, st.uid, ctx.opp);
+      }
     } else {
       const otr = PL(ctx, ctx.opp).trash;
       if (otr.length < 5) { log(ctx, `${ctx.opp} 트래시가 5장 미만이라 비용을 지불할 수 없음`); continue; }

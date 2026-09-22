@@ -131,7 +131,9 @@ OPS.s8_battle = async (i, ctx) => {
   if (!uids.length) { log(ctx, `${ctx.self} 배틀할 상대의 디지몬이 없음`); return; }
   const uid = await pickOne(ctx, ctx.opp, uids, '배틀할 상대의 디지몬 선택');
   if (!uid) return;
-  S.resolveDigimonBattle(state, ctx.self, me.uid, uid);
+  const res = S.resolveDigimonBattle(state, ctx.self, me.uid, uid);
+  // 16-7-3/16-7-4: this scripted battle can also win with ≪관통≫ (official EX12-052/EX13-045/EX13-076 rulings) — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+  if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(ctx.self, me.uid, ctx.opp);
 };
 
 // rest N stacks (opponent's, or either side) and remember them in ctx._s8[key]

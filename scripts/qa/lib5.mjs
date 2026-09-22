@@ -66,7 +66,7 @@ export function mkChoose(st, opts = {}) {
   };
   f.log = log; return f;
 }
-export function ctxFor(st, t, choose) { return { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, choose, trigger: t, startAttack(p, uid) { (st._atk ||= []).push([p, uid]); }, attack: () => null, endAttack() {} }; }
+export function ctxFor(st, t, choose) { return { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, choose, trigger: t, startAttack(p, uid) { (st._atk ||= []).push([p, uid]); }, attack: () => null, endAttack() {}, securityCheck: async () => {} }; }
 export async function drain(st, choose) {
   let guard = 0; const ran = [];
   while (guard++ < 60) {

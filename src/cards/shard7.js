@@ -2030,7 +2030,10 @@ SCRIPTS['BT25-020::등장 시'] = [F(async (ctx) => {
   const a = await pickStack(ctx, self, digimonsOf(state, self), '배틀할 자신의 디지몬 선택 (취소=안 함)');
   if (!a) return;
   const d = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp), '배틀할 상대의 디지몬 선택 (취소=안 함)');
-  if (d && state.players[self].battle.includes(a)) S.resolveDigimonBattle(state, self, a.uid, d.uid);
+  if (!d || !state.players[self].battle.includes(a)) return;
+  const res = S.resolveDigimonBattle(state, self, a.uid, d.uid);
+  // 16-7-3/16-7-4: this scripted battle can also win with ≪관통≫ if granted dynamically — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+  if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(self, a.uid, ctx.opp);
 })];
 H('BT25-020', { tag: '서로의 턴', has: '배틀에서 승리', limit: 1, events: { battleWin: (state, hp, holder, info) => info.owner === hp && hasType(info.stack.cardId, 'TS') } });
 SCRIPTS['BT25-020::서로의 턴'] = [F(async (ctx) => { S.trashTopSecurityByEffect(ctx.state, ctx.opp); })];

@@ -39,14 +39,16 @@
 - **수정**: `parseConditionText`에 `^상대의\s*메모리가\s*(-?\d+)\s*(이하|이상)(?:이)?라면$` 분기 추가, `-mem(ctx)`(상대 부호) 기준으로 비교.
 - **회귀 테스트**: `scripts/qa/qa-audit-g7-oppmemory.mjs` (3개 시나리오, 통과) — 실제 EX13-060 진화 세그먼트를 `drain()`으로 돌려 상대 메모리 5 이상/미만 두 경우 모두 확인, 컴파일된 조건 함수 자체도 단위 확인.
 
-## 3. 의심되나 해결하지 못한 것 (설계상 이유로 이번 패스에서 수정 보류)
+## 3. 후속 패스에서 수정 완료
 
-### ≪관통≫(Piercing) 필수 시큐리티 체크가 "배틀할 수 있다" 스크립트 효과에서 아예 발동하지 않음
+### ≪관통≫(Piercing) 필수 시큐리티 체크가 "배틀할 수 있다" 스크립트 효과에서 아예 발동하지 않음 — **수정됨**
 
-- 공식 Q&A(EX12-052 15개, EX13-045 13개, EX13-076 11개 등 다수)에 명시: 관통을 가진 자신의 디지몬이 어택 중, 카드 효과("이 디지몬과 상대의 디지몬 1마리로 배틀할 수 있다")로 상대를 배틀에서 소멸시키면 **관통이 유발·발휘되어야 함**(단, 한 번의 어택에서 관통 시큐리티 체크는 총 1회만).
-- 코드 확인 결과 `S.resolveDigimonBattle`이 반환하는 `res.piercing` 플래그는 **정상 어택 흐름의 마지막 배틀**(main.js 약 2968행, cpusim.js 약 166행)에서만 소비됨. 카드 스크립트가 직접 `S.resolveDigimonBattle`을 호출하는 모든 경로 — 제네릭 컴파일러의 `n5_battle`/`OPS.s8_battle`(shard8.js), `EX12-052`(shard42.js), `EX13-044`/`EX13-045`(shard130.js), `BT25-020`(shard7.js) 등 — 는 `res.piercing`을 전혀 확인하지 않아 **관통 체크가 조용히 누락됨**.
-- 제가 담당한 세트에서 특히 잘 드러남: `EX13-045`, `EX12-052`, `EX13-076` 모두 인쇄된 키워드에 《관통》을 갖고 있고, 셋 다 정확히 이 "배틀할 수 있다" 패턴을 씀.
-- **왜 이번에 고치지 않았는가**: 제대로 고치려면 (1) 카드 스크립트에서 "지금 시큐리티 체크를 강제로 1회 발동" 요청을 던질 수 있는 새 훅(기존 `ctx.startAttack`/`ctx.attack`/`ctx.endAttack` 패턴과 동일한 방식)을 추가하고, (2) 이를 main.js(대화형 UI), cpusim.js(헤드리스 CPU/soak 드라이버), 그리고 여러 QA 라이브러리(`scripts/qa/lib*.mjs`)의 `ctx`에 각각 구현해야 하며, (3) "한 어택당 관통 체크는 1회"를 어택 단위로 추적하는 상태(`state.attackCtx`)가 필요한데, 정작 `EX13-045` 같은 카드는 스크립트 안에서 `ctx.startAttack()`을 호출해도 그 호출이 지연 큐(setTimeout/effAtkQ)로 넘어가 스크립트가 도는 시점엔 아직 `state.attackCtx`가 비어 있음 — 즉 "이 배틀이 어느 어택에 속하는지"를 판단하는 기존 아키텍처 자체가 이 케이스를 다루도록 설계돼 있지 않음. main.js/cpusim.js/effects.js 세 파일을 넘나드는 설계 변경이 필요하고, 지금 이 감사와 동시에 다른 7개 에이전트가 정확히 이 공유 파일들을 동시에 건드리고 있어 충돌 위험이 매우 큼. 그래서 이번 패스에서는 정확한 재현과 원인만 문서화하고 수정은 보류함(후속 작업으로 분리 권장).
+- 증상/원인은 최초 감사 그대로: 공식 Q&A(EX12-052 15개, EX13-045 13개, EX13-076 11개 등 다수)에 명시된 대로, 관통을 가진 자신의 디지몬이 카드 효과("이 디지몬과 상대의 디지몬 1마리로 배틀할 수 있다")로 상대를 배틀에서 소멸시키면 관통이 유발·발휘되어야 하는데, `S.resolveDigimonBattle`을 직접 호출하는 카드 스크립트 경로들이 반환된 `res.piercing`을 전혀 확인하지 않아 체크가 조용히 누락되고 있었다.
+- **수정 설계**: 기존 `ctx.startAttack`/`ctx.attack`/`ctx.endAttack`과 같은 패턴으로 새 드라이버 능력 `ctx.securityCheck(attackerP, attackerUid, defenderP)`를 추가했다. 각 드라이버가 실제 구현을 갖는다 — `src/main.js`(대화형 UI: `scriptedSecurityCheck`, sel.pendingAttack과 별개의 `state._scriptedPierce` 오버레이로 렌더링), `src/cpusim.js`(헤드리스: 기존 `securityCheck(p,uid,op)` 클로저를 그대로 재사용), `scripts/qa/lib-s1.mjs`/`lib-s6.mjs`(실제 구현, 회귀 테스트용), 그 외 `scripts/qa/lib2.mjs`/`lib5.mjs`/`s3lib.mjs`/`scripts/lib-driver.mjs`(no-op 스텁 — 기존 `startAttack(){}`류 스텁과 동일한 관례).
+- **"어택당 1회" 추적**: 새 `S.consumePierceCheck(state, attackerP, attackerUid)`(state.js)가 게이트 역할을 한다. `state.attackCtx`가 이미 이 스택의 것이면 그 pa 객체에 `pierceUsed` 플래그를 심어 추적한다. 문제는 `EX13-045`처럼 스크립트 안에서 `ctx.startAttack()`을 먼저 호출하는 카드 — 이 호출은 지연(main.js는 `setTimeout`, cpusim.js는 `effAtkQ`)되므로, 바로 다음 줄에서 배틀이 실제로 일어나는 시점엔 `state.attackCtx`가 아직 비어 있다. 이 경우엔 대신 공격 스택 자신에 `_pierceHeld` 홀드를 짧게 걸어 두고, 그 스택이 실제로 어택을 시작하는 순간(main.js `attackFlow`/cpusim.js `attack`/qa `attack()` 헬퍼가 `pa`를 만들 때) 그 홀드를 `pa.pierceUsed`로 그대로 흡수하도록 했다. 결국 어택이 끝내 선언되지 않은 홀드가 남는 것을 막기 위해, 그 스택의 다음 액티브 페이즈(engine.js `nextPhase`의 unsuspend 루프)에서 스윕한다. 설계 근거와 트레이드오프는 `S.consumePierceCheck`의 코드 주석에 상세히 적어 두었다.
+- **재진입(reentrancy) 함정과 그 수정**: `ctx.securityCheck`는 카드 스크립트가 실행되는 도중(즉 그 스크립트를 담은 pending 트리거가 아직 `resolved`되지 않은 상태) 호출되는데, 실제 시큐리티 체크는 체크된 카드의 【시큐리티】 효과를 마저 처리하기 위해 각 드라이버의 pending 드레인 루틴을 다시 불러야 한다. 이걸 그냥 재귀 호출하면 드레인 루프가 "아직 안 끝난" 바깥쪽 트리거를 다시 집어서 스크립트 전체를 통째로 두 번 실행해 버리는 버그가 실제로 재현됐다(`qa-ex13-c.mjs`의 EX13-045 조그레스 테스트가 `_qaAtk` 길이 1 대신 2를 반환하며 발견). 고쳐서: 트리거를 집어 실행을 시작하는 시점에 `t._running = true`로 표시해 두고, 모든 pending 선택 로직(`cpusim.js`/`lib-s1.mjs`/`lib-s6.mjs`의 `drain()`, `main.js`의 `autoRunMandatoryPending`)이 `_running`인 항목은 건너뛰도록 했다 — 중첩 호출은 방금 생긴 새 트리거(체크된 카드의 【시큐리티】 효과 등)만 집는다. main.js는 추가로 `autoRunMandatoryPending`의 단일 실행 가드(`pendingRunner`)가 재진입을 막아 새 트리거가 영영 안 돌아가는 문제가 있어, 그 가드를 우회하는 전용 `drainNestedPending()`을 새로 만들었다(간단화: 동시 유발이 여럿이면 플레이어에게 순서를 묻지 않고 첫 번째를 그냥 집는다 — 체크된 시큐리티 카드 한 장이 동시에 여러 트리거를 거는 경우는 실질적으로 없다고 보고 채택).
+- **수정한 카드 스크립트 호출부**: `src/cards/shard8.js` `OPS.s8_battle`(→ `shard14.js`의 `n5_battle` 별칭도 함께 적용됨), `src/cards/shard42.js` `EX12-052`, `src/cards/shard130.js` `EX13-044`(서로의 턴 배틀)/`EX13-076`/`EX13-077`, `src/cards/shard7.js` `BT25-020` — 전부 `S.resolveDigimonBattle` 호출 직후 `res.piercing`이면 `ctx.securityCheck`를 호출하도록 통일.
+- **회귀 테스트**: `scripts/qa/qa-pierce-scripted-battle.mjs`(3개 시나리오, 전부 통과) — (1) 어택 없이(스크립트만으로) 발휘한 배틀이 관통이면 체크가 정확히 1회 발동, (2) 관통이 유발되지 않으면 체크가 발동하지 않음, (3) 【어택 시】 스크립트 배틀(다른 상대 디지몬 대상)이 먼저 관통 체크를 1회 소비하면, 같은 어택의 자연스러운 종료 배틀이 또 다른 상대를 소멸시켜도 2번째 체크는 발동하지 않음(16-7-3).
 
 ## 4. 시간 부족으로 건너뛴 것 (정직하게 밝힘)
 
@@ -66,5 +68,6 @@
 - `node scripts/audit-effects.mjs` — 100.0% coverage 유지 (8168 segments)
 - `node scripts/soak.mjs 40` — distinct errors 0
 - `node scripts/test-cpu.mjs` — distinct errors 0, RESULT: OK
-- 신규 회귀 스크립트 3개 모두 통과: `qa-audit-g7-mentions.mjs`(3/3), `qa-audit-g7-costlock.mjs`(3/3), `qa-audit-g7-oppmemory.mjs`(3/3)
+- 신규 회귀 스크립트 4개 모두 통과: `qa-audit-g7-mentions.mjs`(3/3), `qa-audit-g7-costlock.mjs`(3/3), `qa-audit-g7-oppmemory.mjs`(3/3), `qa-pierce-scripted-battle.mjs`(3/3, 관통 후속 패스)
 - 기존 EX13 관련 스위트(`qa-ex13-a/b/c/d/e`, 총 110개 시나리오) 전부 통과 — 이번 수정이 기존 커버리지를 깨지 않음을 확인.
+- 관통 후속 패스: `scripts/qa/*.mjs` 207개 파일 전체 재실행 — 실패 1건(`qa-slice2-r2-m.mjs` Q1784, BT8-105/`shard1.js` 관련, 이번 변경과 무관한 기존 결함, `docs/audit-rulings-g8.md`에 이미 별도 기록됨)을 제외하고 전부 통과. 특히 `qa-slice6-d.mjs`(EX12-052 G186/G188), `qa-slice6-r2-f.mjs`, `qa-chain-attack-only.mjs`, `qa-retreat-rules.mjs`, `qa-audit-g7-*` 등 공유 라이브러리(`lib-s1.mjs`/`lib-s6.mjs`)를 쓰는 스위트들도 전부 정상.

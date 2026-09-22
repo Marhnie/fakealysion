@@ -80,8 +80,12 @@ export async function drain(w) {
   const state = w.st; let guard = 0;
   while (guard++ < 60) {
     if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state);
-    const t = state.pending.find((x) => !x.resolved);
+    // `_running`: a trigger whose script is already executing further up the call stack (ctx.securityCheck calling
+    // scriptedSecCheck()/drain() reentrantly mid-script) — skip it so a nested drain() only picks up genuinely NEW
+    // pending items, never re-runs the still-in-flight outer trigger a second time.
+    const t = state.pending.find((x) => !x.resolved && !x._running);
     if (!t) { S.normalizeDigitamaZones(state); return; } // 3-1-3-9 (main.js does this through E.autoAdvance)
+    t._running = true;
     (w.fired ||= []).push({ cardId: t.cardId, tags: t.tags, player: t.player });
     try {
       if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
@@ -108,6 +112,7 @@ export async function drain(w) {
       }
       if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
       const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, tgt, o) => (w.attackReqs ||= []).push({ p, uid, tgt, o }), attack: () => state.attackCtx, endAttack() {},
+        securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(state, p, uid)) return; await scriptedSecCheck(w, p, uid, op || S.opponentOf(p)); },
         choose: async (k, o) => { w.prompts.push({ k, card: t.cardId, o }); const f = w.answers[k]; if (f) { const r = await f(o, t, w); if (r !== undefined) return r; } return defaultAnswer(k, o); } };
       await Fx.runScript(script, ctx);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }
@@ -124,28 +129,31 @@ async function runSeg(w, p, uid, tagWanted, opts = {}) {
   state.pending.push({ uid: 'qa' + Math.random(), player: p, cardId: id, stackUid: uid, topId: stk ? stk.cardId : undefined, tags: seg.tags, text: opts.body || seg.body, resolved: false, inherited: !!opts.inherited, ...(opts.trigger || {}) });
   await drain(w);
 }
+// shared security-check runner (real attack's own check, or a scripted "can battle" op's ≪관통≫ bonus check via ctx.securityCheck)
+async function scriptedSecCheck(w, p, uid, op) {
+  const state = w.st;
+  const ctl = S.beginSecurityCheck(state, p, uid, op); ctl.deferBattle = true; let g = 0;
+  while (!ctl.done && !state.winner && g++ < 30) {
+    if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+    await drain(w);
+    if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+  }
+  if (!ctl.gameOver && ctl.results.length) { const last = ctl.results[ctl.results.length - 1]; if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, p, uid, 'trash', 'battle'); }
+}
 // attack: declare -> triggers -> (no counter/block) -> security check or digimon battle. target 'PLAYER' or uid of an opponent digimon
 async function attack(w, p, uid, target) {
   const state = w.st; const op = S.opponentOf(p);
   const dec = S.declareAttack(state, p, uid); if (!dec.ok) return { ok: false, reason: dec.reason };
   const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
+  pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
   state.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
   S.queueTriggersForStack(state, p, dec.stack, 'attack');
   S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
   await drain(w);
   const alive = () => find(state, p, uid) && !(pa.targetKind === 'digimon' && !find(state, op, pa.targetUid));
-  const secCheck = async () => {
-    const ctl = S.beginSecurityCheck(state, p, uid, op); ctl.deferBattle = true; let g = 0;
-    while (!ctl.done && !state.winner && g++ < 30) {
-      if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-      await drain(w);
-      if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
-    }
-    if (!ctl.gameOver && ctl.results.length) { const last = ctl.results[ctl.results.length - 1]; if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, p, uid, 'trash', 'battle'); }
-  };
   if (!state.winner && !pa.ended && alive()) {
-    if (pa.targetKind === 'player') await secCheck();
-    else { const res = S.resolveDigimonBattle(state, p, uid, pa.targetUid); await drain(w); if (res && res.piercing && !state.winner) await secCheck(); }
+    if (pa.targetKind === 'player') await scriptedSecCheck(w, p, uid, op);
+    else { const res = S.resolveDigimonBattle(state, p, uid, pa.targetUid); await drain(w); if (res && res.piercing && !state.winner && S.consumePierceCheck(state, p, uid)) await scriptedSecCheck(w, p, uid, op); }
   }
   await drain(w);
   const st = find(state, p, uid); state.attackCtx = null;

@@ -855,12 +855,12 @@ function afterMulliganCheck() {
 // 6-5-1: main-phase actions (play / evolve / use / link / attack / activate / pass) may only be
 // taken while NOTHING is left unresolved — no waiting effect, open choice, or attack in progress.
 function busy() {
-  return !!state.uiChoice || attackActive() || !!sel.atkQueued || !!state.turnEnding || state.pending.some(t => !t.resolved);
+  return !!state.uiChoice || attackActive() || !!sel.atkQueued || !!state.turnEnding || !!state._scriptedPierce || state.pending.some(t => !t.resolved);
 }
 // 6-6-2/6-6-3: a begun turn end finishes only once nothing is left to resolve (no waiting effect, choice, or
 // attack — including one an end-of-turn effect has queued to start).
 function settleTurnEndIfIdle() {
-  if (state.turnEnding && !state.uiChoice && !attackActive() && !sel.atkQueued && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
+  if (state.turnEnding && !state.uiChoice && !attackActive() && !sel.atkQueued && !state._scriptedPierce && !state.pending.some(t => !t.resolved)) E.settleTurnEnd(state);
 }
 function blockIfBusy() {
   if (cpuHumanLocked()) return true; // vs CPU: nothing on the CPU's turn is the human's to do (silently ignored)
@@ -1916,7 +1916,11 @@ async function ctxChoose(kind, payload) {
   // 사용자가 "이후 전부 발휘하지 않음"을 선택함 — confirmEffect는 항상 "아니오"가 유효한 응답이므로(강제 효과라도
   // 룰 15-15-7-4에 의해 임의 처리 여부는 플레이어 선택) 사람 쪽 결정에 한해 자동으로 거절 처리한다. payload.player
   // 가 CPU 좌석(CPU_P)이면 이 지름길을 타지 않고 그대로 진행시켜, CPU 자신의 판단(uc.by)에 맡긴다.
-  if (kind === 'confirmEffect' && sel.declineAllRemaining && payload && (!cpuOn || payload.player !== CPU_P)) return false;
+  // payload._pendingResolution(발동 대기 큐 처리 중에만 runPendingScript가 붙임)이 없으면 건드리지 않는다 —
+  // 그렇지 않으면 카드를 낼 때의 《어셈블리》/《디지크로스》/코스트 할인 확인창(main.js의 askYN, 대기 큐와 무관)까지
+  // 전부 자동 거절돼 버려서, "이후 전부 발휘하지 않음"을 한 번 누르면 그 게임 내내 어셈블리 등을 영영 못 쓰게 되는
+  // 버그가 있었다 (실전 리포트: 슬레이어드라몬 《어셈블리》가 매번 먹통).
+  if (kind === 'confirmEffect' && sel.declineAllRemaining && payload && payload._pendingResolution && (!cpuOn || payload.player !== CPU_P)) return false;
   return new Promise(resolve => {
     // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
     // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
@@ -1985,6 +1989,9 @@ function isOptionalAutoEffect(text, script) {
 
 async function runPendingScript(trigger, opts = {}) {
   const st0 = state, stale = () => state !== st0; // game-epoch guard: a continuation of a replaced game must not touch the new one
+  // marks this trigger as already executing further up the call stack — a nested resolver (drainNestedPending,
+  // used by scriptedSecurityCheck's ≪관통≫ bonus check) must skip it and only pick up genuinely NEW pending items.
+  trigger._running = true;
   if (trigger.schedFn) { // 18-1: a held "이 턴 종료 시 …" effect resolves like any other trigger
     if (opts.delay) await new Promise(r => setTimeout(r, Math.round(900 * READ_SPEEDS[READ.speed] / 1.7)));
     if (stale()) return;
@@ -2040,8 +2047,10 @@ async function runPendingScript(trigger, opts = {}) {
   // that need a real choice (ctx.choose already pauses those naturally).
   if (opts.delay) await new Promise(r => setTimeout(r, Math.round(1500 * READ_SPEEDS[READ.speed] / 1.7)));
   if (stale()) return;
-  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); } };
+  const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, k === 'confirmEffect' ? { ...pl, _pendingResolution: true } : pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
+    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); },
+    // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
+    securityCheck: async (p, uid, op) => { if (stale() || !S.consumePierceCheck(state, p, uid)) return; await scriptedSecurityCheck(p, uid, op || S.opponentOf(p)); } };
   // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger
   // sentence; the bullet is read from the card, the option can only be discarded from the turn after it was placed, and discarding it is a player choice.
   const delayPlan = Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited) ? null : Effects.delayBulletPlan(S, trigger.cardId, trigger.tags, trigger.text);
@@ -2118,7 +2127,7 @@ function autoRunMandatoryPending() {
   if (pendingRunner) return;
   // 4-3-2 simultaneous triggers: the TURN player resolves their waiting effects first (choosing the
   // order when there are several); only when none are left does the non-turn player's queue start.
-  const waiting = state.pending.filter(t => !t.resolved && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
+  const waiting = state.pending.filter(t => !t.resolved && !t._running && !t.manualOnly && !autoRunAttempted.has(t.uid) && scriptFor(t).length);
   if (!waiting.length) return;
   // 15-16-10-2: a triggered 【시큐리티】 effect skips the waiting line and resolves at once. 15-4-5: effects that
   // triggered WHILE simultaneous ones were resolving (derived triggers, t.depth) resolve before the older waiting ones.
@@ -2197,8 +2206,10 @@ function renderUiChoice() {
       h('button', { className: 'primary', onClick: () => resolve(true) }, payload.yesLabel || '발동한다'),
       h('button', { onClick: () => resolve(false) }, payload.noLabel || '발동하지 않는다'),
     ]));
-    rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
-      h('button', { title: '이 선택을 포함해, 이후 "발휘할지 말지" 묻는 임의 효과는 전부 발휘하지 않는 것으로 자동 응답합니다 (직접 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => { sel.declineAllRemaining = true; resolve(false); } }, '🚫 이후 전부 발휘하지 않음'),
+    // 발동 대기 큐를 처리 중인 확인창에서만 보여준다 — 카드를 낼 때의 《어셈블리》/《디지크로스》/코스트 할인
+    // 확인창(main.js askYN)은 대기 큐와 무관하므로 여기서 끄면 안 됨 (ctxChoose의 payload._pendingResolution 체크와 짝)
+    if (payload._pendingResolution) rows.push(h('div', { className: 'actions-row', style: 'margin-top:4px;border-top:1px solid var(--holo-line);padding-top:6px;' }, [
+      h('button', { title: '이 선택을 포함해, 이후 "발휘할지 말지" 묻는 대기 중인 효과는 전부 발휘하지 않는 것으로 자동 응답합니다 (카드를 낼 때의 어셈블리/디지크로스/코스트 할인 확인창에는 영향 없음. 직접 정하고 싶어지면 화면 새로고침 없이 이 게임을 다시 시작하면 초기화됩니다)', onClick: () => { sel.declineAllRemaining = true; resolve(false); } }, '🚫 이후 전부 발휘하지 않음'),
     ]));
   } else if (kind === 'pickStack') {
     // uids are usually payload.player's own stacks, but some pickers (《돌진》의 어택 대상 변경 등) hand over the OPPONENT's
@@ -2373,6 +2384,13 @@ function renderModal() {
     const what = KIND[uc.kind] || '선택';
     const cancelable = uc.kind === 'confirmEffect' || (!(uc.payload && uc.payload.required) && /^pick(Stack|StackAnySide|FromHand|FromZoneIndex)$/.test(uc.kind));
     return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [choiceUi])]), { key: peekIdOf(uc), title: src ? `📌 ${src} — ${what}` : what, pill: `선택 대기: ${src ? src + ' — ' : ''}${what}${src ? '' : pr ? ' — ' + pr.slice(0, 30) : ''} (누르면 다시 열기)`, cancelable });
+  }
+  if (state._scriptedPierce) { // ≪관통≫ bonus check fired by a scripted "can battle" op (scriptedSecurityCheck) — see busy()/renderPendingAttack for the normal-attack equivalent
+    const { attacker, ctl } = state._scriptedPierce;
+    const rows = [h('div', { className: 'section-title' }, `≪관통≫ 보너스 시큐리티 체크 — ${attacker}`)];
+    ctl.results.forEach((r, i) => rows.push(h('div', { className: 'meta' }, r.empty ? `체크 ${i + 1}: 시큐리티 0 — 공격측 승리` : `체크 ${i + 1}/${ctl.total}: ${S.card(r.revealed).nameKo}(DP${r.secDp}) vs 공격측 DP${r.atkDp} → ${r.result}`)));
+    if (!ctl.done) rows.push(h('div', { className: 'meta' }, '진행 중…'));
+    return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, rows)]), { key: 'scriptedPierce', title: '≪관통≫ 체크', pill: '≪관통≫ 보너스 시큐리티 체크 진행 중', cancelable: false });
   }
   const jogressUi = busy() ? null : renderJogressModal();
   if (jogressUi) return peekWrap(h('div', { className: 'modal-backdrop' }, [h('div', { className: 'modal-panel' }, [jogressUi])]), { key: 'jogress', title: '조그레스/DNA 진화', pill: '조그레스 선택 대기 (누르면 다시 열기)', cancelable: true });
@@ -2605,6 +2623,56 @@ function doSecurityStep(pa) {
   }
 }
 
+// A scripted "can battle" ability (S.resolveDigimonBattle called directly by a card
+// script — src/cards/shard8.js OPS.s8_battle etc.) that wins with ≪관통≫ must ALSO
+// trigger the mandatory bonus security check (16-7-3/16-7-4), even though it never
+// goes through the normal attack pa/state.attackCtx machinery (ctx.securityCheck,
+// wired in runPendingScript). This is intentionally independent of sel.pendingAttack:
+// a real attack `pa` may already be mid-flow in an unrelated stage when the script
+// runs (e.g. an 【어택 시】 trigger firing this battle while the real attack sits at
+// 'redirectTiming') — clobbering sel.pendingAttack here would corrupt it. Instead
+// state._scriptedPierce drives its own tiny render block (see renderModal), and the
+// pending-effect queue (state.pending) still drains itself the normal way, driven by
+// the render()/autoRunMandatoryPending() heartbeat that already runs on every frame.
+// Drains state.pending directly (bypassing autoRunMandatoryPending's single-flight `pendingRunner`
+// guard, which stays held by whatever outer trigger is calling us reentrantly via ctx.securityCheck)
+// so a checked security card's own 【시큐리티】 trigger actually resolves instead of stalling forever
+// waiting for a render() heartbeat that will not re-enter while we're still inside it (pendingRunner
+// is truthy the whole time runPendingScript() — and the script it's running — is on the call stack).
+// Simplified vs. autoRunMandatoryPending: always takes the first eligible trigger rather than
+// prompting the player to pick an order among several simultaneous ones — acceptable here since a
+// checked security card practically never queues more than one trigger at once.
+async function drainNestedPending() {
+  let guard = 0;
+  while (guard++ < 30) {
+    const waiting = state.pending.filter(t => !t.resolved && !t._running && !t.manualOnly && scriptFor(t).length);
+    if (!waiting.length) return;
+    const secNow = waiting.filter(t => t.evt && t.evt.kind === 'security');
+    const tier = secNow.length ? secNow : waiting;
+    const mine = tier.filter(t => t.player === state.activePlayer);
+    await runPendingScript((mine.length ? mine : tier)[0], { delay: false });
+    render();
+  }
+}
+async function scriptedSecurityCheck(attackerP, attackerUid, defenderP) {
+  const ctl = S.beginSecurityCheck(state, attackerP, attackerUid, defenderP);
+  ctl.deferBattle = true; // reveal -> resolve 【시큐리티】 effect -> battle (13-1-8), same pacing as the normal attack flow
+  state._scriptedPierce = { attacker: attackerP, uid: attackerUid, opp: defenderP, ctl };
+  render();
+  let guard = 0;
+  while (!ctl.done && !state.winner && guard++ < 30) {
+    if (ctl.awaiting) { await drainNestedPending(); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+    render();
+    await drainNestedPending();
+  }
+  if (!ctl.gameOver && ctl.results.length) {
+    const last = ctl.results[ctl.results.length - 1];
+    if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, attackerP, attackerUid, 'trash', 'battle');
+  }
+  state._scriptedPierce = null;
+  render();
+}
+
 // 11-5/14: resolve against whatever the FINAL target is after Block Timing
 // (block can redirect a player-attack, or even a direct digimon-attack, to
 // a different Digimon — 12-1-5 only bars blocking with the digimon that's
@@ -2624,6 +2692,8 @@ function resolveFinalTarget(pa) {
     stepPause(pa, 'digimonResult', '배틀! 양쪽 DP를 비교해 결과를 확인합니다', () => {
       const res = S.resolveDigimonBattle(state, pa.attacker, pa.uid, pa.targetUid);
       if (!res) { S.log(state, '배틀 직전 어택 중인 디지몬/대상이 사라져 어택이 성립하지 않고 종료 (11-2-6)'); endAttack(); return; }
+      // 16-7-3: at most one ≪관통≫ bonus check per attack — a scripted mid-attack battle may already have used it (S.consumePierceCheck).
+      if (res.piercing && !S.consumePierceCheck(state, pa.attacker, pa.uid)) res.piercing = false;
       pa.stage = 'digimonResult'; pa.battleRes = res; finishAttackRules(pa);
     });
   }
@@ -2779,7 +2849,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
       let tg = [], hit = false;
       try { tg = S.legalDigimonTargets(state, p, uid); hit = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); } catch (e) { tg = [1]; }
       delete pre.anyActiveOnce;
-      if (!hit && !(tg.length && !blockedFromDigimonTarget(p, pre))) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); return; }
+      if (!hit && !(tg.length && !blockedFromDigimonTarget(p, pre))) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete pre._pierceHeld; return; }
     }
   }
   const dec = S.declareAttack(state, p, uid, atkOpts);
@@ -2799,6 +2869,7 @@ function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
   if (dec.stack.anyActiveOnce) delete dec.stack.anyActiveOnce;
   const canHitPlayer = !(atkOpts && atkOpts.digimonOnly) && S.canAttackPlayer(state, p, uid); // b9: digimonOnly = "상대의 디지몬에게 어택할 수 있다" (RB1-025)
   const pa = { attacker: p, uid, dp, opp, digimonTargets, canHitPlayer, attackerCardId: dec.stack.cardId, targetKind: null, targetUid: null, stage: 'targetChoice' };
+  pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
   pa.fireDeclare = fireDeclare;
   pa.turn0 = state.turnNumber; sel.pendingAttack = pa;
   state.attackCtx = pa; // read by card scripts ("어택 중인 대상…"); pa.terminate() ends this attack ("그 어택을 종료한다")

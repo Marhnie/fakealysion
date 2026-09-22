@@ -360,7 +360,9 @@ sc('EX12-052::진화 시@DP +3000하고', async (ctx) => {
   if (!digs(state, o).length) return; // slice6 G186 (official Q6836): after the DP bonus the battle cannot be declined (as far as possible)
   const t = await pickStack(ctx, o, digs(state, o), '배틀할 상대의 디지몬 선택');
   if (!t) return;
-  S.resolveDigimonBattle(state, ctx.self, a.uid, t.uid);
+  const res = S.resolveDigimonBattle(state, ctx.self, a.uid, t.uid);
+  // 16-7-3/16-7-4 (official Q&A): this scripted battle can also win with ≪관통≫ — capped at once per attack (S.consumePierceCheck, applied inside ctx.securityCheck).
+  if (res && res.piercing && ctx.securityCheck) await ctx.securityCheck(ctx.self, a.uid, o);
 });
 
 // EX12-077 【등장 시】【진화 시】【어택 시】【카운터】[턴 1회] 자신의 디지몬의 진화원에서, 등장/사용 코스트 10 이하의, 「감마몬」이 기술되어 있거나 특징 「VB」를 가진 카드 1장을 코스트를 지불하지 않고 등장/사용할 수 있다.
