@@ -45,23 +45,31 @@ export function buildBlob(c, order = 0) {
   const name = norm([c.nameKo, c.nameDisplayKo, c.nameEn, c.id].join(' '));
   const traits = norm([...(c.types || []), c.attribute, c.form].join(' '));
   const effect = norm([c.effectKo, c.effectEn, evoTxt].join(' '));
-  const inherited = norm([c.inheritedKo, c.inheritedEn].join(' '));
+  const inherited = norm([c.inheritedKo, c.inheritedEn, c.optionKo, c.optionEn].join(' ')); // (dual cards: the option half's text is searchable too)
   const meta = norm([c.category, c.rarity, c.setName, c.level != null ? 'lv.' + c.level : '', ...(c.colors || []).map(k => COLOR_WORDS[k] || k)].join(' '));
   const pid = parseId(c.id);
   const evo = c.evoNormal?.cost;
   return {
     id: c.id, order, name, traits, effect, inherited,
     all: [name, traits, effect, inherited, meta].join(' '),
-    kw: new Set(extractKeywords((c.effectKo || '') + '\n' + (c.inheritedKo || ''))),
-    tags: new Set(extractTags((c.effectKo || '') + '\n' + (c.inheritedKo || ''))),
+    kw: new Set(extractKeywords((c.effectKo || '') + '\n' + (c.inheritedKo || '') + '\n' + (c.optionKo || ''))),
+    tags: new Set(extractTags((c.effectKo || '') + '\n' + (c.inheritedKo || '') + '\n' + (c.optionKo || ''))),
     prefix: pid.prefix, setKey: pid.setKey,
     evoCost: evo == null ? null : evo,
   };
 }
 // parallels (optional) = { cardNo: [{ rarity, ... }] }: blob.par = the variants' rarities (alternate arts of the same card).
+// 카드 번호 순서(스타터 ST → 부스터 BT → 엑스트라 EX → RB → LM → AD → P), 세트 번호·카드 번호는 숫자 비교. 데이터 원본 순서는 세트마다 뒤죽박죽이라 쓰지 않는다.
+const SET_GROUP = { ST: 0, BT: 1, EX: 2, RB: 3, LM: 4, AD: 5, P: 6 };
+export function cardNoKey(id) {
+  const m = String(id).match(/^([A-Za-z]+)(\d*)-(\d+)/);
+  if (!m) return [99, 0, 0, String(id)];
+  return [SET_GROUP[m[1].toUpperCase()] ?? 90, m[2] === '' ? 0 : Number(m[2]), Number(m[3]), String(id)];
+}
+export function cardNoCompare(a, b) { const x = cardNoKey(a), y = cardNoKey(b); for (let k = 0; k < 3; k++) if (x[k] !== y[k]) return x[k] - y[k]; return x[3].localeCompare(y[3], 'en'); }
 export function buildIndex(cards, parallels) {
   const ix = new Map(); let i = 0;
-  for (const id of Object.keys(cards)) {
+  for (const id of Object.keys(cards).sort(cardNoCompare)) {
     const b = buildBlob(cards[id], i++);
     b.par = (parallels?.[id] || []).map(v => v.rarity).filter(Boolean);
     b.parN = parallels?.[id]?.length || 0;

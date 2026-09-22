@@ -5,6 +5,7 @@ import * as S from './state.js';
 import * as SN from './snapshot.js';
 import * as SG from './savegame.js';
 import * as RP from './replay.js';
+import { stepReadMs } from './spectate.js'; // autoplay: how long a step is shown (reads its log lines)
 
 let api = null;
 const h = (tag, attrs = {}, children = []) => {
@@ -40,8 +41,10 @@ export function init(a) {
     if (!P.replay || e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
     if (e.key === 'ArrowRight') { e.preventDefault(); replayGo(P.replay.idx + 1); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); replayGo(P.replay.idx - 1); }
+    else if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); replayToggle(); }
     else if (e.key === 'Escape') { replayExit(false); }
   });
+  document.addEventListener('keyup', (e) => { if (P.replay && (e.key === ' ' || e.code === 'Space') && !(e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName))) e.preventDefault(); }); // a focused bar button must not also 'click' on Space
 }
 export const isReplay = () => !!P.replay;
 function ST() { return api.getState(); }
@@ -240,17 +243,62 @@ export function saveReplayFile() {
 export function loadReplayText(text, label) {
   try {
     const { list, meta } = RP.parseReplayFile(text);
-    if (P.replay) return;
-    P.live = ST() || null;
-    P.replay = { list, idx: 0, scratch: {}, standalone: !P.live, meta };
-    closeModal();
-    document.body.classList.add('pr-replay');
-    replayGo(0);
-    toast('리플레이를 불러왔습니다' + (label ? ': ' + label : '') + ` (${list.length}스텝)`);
+    if (openReplayList(list, label, { meta })) toast('리플레이를 불러왔습니다' + (label ? ': ' + label : '') + ` (${list.length}스텝)`);
   } catch (e) { P.msg = '리플레이 불러오기 실패: ' + (e && e.message); toast(P.msg); fillSaveModal(); }
 }
-function replayGo(i) {
+// open the replay viewer on a timeline list [{snap,label,lines,dig}] (a loaded file, or a CPU-vs-CPU spectate game).
+// opts: { autoplay, standalone (default: no live game), meta, startIdx, live: true (the list is still growing), onExit(resumed) }
+export function openReplayList(list, label, opts = {}) {
+  if (P.replay || !list || !list.length) return false;
+  P.live = ST() || null;
+  P.replay = { list, idx: opts.startIdx || 0, scratch: {}, standalone: opts.standalone != null ? !!opts.standalone : !P.live, meta: opts.meta || null, playing: false, speed: P.rpSpeed || 1, timer: null, growing: !!opts.live, growInfo: '', onExit: opts.onExit || null, label: label || '' };
+  closeModal();
+  document.body.classList.add('pr-replay');
+  replayGo(P.replay.idx);
+  if (opts.autoplay) replayPlay();
+  return true;
+}
+// spectate glue: the simulation feeds the (growing) list; done=true ends the growth and lets autoplay stop at the last step
+export function replayLiveUpdate(info) {
+  const R = P.replay; if (!R || !R.growing) return;
+  R.growInfo = (info && info.text) || '';
+  if (info && info.meta) R.meta = info.meta;
+  if (info && info.done) { R.growing = false; R.growInfo = ''; }
+  if (!info || info.done || (R.tick = (R.tick || 0) + 1) % 3 === 0) renderReplayBar(); // bar refresh is throttled while the sim runs
+  if (R.playing && !R.timer) replayTick();
+}
+function replayClearTimer() { const R = P.replay; if (R && R.timer) { clearTimeout(R.timer); R.timer = null; } }
+function replayPause() { const R = P.replay; if (!R) return; R.playing = false; replayClearTimer(); renderReplayBar(); }
+function replayPlay() {
   const R = P.replay; if (!R) return;
+  R.playing = true; replayClearTimer();
+  if (R.idx >= R.list.length - 1 && !R.growing) replayGo(0, true); else renderReplayBar(); // finished -> play again from the top
+  replayTick();
+}
+function replayToggle() { const R = P.replay; if (!R) return; if (R.playing) replayPause(); else replayPlay(); }
+function replayTick() {
+  const R = P.replay; if (!R || !R.playing) return;
+  replayClearTimer();
+  if (R.idx >= R.list.length - 1) {
+    if (R.growing) { R.timer = setTimeout(() => { R.timer = null; replayTick(); }, 350); return; } // wait for the simulation to get ahead
+    R.playing = false; renderReplayBar(); return; // end of the replay: stop
+  }
+  R.timer = setTimeout(() => { R.timer = null; if (P.replay !== R || !R.playing) return; replayGo(R.idx + 1, true); replayTick(); }, stepReadMs(R.list[R.idx + 1], R.speed));
+}
+function replaySetSpeed(v) { const R = P.replay; if (!R) return; R.speed = v; P.rpSpeed = v; if (R.playing) { replayClearTimer(); replayTick(); } }
+function replaySave() {
+  const R = P.replay; if (!R) return;
+  try {
+    const m = R.meta || {};
+    const text = RP.replayFileJSON({ firstPlayer: m.firstPlayer, winner: m.winner, turnNumber: m.turns }, R.list);
+    const w = m.winner ? (m.winner === 'draw' ? 'draw' : m.winner + '-win') : 'game';
+    SG.downloadText(`digimon-replay-t${m.turns || ''}-${w}.json`, text);
+    toast(`리플레이를 저장했습니다 (${R.list.length}스텝, ${(text.length / 1048576).toFixed(1)}MB)`);
+  } catch (e) { toast('리플레이 저장 실패: ' + (e && e.message)); }
+}
+function replayGo(i, fromAuto) {
+  const R = P.replay; if (!R) return;
+  if (!fromAuto && R.playing) { R.playing = false; replayClearTimer(); } // any manual navigation pauses autoplay
   i = Math.max(0, Math.min(R.list.length - 1, i)); R.idx = i;
   SN.restoreState(R.scratch, R.list[i].snap);
   const lines = []; for (let k = 0; k <= i; k++) for (const m of R.list[k].lines || []) lines.push({ t: 0, turn: R.list[k].snap.meta.turn, msg: m });
@@ -259,6 +307,8 @@ function replayGo(i) {
 }
 function replayExit(resumeHere) {
   const R = P.replay; if (!R) return;
+  replayClearTimer(); R.playing = false; R.growing = false;
+  if (R.onExit) { try { R.onExit(!!resumeHere); } catch (e) { /* ignore */ } }
   const live = P.live; const standalone = !!R.standalone; P.replay = null; P.live = null;
   document.body.classList.remove('pr-replay');
   const bar = document.getElementById('pr-replay-bar'); if (bar) bar.remove();
@@ -272,6 +322,8 @@ function replayExit(resumeHere) {
 }
 function replayContinueStandalone() {
   const R = P.replay; if (!R) return;
+  replayClearTimer(); R.playing = false; R.growing = false;
+  if (R.onExit) { try { R.onExit(true); } catch (e) { /* ignore */ } }
   const live = {}; SN.restoreState(live, R.list[R.idx].snap); live.log = R.scratch.log || []; live.fxHistory = [];
   P.replay = null; P.live = null; document.body.classList.remove('pr-replay');
   const bar = document.getElementById('pr-replay-bar'); if (bar) bar.remove();
@@ -280,17 +332,27 @@ function replayContinueStandalone() {
 function renderReplayBar() {
   const R = P.replay; if (!R) return;
   let bar = document.getElementById('pr-replay-bar'); if (!bar) bar = document.body.appendChild(h('div', { id: 'pr-replay-bar', className: 'pr-replay-bar' }));
-  const e = R.list[R.idx];
-  const slider = h('input', { type: 'range', min: 0, max: R.list.length - 1, value: R.idx, oninput: (ev) => replayGo(Number(ev.target.value)) });
+  const last = R.list.length - 1;
+  const e = R.list[Math.min(R.idx, last)];
+  const spd = h('select', { className: 'pr-rp-speed', title: '자동 재생 속도', onchange: (ev) => replaySetSpeed(Number(ev.target.value)) }, [0.5, 1, 2, 4].map((v) => h('option', { value: v }, v + 'x')));
+  spd.value = String(R.speed);
+  let slider = bar.querySelector('input[type=range]'); // kept across renders so dragging it is not interrupted
+  if (!slider) slider = h('input', { type: 'range', min: 0, max: Math.max(0, last), value: R.idx, oninput: (ev) => replayGo(Number(ev.target.value)) });
+  slider.max = String(Math.max(0, last)); slider.value = String(R.idx);
+  const m = R.meta || {};
+  const result = !R.growing && m.winner ? ` · 결과: ${m.winner === 'draw' ? '무승부' : m.winner.toUpperCase() + ' 승리'}` : '';
   bar.replaceChildren(
     h('div', { className: 'pr-rp-top' }, [
-      h('b', {}, '▶ 리플레이'),
-      h('button', { disabled: R.idx <= 0, onClick: () => replayGo(0) }, '⏮'),
-      h('button', { disabled: R.idx <= 0, onClick: () => replayGo(R.idx - 1) }, '◀ 이전'),
-      h('button', { disabled: R.idx >= R.list.length - 1, onClick: () => replayGo(R.idx + 1) }, '다음 ▶'),
-      h('button', { disabled: R.idx >= R.list.length - 1, onClick: () => replayGo(R.list.length - 1) }, '⏭'),
-      h('span', { className: 'pr-rp-title' }, RP.stepTitle(R.list, R.idx)),
-      R.standalone ? h('button', { title: '이 스텝의 상태로 새 게임처럼 이어서 진행', onClick: () => replayContinueStandalone() }, '여기서 이어하기') : h('button', { title: '이 시점 상태로 게임을 이어서 진행', onClick: () => replayExit(true) }, '여기서 이어하기'),
+      h('b', { className: 'pr-rp-tag' }, R.playing ? '▶ 재생 중' : '⏸ 리플레이'),
+      h('button', { className: 'pr-rp-play' + (R.playing ? ' on' : ''), title: '재생 / 일시정지 (Space)', onClick: replayToggle }, R.playing ? '⏸' : '▶'),
+      spd,
+      h('button', { disabled: R.idx <= 0, title: '처음', onClick: () => replayGo(0) }, '⏮'),
+      h('button', { disabled: R.idx <= 0, title: '이전 스텝 (←)', onClick: () => replayGo(R.idx - 1) }, '◀'),
+      h('button', { disabled: R.idx >= last, title: '다음 스텝 (→)', onClick: () => replayGo(R.idx + 1) }, '▶'),
+      h('button', { disabled: R.idx >= last, title: '마지막', onClick: () => replayGo(last) }, '⏭'),
+      h('span', { className: 'pr-rp-title' }, RP.stepTitle(R.list, Math.min(R.idx, last)) + result + (R.growing ? ` · ⏳ ${R.growInfo || '시뮬레이션 중…'}` : '')),
+      R.standalone && (m.turns != null || m.decks) ? h('button', { title: '이 리플레이를 파일로 저장', onClick: replaySave }, '💾') : null,
+      R.standalone ? h('button', { title: '이 스텝의 상태로 새 게임처럼 이어서 진행', onClick: () => replayContinueStandalone() }, '이어하기') : h('button', { title: '이 시점 상태로 게임을 이어서 진행', onClick: () => replayExit(true) }, '여기서 이어하기'),
       h('button', { className: 'primary', onClick: () => replayExit(false) }, '종료'),
     ]),
     slider,

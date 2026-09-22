@@ -103,7 +103,7 @@ export function deckStats(deck, env, opts = {}) {
     for (const col of c.colors || []) inc(st.colors, col, n);
     if ((c.colors || []).length > 1) st.multiColor += n;
     if (c.category === 'digimon' && c.dp != null) { const b = st.dp.find((x, i) => c.dp >= DP_BUCKETS[i][1] && c.dp <= DP_BUCKETS[i][2]) || st.dp[st.dp.length - 1]; b.n += n; }
-    const text = (c.effectKo || '') + '\n' + (c.inheritedKo || '');
+    const text = (c.effectKo || '') + '\n' + (c.inheritedKo || '') + '\n' + (c.optionKo || '');
     for (const k of DBS.extractKeywords(text)) inc(st.keywords, k, n);
     for (const k of DBS.extractTags(text)) inc(st.tags, k, n);
     if (/^\s*【시큐리티】/m.test(text)) { st.security += n; st.securityIds.push(id); }
@@ -143,10 +143,10 @@ export function buildSimModel(deck, env) {
   const digSet = new Set(digIds);
   const flags = ids.map(id => {
     const c = env.card(id);
-    const text = (c.effectKo || '') + '\n' + (c.inheritedKo || '');
+    const text = (c.effectKo || '') + '\n' + (c.inheritedKo || '') + '\n' + (c.optionKo || '');
     return {
       id, lv2: isDigi(c) && c.level === 2, lv3: isDigi(c) && c.level === 3, digi: isDigi(c),
-      lowDigi: isDigi(c) && c.cost != null && c.cost <= 3, tamer: c.category === 'tamer', option: c.category === 'option',
+      lowDigi: isDigi(c) && c.cost != null && c.cost <= 3, tamer: c.category === 'tamer', option: c.category === 'option' || !!c.dual, // (a dual card is also an Option card)
       blocker: /《\s*블로커\s*》/.test(text), fromDigitama: isDigi(c) && (G.sources[id] || []).some(s => digSet.has(s)),
       srcSet: new Set(G.sources[id] || []),
     };
@@ -334,9 +334,10 @@ export function diffDecks(a, b) {
   return { rows: rows.filter(r => r.delta !== 0), added, removed, same, changedKinds: rows.filter(r => r.delta !== 0).length };
 }
 
-export const SORT_MODES = [['none', '추가한 순서'], ['cat', '종류'], ['lv', 'Lv'], ['cost', '코스트'], ['color', '색'], ['name', '이름']];
+export const SORT_MODES = [['none', '추가한 순서'], ['no', '카드 번호'], ['cat', '종류'], ['lv', 'Lv'], ['cost', '코스트'], ['color', '색'], ['name', '이름']];
 export function sortEntries(entries, mode, cardFn) {
   if (!mode || mode === 'none') return entries.slice();
+  if (mode === 'no') return entries.slice().sort((a, c) => DBS.cardNoCompare(a[0], c[0])); // 카드 번호순 (ST → BT → EX …, 세트·카드 번호는 숫자 비교)
   const catOrder = { digitama: 0, digimon: 1, tamer: 2, option: 3 };
   const colorOrder = ['red', 'blue', 'yellow', 'green', 'black', 'purple', 'white'];
   const key = {

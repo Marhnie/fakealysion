@@ -830,3 +830,24 @@ body.pr-replay #app .board { overflow: auto; }
   .player-header { min-height: 20px; font-size: 11px; }
   .sec-zone .sec-tags, .sec-zone .sec-label { display: none; }
 }
+
+/* 🍿 CPU끼리 구경하기 (spectate) + replay autoplay controls */
+.su-spec-row { display: flex; gap: 8px; align-items: center; }
+.su-spec-row .su-spec-deck { flex: 1 1 auto; min-width: 0; } .su-spec-row .su-spec-lv { flex: 0 0 auto; width: auto; min-width: 96px; }
+.su-spec-tag { flex: 0 0 auto; font-weight: 900; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--holo-line); }
+.su-spec-p1 { color: var(--p1); } .su-spec-p2 { color: var(--p2); }
+.su-spec-act { flex-wrap: wrap; } .su-spec-act button { min-height: 44px; font-weight: 800; }
+.su-spec-status { flex: 1 1 140px; font-size: 12.5px; color: var(--muted); } .su-spec-err { color: var(--danger); }
+@media (max-width: 640px) { .su-spec-row { flex-wrap: wrap; } .su-spec-row .su-spec-deck { flex: 1 1 60%; } .su-spec-row .su-spec-lv { flex: 1 1 30%; } .su-spec-act button { flex: 1 1 100%; } }
+.pr-rp-play { min-width: 44px; font-weight: 900; } .pr-rp-play.on { background: var(--accent); color: #101418; }
+.pr-rp-speed { min-height: 32px; width: auto; }
+@media (max-width: 640px) { .pr-replay-bar { padding: 4px 8px calc(4px + env(safe-area-inset-bottom)); gap: 2px; } .pr-replay-bar button { min-height: 34px; min-width: 34px; padding: 0 8px; font-size: 14px; } .pr-rp-top { gap: 4px; } .pr-rp-title { flex-basis: 120px; font-size: 11px; } .pr-rp-lines { max-height: 56px; font-size: 11.5px; } .pr-rp-tag { display: none; } .pr-rp-speed { min-height: 34px; } }
+
+/* 조그레스 창: 같은 디지몬이 여러 장일 때 어느 것인지 구분 (필드 위치/진화원/상태 + 호버 시 필드 강조) */
+.jg-mat { display: flex; flex-direction: column; align-items: center; gap: 3px; max-width: 120px; cursor: help; }
+.jg-tag { font-weight: 900; font-size: 12px; background: var(--jg); color: #170a2b; border-radius: 10px; padding: 0 8px; }
+.jg-mat-info { font-size: 10.5px; text-align: center; line-height: 1.25; color: var(--text); }
+.jg-mat-src { font-size: 10px; text-align: center; line-height: 1.2; color: var(--muted); }
+.jg-hl, .jg-hl * { outline: 3px solid var(--jg) !important; outline-offset: 2px; animation: jg-blink .7s ease-in-out infinite alternate; border-radius: 8px; }
+@keyframes jg-blink { from { box-shadow: 0 0 6px 1px rgba(176,124,245,.4); } to { box-shadow: 0 0 20px 6px rgba(176,124,245,.95); } }
+@media (max-width: 900px), (pointer: coarse) { .jg-mat { max-width: 96px; } }

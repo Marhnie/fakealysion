@@ -27,7 +27,9 @@ const R = { rng: Math.random };
 export const TUNE = { hardReserve: 3.5, hardThrA: -2, normThrA: 1.0, hardThreshold: 1.2, hardLimit: 5, hardGw: 1.0, secDpMid: 6800, pSecDig: 0.6, hardGain2: 3.2, hardChump: 3, hardLethal: 1,
   gainBase: 2.2, pBlockHi: 0.75, pBlockLo: 0.35, tBlockHi: 0.6, tBlockLo: 0.3, cThr: 1.5, baitBonus: 0, dangerLim: 3, tieBlockSec: 3, chumpVal: 5, mullCost: 3, mullHiCost: 5,
   // search / evaluation params (read by src/cpusearch.js through cfg.params): group multipliers on the fitted eval weights + tactical terms
-  evSec: 1, evBoard: 1, evHand: 1, evMem: 1, evDev: 1, evTempo: 1, lethalW: 40, threatW: 1, priorW: 2, deckLowW: 25 };
+  evSec: 1, evBoard: 1, evHand: 1, evMem: 1, evDev: 1, evTempo: 1, lethalW: 40, threatW: 1, priorW: 2, deckLowW: 25,
+  // option / tamer play (docs/cpu-option-tamer-play.md; only level hard / expert): optTam = master switch (0 = the pre-fix behaviour), the rest are score offsets / weights
+  optTam: 1, tamBonus: 0, engBonus: 0, tamDisc: 1, optBonus: 0, optCostW: 0.6, tamGiftMax: 10, optGiftMax: 10 };
 // name -> [min, max] search ranges of the optimiser (only the keys listed here are evolved)
 export const PARAM_RANGES = {
   hardReserve: [0, 8], hardThrA: [-5, 2], hardThreshold: [0.3, 3], hardLimit: [2, 8], hardGw: [0.3, 2.5], secDpMid: [4500, 9000], pSecDig: [0.2, 1], hardGain2: [1.5, 6], hardChump: [0, 5],
@@ -172,21 +174,56 @@ function textKwBonus(id) {
   return b;
 }
 function optionMainText(id) {
-  const segs = safe(() => S.parseEffectSegments(card(id).effectKo || '').segments, []);
+  const segs = safe(() => S.parseEffectSegments(S.optionView(id).effectKo || '').segments, []); // (dual cards: the option half)
   return segs.filter((s) => s.tags.includes('메인')).map((s) => s.body).join(' ');
 }
 // -> { score, why } | null (null = pointless right now)
-function optionValue(state, p, id) {
+// opponent Digimon an option text can actually hit: "등장 코스트 N 이하의 상대 …" / "Lv.N 이하·이상의 상대 …" / "DP N 이하의 상대 …" / 액티브·레스트 상태의 상대 …
+// (conditional upgrades — "대신", "마리당", "있을 때" — stay lenient: the list is returned unfiltered)
+function optionTargets(state, o, t, list) {
+  if (/(대신|마리당|명당|있을\s*때|있다면|있는\s*동안)/.test(t)) return list;
+  let out = list, m;
+  if ((m = /등장\s*코스트\s*(\d+)\s*이하(?:인|의)?\s*상대/.exec(t))) out = out.filter((s) => (card(s.cardId).cost || 0) <= +m[1]);
+  if ((m = /Lv\.?\s*(\d)\s*(이하|이상)(?:인|의)?\s*상대/.exec(t))) out = out.filter((s) => (m[2] === '이하' ? (card(s.cardId).level || 0) <= +m[1] : (card(s.cardId).level || 0) >= +m[1]));
+  if ((m = /DP\s*(\d+)\s*이하(?:인|의)?\s*상대/.exec(t))) out = out.filter((s) => dpOf(state, o, s) <= +m[1]);
+  if (/액티브\s*상태(?:인|의)\s*상대/.test(t)) out = out.filter((s) => !s.suspended);
+  if (/레스트\s*상태(?:인|의)\s*상대/.test(t)) out = out.filter((s) => s.suspended);
+  return out;
+}
+// an own Digimon that can evolve into a Digimon card of my hand (cost ignored: the option pays / discounts it)
+function evoPairPossible(state, p, lvFrom, lvTo) {
+  const pl = state.players[p];
+  const hand = [...new Set(pl.hand.filter((id) => card(id).category === 'digimon' && (lvTo == null || card(id).level === lvTo)))];
+  if (!hand.length) return false;
+  for (const st of pl.battle.filter(isDigi)) {
+    if (lvFrom != null && card(st.cardId).level !== lvFrom) continue;
+    const restr = safe(() => S.evolveTargetRestriction(state, p, st), null), extra = safe(() => S.evoExtraArg(state, p, st), []);
+    for (const id of hand) if (safe(() => E.canEvolveAny(st.cardId, id, extra, restr).ok, false)) return true;
+  }
+  return false;
+}
+function optionValue(state, p, id, fix) {
   const t = optionMainText(id);
   if (!t) return null;
   const me = state.players[p], oppPl = state.players[opp(p)];
-  const oppDig = oppPl.battle.filter(isDigi);
+  let oppDig = oppPl.battle.filter(isDigi);
   const myDig = me.battle.filter(isDigi);
   const canAtk = myDig.filter((s) => !s.suspended && (state.turnNumber >= s.attackEligibleTurn || hasKw(state, p, s, '속공'))).length;
-  const mentionsOppTarget = /상대의\s*(디지몬|테이머|액티브|레스트)/.test(t);
+  // fix (normal / hard / expert): texts say "상대 디지몬" as often as "상대의 디지몬" — the old /상대의/ tests classified most removal / bounce options as 'misc' (score 2 - cost·0.6 < 0: never cast)
+  const mentionsOppTarget = (fix ? /상대(?:의)?\s*(디지몬|테이머|액티브|레스트)/ : /상대의\s*(디지몬|테이머|액티브|레스트)/).test(t);
+  const oppRef = fix ? mentionsOppTarget : /상대의/.test(t);
+  if (fix && oppRef) oppDig = optionTargets(state, opp(p), t, oppDig); // a removal / bounce / rest with no legal target is a wasted card + wasted memory
   let sc = 2, why = 'misc';
-  if (/소멸/.test(t) && /상대의/.test(t)) { if (!oppDig.length) return null; sc = 6 + Math.max(...oppDig.map((s) => stackValue(state, opp(p), s))) * 0.3; why = 'removal'; }
-  else if (/(아래로\s*되돌|패로\s*되돌|핸드로\s*되돌)/.test(t) && /상대의/.test(t)) { if (!oppDig.length) return null; sc = 4.5; why = 'bounce'; }
+  if (fix && /(진화시킬\s*수\s*있다|진화시킨다)/.test(t) && /진화\s*코스트/.test(t) && !oppRef) { if (!evoPairPossible(state, p, null, null)) return null; sc = 4.5; why = 'free'; }
+  else if (fix && /진화\s*코스트를?\s*-\s*\d+\s*(?:한다|하고)/.test(t) && /Lv\.?\s*(\d)\s*에서\s*Lv\.?\s*(\d)/.test(t)) { const m = /Lv\.?\s*(\d)\s*에서\s*Lv\.?\s*(\d)/.exec(t); if (!evoPairPossible(state, p, +m[1], +m[2])) return null; sc = 3.5; why = 'free'; }
+  else if (/소멸/.test(t) && oppRef && !(fix && /소멸하지\s*않|소멸되지\s*않/.test(t) && !/소멸시/.test(t))) { if (!oppDig.length) return null; sc = 6 + Math.max(...oppDig.map((s) => stackValue(state, opp(p), s))) * 0.3; why = 'removal'; }
+  else if (/(아래로\s*되돌|패로\s*되돌|핸드로\s*되돌)/.test(t) && oppRef) { if (!oppDig.length) return null; sc = 4.5; why = 'bounce'; }
+  else if (fix >= 2 && oppRef && /(어택과\s*블록을\s*할\s*수\s*없|어택을?\s*할\s*수\s*없)/.test(t)) { // defensive: "상대 디지몬은 다음 상대 턴 종료까지 어택할 수 없다" — only worth its cost when I am the one being pressured
+    if (!oppDig.length) return null;
+    const threat = oppDig.length + Math.max(0, 4 - me.security.length);
+    if (me.security.length > 4 && oppDig.length < 3) return null;
+    sc = 1.2 + threat * 0.6; why = 'restrict';
+  }
   else if (/시큐리티/.test(t) && /(위에\s*놓|추가|회복|덱\s*위)/.test(t) && !/상대의\s*시큐리티/.test(t)) { sc = 3 + Math.max(0, 4 - me.security.length) * 1.4; why = 'recover'; }
   else if (/(뽑는다|드로우|패에\s*추가)/.test(t)) { sc = 4; why = 'draw'; }
   else if (/메모리.*(얻|\+|플러스)/.test(t)) { sc = 3.5; why = 'memory'; }
@@ -198,6 +235,14 @@ function optionValue(state, p, id) {
   if (/자신의\s*(디지몬|테이머)\s*\d*\s*마리/.test(t) && !/상대/.test(t) && !myDig.length && !me.battle.length) return null;
   return { score: sc, why };
 }
+const TAMER_INFO = new Map();
+function tamerInfo(id) {
+  let v = TAMER_INFO.get(id);
+  if (!v) { const t = String(card(id).effectKo || ''); v = { engine: /【자신의\s*(?:턴|메인\s*페이즈)\s*개시\s*시】[^【]*메모리/.test(t), disc: /(?:진화|등장)\s*코스트[^.。]{0,24}-\s*\d/.test(t) }; TAMER_INFO.set(id, v); }
+  return v;
+}
+// a tamer that makes later evolutions / plays of the same turn cheaper is worth playing BEFORE them (tamDisc); memory-engine tamers get engBonus (measured: eager engine play LOSES, default 0)
+function tamerBonus(id, P) { const i = tamerInfo(id); return P.tamBonus + (i.engine ? P.engBonus : 0) + (i.disc ? P.tamDisc : 0); }
 function canUseOptionNow(state, p, id) {
   return safe(() => S.optionColorOk(state, p, id) && !S.timedLocked(state, p, 'option') && !S.s1HookAny(state, 's1cannotUseOption', { p }), false);
 }
@@ -232,7 +277,9 @@ function canDeclareAttack(state, p, st) {
 }
 
 // -> [{ type:'evolve'|'play'|'option'|'jogress'|'train'|'main', cost, score, key, ... }]
-function enumerateActions_(state, p) {
+function enumerateActions_(state, p, cfg) {
+  const OT = !!(cfg && cfg.level === 'hard' && tp(cfg).optTam), TP = tp(cfg);
+  const FIX = !cfg || cfg.level === 'easy' ? 0 : cfg.level !== 'hard' ? 1 : OT ? 2 : 0; // option-text fixes: 1 = normal (bug fixes), 2 = hard / expert (+ defensive options), 0 = pre-fix behaviour (params.optTam = 0)
   const pl = state.players[p];
   const acts = [];
   const seenHand = new Set();
@@ -272,12 +319,12 @@ function enumerateActions_(state, p) {
     seenHand.add(id);
     const c = card(id);
     if (c.category === 'digimon' || c.category === 'tamer') {
-      if (c.category === 'digimon' && safe(() => S.isPlayRestricted(state, p, id), false)) { /* cannot play */ }
+      if (c.category === 'digimon' && (S.isDual(id) || safe(() => S.isPlayRestricted(state, p, id), false))) { /* cannot play (dual cards have no 등장 코스트: option use / evolve only) */ }
       else {
         const cost = estPlayCost(state, p, id);
         if (S.canPayCost(state, cost)) {
           let score;
-          if (c.category === 'tamer') score = 3.6 - cost * 0.55 + (/메모리/.test(c.effectKo || '') ? 1.2 : 0);
+          if (c.category === 'tamer') score = 3.6 - cost * 0.55 + (/메모리/.test(c.effectKo || '') ? 1.2 : 0) + (OT ? tamerBonus(id, TP) : 0);
           else score = 2.4 + (c.dp || 0) / 1500 + textKwBonus(id) - cost * 0.6 + (pl.battle.filter(isDigi).length < 2 ? 2 : 0) + (pl.battle.filter(isDigi).length >= 5 ? -1.5 : 0);
           acts.push({ type: 'play', cardId: id, cost, score, key: 'pl:' + id });
         }
@@ -289,13 +336,14 @@ function enumerateActions_(state, p) {
           acts.push({ type: 'jogress', cardId: id, a: jo.top.uid, b: jo.bottom.uid, cost: jo.cost, score, key: 'jg:' + id + ':' + jo.top.uid + jo.bottom.uid });
         }
       }
-    } else if (c.category === 'option') {
+    }
+    if (c.category === 'option' || S.isDual(id)) { // (a dual card in hand: Digimon half evolves via the evolve actions above/below, Option half is used here)
       if (!canUseOptionNow(state, p, id)) continue;
-      const cost = safe(() => Math.max(0, S.optionBaseCost(state, p, id)), c.cost || 0);
+      const cost = safe(() => Math.max(0, S.optionBaseCost(state, p, id)), S.optionView(id).cost || 0);
       if (!S.canPayCost(state, cost)) continue;
-      const v = optionValue(state, p, id);
+      const v = optionValue(state, p, id, FIX);
       if (!v) continue;
-      acts.push({ type: 'option', cardId: id, cost, score: v.score - cost * 0.6 + (v.why === 'recover' ? 0 : 0), why: v.why, key: 'op:' + id });
+      acts.push({ type: 'option', cardId: id, cost, score: v.score - cost * (OT ? TP.optCostW : 0.6) + (OT ? TP.optBonus : 0), why: v.why, key: 'op:' + id });
     }
   }
   // 트레이닝 / 【메인】 abilities
@@ -410,7 +458,7 @@ function planMain_(state, p, cfg) {
   const banned = cfg.banned || new Set();
   const mem = memOf(state, p);
   const noise = level === 'hard' ? 0.15 : level === 'normal' ? 0.45 : 6;
-  const acts = enumerateActions(state, p).filter((a) => !banned.has(a.key));
+  const acts = enumerateActions(state, p, cfg).filter((a) => !banned.has(a.key));
   const atk = attackCandidates(state, p, cfg).filter((a) => !banned.has(a.key));
   const zero = acts.filter((a) => a.cost <= mem);
   const over = acts.filter((a) => a.cost > mem);
@@ -451,7 +499,8 @@ function planMain_(state, p, cfg) {
   const gw = level === 'hard' ? P.hardGw : 0.85;
   const dangerous = level === 'hard' && state.players[p].security.length <= 2 && state.players[opp(p)].battle.filter(isDigi).length >= 2;
   const limit = dangerous ? P.dangerLim : (cfg.giftLimit != null ? cfg.giftLimit : (level === 'hard' ? P.hardLimit : 4));
-  const C = over.map((a) => ({ a, gift: Math.min(10, a.cost - mem) })).filter((x) => x.gift <= limit && S.canPayCost(state, x.a.cost))
+  const gcap = (a, gift) => { if (!(level === 'hard' && P.optTam)) return true; return a.type === 'option' ? gift <= P.optGiftMax : a.type === 'play' && card(a.cardId).category === 'tamer' ? gift <= P.tamGiftMax : true; }; // tamers / options that hand memory over (gift) — capped separately
+  const C = over.map((a) => ({ a, gift: Math.min(10, a.cost - mem) })).filter((x) => x.gift <= limit && gcap(x.a, x.gift) && S.canPayCost(state, x.a.cost))
     .map((x) => ({ ...x.a, eff: x.a.score - Math.max(0, x.gift - 3) * gw })).filter((x) => x.eff > (level === 'hard' ? P.cThr : 1.2));
   if (C.length) return C.sort((a, b) => b.eff + rnd() * noise - (a.eff + rnd() * noise))[0];
   return { type: 'pass' };
@@ -530,10 +579,20 @@ function decideCounter_(state, c, options, cfg) {
     return true;
   });
   if (!usable.length) return null;
+  // 《블래스트 진화》 (the only 【카운터】 in this card pool): a FREE evolution during the opponent's attack (+DP, its 【진화 시】 often deletes / rests the attacker).  hard / expert: take it whenever the attack matters
+  // — the old danger thresholds (danger >= 2 with a 1.5 score) let 72 % of the windows with a blast card in hand pass (docs/cpu-option-tamer-play.md)
+  if (level === 'hard' && tp(cfg).optTam) {
+    const blasts = usable.filter((o) => /블래스트\s*진화/.test(o.body || '') || /블래스트\s*진화/.test(card(o.cardId).effectKo || ''));
+    if (blasts.length) {
+      const effVal = (o) => { const t = String(card(o.cardId).effectKo || ''); return (/소멸/.test(t) ? 3 : 0) + (/(레스트|되돌|덱\s*아래)/.test(t) ? 1.5 : 0) + (card(o.cardId).level || 0) * 0.2; };
+      const worth = lethal || (c.targetKind === 'player' ? (secN <= 5 || checks >= 2 || aDP >= 6000) : !!tSt && (aDP >= tDP || stackValue(state, p, tSt) > 5));
+      if (worth) return blasts.slice().sort((a, b) => effVal(b) - effVal(a))[0];
+    }
+  }
   const classify = (o) => {
     const t = o.body || '';
     if (/(어택을?\s*종료|어택.*무효)/.test(t)) return 4;
-    if (/소멸/.test(t) && /상대의/.test(t)) return 3.5;
+    if (/소멸/.test(t) && (level === 'normal' || level === 'hard' ? /상대(?:의)?\s*(?:디지몬|테이머)/ : /상대의/).test(t)) return 3.5; // ("상대 디지몬" without 의 was missed)
     if (/DP.*[+＋]\s*\d|[+＋]\s*\d+\s*DP/.test(t) && !/상대/.test(t)) return tSt || c.targetKind === 'digimon' ? 3 : 1;
     if (/시큐리티.*(놓|추가|회복)/.test(t)) return 2.5;
     if (/(레스트|되돌)/.test(t)) return 2.5;

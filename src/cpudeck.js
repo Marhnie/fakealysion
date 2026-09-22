@@ -26,6 +26,13 @@ const LV_COST = { 3: 3, 4: 5, 5: 7, 6: 12 };
 const KW = [[/블로커/, 1.0], [/재기동/, 0.8], [/리부트/, 1.6], [/관통/, 0.9], [/시큐리티\s*어택\s*\+/, 1.1], [/회피/, 0.7], [/급습/, 1.3], [/충돌/, 0.4], [/리커버리\s*\+/, 0.8], [/제트\s*진화|진격|디코드|드로우|카드를\s*\d장\s*뽑/, 0.3]];
 const PRIOR = new Map();
 export const LEARNED = new Map(); // id -> bonus learned from the evolved decks (loadCpuDecks fills it)
+// ---- human-derived priors (data/human-deck-stats.json: aggregates over public tournament decklists; loaders tolerate a missing file) ----
+let HUMAN = null;
+export function setHumanStats(j) { HUMAN = j && j.cards && j.curve ? j : null; PRIOR.clear(); return !!HUMAN; }
+export async function loadHumanStats(url = './data/human-deck-stats.json') { try { const r = await fetch(url); return setHumanStats(await r.json()); } catch (e) { HUMAN = null; return false; } }
+export function humanStats() { return HUMAN; }
+function humanBonus(id) { if (!HUMAN) return 0; const c = HUMAN.cards[id]; return c ? Math.min(1.6, 0.5 * Math.log(1 + c[0] * 40)) : 0; }
+const hjit = (rng, m, sd) => Math.max(0, Math.round(m + (rng() + rng() + rng() - 1.5) * sd * 1.6));
 export function prior(id) {
   let v = PRIOR.get(id);
   if (v === undefined) {
@@ -45,7 +52,7 @@ export function prior(id) {
     }
     v = p; PRIOR.set(id, v);
   }
-  return v + (LEARNED.get(id) || 0);
+  return v + (LEARNED.get(id) || 0) + humanBonus(id);
 }
 
 // ---- eligible cards ----
@@ -113,10 +120,10 @@ export function genLine(pool, rng, o = {}) {
       let cand = []; const seen = new Set();
       for (const x of cur) for (const b of pool.succ(x.id)) if (!seen.has(b.id) && !used.has(b.id) && pool.cap(b.id) > 0) { seen.add(b.id); cand.push(b); }
       if (!cand.length) break;
-      if (lv === 6 && rng() < 0.3) break;
+      if (lv === 6 && rng() < (HUMAN ? 0.12 : 0.3)) break;
       const k = lv === 6 ? 1 : (rng() < 0.35 ? 2 : 1);
       const chosen = wpickN(cand, k, rng, boost);
-      const total = { 3: 4 + (rng() < 0.4 ? 1 : 0), 4: 3 + (rng() < 0.5 ? 1 : 0), 5: 2 + (rng() < 0.25 ? 1 : 0), 6: 1 + (rng() < 0.3 ? 1 : 0) }[lv];
+      const total = (HUMAN ? { 3: 3 + (rng() < 0.3 ? 1 : 0), 4: 2 + (rng() < 0.5 ? 1 : 0), 5: 2 + (rng() < 0.5 ? 1 : 0), 6: 1 + (rng() < 0.7 ? 1 : 0) } : { 3: 4 + (rng() < 0.4 ? 1 : 0), 4: 3 + (rng() < 0.5 ? 1 : 0), 5: 2 + (rng() < 0.25 ? 1 : 0), 6: 1 + (rng() < 0.3 ? 1 : 0) })[lv];
       let left = total;
       chosen.forEach((c, i) => { const n = i === chosen.length - 1 ? left : Math.ceil(left / (chosen.length - i)); const nn = Math.max(1, Math.min(pool.cap(c.id), n)); left -= nn; nodes.push({ id: c.id, n: nn, lv }); used.add(c.id); });
       cur = chosen;
@@ -130,6 +137,13 @@ export function genLine(pool, rng, o = {}) {
 
 function genSupport(pool, rng, hintCols) {
   const out = [];
+  if (HUMAN) { // human counts: ~6-7 tamer + ~7 option copies, staples first (prior carries the human inclusion bonus)
+    const tt = Math.max(2, hjit(rng, HUMAN.curve.tam, 2.5)), to = Math.max(2, hjit(rng, HUMAN.curve.opt, 2.5));
+    const nT = Math.min(pool.tamers.length, Math.max(1, Math.ceil(tt / 3.3))), nO = Math.min(pool.options.length, Math.max(1, Math.ceil(to / 2.6)));
+    for (const c of wpickN(pool.tamers, nT, rng)) { const n = Math.min(pool.cap(c.id), Math.max(1, Math.min(4, Math.round(tt / nT)))); if (n > 0) out.push({ id: c.id, n }); }
+    for (const c of wpickN(pool.options, nO, rng)) { const n = Math.min(pool.cap(c.id), Math.max(1, Math.min(4, Math.round(to / nO)))); if (n > 0) out.push({ id: c.id, n }); }
+    return out;
+  }
   const nT = 1 + (rng() < 0.5 ? 1 : 0);
   let tot = 0; const tt = 3 + Math.floor(rng() * 3);
   for (const c of wpickN(pool.tamers, nT, rng)) { const n = Math.min(pool.cap(c.id), Math.max(1, Math.min(4, Math.round(tt / nT)))); if (n > 0) { out.push({ id: c.id, n }); tot += n; } }
@@ -244,6 +258,23 @@ export function syncGenome(G, deck) {
   g.colors = deck.colors ? deck.colors.slice() : g.colors;
   return g;
 }
+// human deck -> genome (lines follow legal evolution chains from each egg; leftovers go to extra/support). Returns {g, deck} only if compile() reproduces the deck exactly.
+export function genomeFromDeck(deck, rng) {
+  const cols = deckColors(deck); const eggs = Object.keys(deck.digitama).map((id) => ({ id, n: deck.digitama[id] }));
+  const digs = Object.keys(deck.main).map((id) => S.card(id)).filter((c) => c.category === 'digimon');
+  const used = new Set(); const lines = [];
+  for (const e of eggs) {
+    const nodes = []; let cur = [e.id];
+    for (let lv = 3; lv <= 6; lv++) { const nx = digs.filter((c) => c.level === lv && !used.has(c.id) && cur.some((p) => evoCost(p, c.id) >= 0)); if (!nx.length) break; for (const c of nx) { nodes.push({ id: c.id, n: deck.main[c.id], lv }); used.add(c.id); } cur = nx.map((c) => c.id); }
+    if (nodes.length) lines.push({ egg: { id: e.id, n: e.n }, nodes });
+  }
+  const support = Object.keys(deck.main).filter((id) => S.card(id).category !== 'digimon').map((id) => ({ id, n: deck.main[id] }));
+  const extra = digs.filter((c) => !used.has(c.id)).map((c) => ({ id: c.id, n: deck.main[c.id] }));
+  const g = { colors: cols, lines, support, extra };
+  const out = compile(g, rng || (() => 0.5)); if (!out) return null;
+  if (deckHash(out) !== deckHash(deck)) return null;
+  return { g: syncGenome(g, out), deck: out };
+}
 export function nameDeck(deck) {
   const ids = Object.keys(deck.main).map((id) => S.card(id)).filter((c) => c.category === 'digimon').sort((a, b) => (b.level - a.level) || (deck.main[b.id] - deck.main[a.id]));
   const top = ids[0]; const cols = (deck.colors || deckColors(deck)).map((x) => COLOR_KO[x] || x).join('/');
@@ -297,7 +328,8 @@ export function mutate(G, rng, ctx = {}) {
       const e = wpick(cand, rng, () => 0); if (e) l.egg = { id: e.id, n: l.egg.n };
     } else { // colour package change: keep the lines that survive, re-roll the rest in the new colour set
       const cur = g.colors.slice(); let nc;
-      if (cur.length === 1) nc = rng() < 0.6 ? [cur[0], COLORS[Math.floor(rng() * 7)]] : [COLORS[Math.floor(rng() * 7)]];
+      if (ctx.lockColors || (cur.length > 2 && rng() < 0.75)) nc = cur;
+      else if (cur.length === 1) nc = rng() < 0.6 ? [cur[0], COLORS[Math.floor(rng() * 7)]] : [COLORS[Math.floor(rng() * 7)]];
       else nc = rng() < 0.3 ? [cur[Math.floor(rng() * 2)]] : [cur[Math.floor(rng() * 2)], COLORS[Math.floor(rng() * 7)]];
       nc = [...new Set(nc)];
       const np = poolFor(nc);
@@ -415,7 +447,7 @@ export function buildDeckFromCollection(o = {}) {
   const owned = o.owned || null;
   const mk = (cols) => makePool({ colors: cols, allow, owned });
   const cache = new Map(); const poolFor = (cols) => { const k = [...cols].sort().join('+'); let p = cache.get(k); if (!p) { p = mk(cols); cache.set(k, p); } return p; };
-  const ctx = { poolFor };
+  const ctx = { poolFor, lockColors: !!(o.colors && o.colors.length && o.colors.length <= 2) }; // a caller-fixed colour set must survive the hill-climb mutations
   // 1) a shipped evolved deck fully inside the pool wins outright (best win rate first)
   const inPool = (d) => Object.entries({ ...d.main, ...d.digitama }).every(([id, n]) => { const c = S.card(id); return allow(c) && (!owned || (owned[id] || 0) >= n); }) && (!o.colors || (d.colors || []).every((x) => o.colors.includes(x)));
   if (CPU_DECKS && CPU_DECKS.length && !o.forceGenerate) { const fit = CPU_DECKS.filter(inPool).sort((a, b) => (b.winrate || 0) - (a.winrate || 0)); if (fit.length) { const d = fit[Math.min(fit.length - 1, Math.floor(rng() * Math.min(3, fit.length)))]; const dk = { main: { ...d.main }, digitama: { ...d.digitama }, name: d.name, colors: d.colors }; if (S.deckLegality(dk).ok) return { ok: true, deck: dk, source: 'evolved', score: staticScore(dk) }; } }
