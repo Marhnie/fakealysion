@@ -5147,6 +5147,40 @@ export function resolveDigimonBattle(state, attackerP, attackerUid, defenderUid)
   return { result, aDp, dDp, attackerCardId, defenderCardId, destroyedOnlyOpponent, piercing, attackerSurvived: result === 'attackerWins' };
 }
 
+// 16-7-3 (official Q&A, EX12-052/EX13-045/EX13-076 rulings): a single attack may only trigger ONE
+// ≪관통≫ bonus security check, even if the attacker wins several battles during it — e.g. a scripted
+// "이 디지몬으로 상대의 디지몬 1마리와 배틀할 수 있다." ability firing mid-attack (등장 시/진화 시/어택 시/카운터/
+// 서로의 턴 scripts calling S.resolveDigimonBattle directly) AND the attack's own normal end-of-attack
+// battle both destroying the opponent with Piercing. Call this once per attempted check; it returns
+// true only the first time for a given attack and marks the rest as already-used.
+//
+// The natural home for "already used this attack" is state.attackCtx (the pa object every driver
+// assigns there) — but a scripted battle can run BEFORE its own attack has actually started: e.g.
+// EX13-045's 진화 시 script calls ctx.startAttack() first, but every driver defers that call (main.js
+// via setTimeout, cpusim.js via an effect-attack queue) so state.attackCtx is still null the instant
+// the very next line resolves the bonus battle. In that case we can't tag the (not-yet-existing) real
+// attack context, so we stash a short-lived hold directly on the attacking STACK instead
+// (`_pierceHeld`); attackFlow()/attack() (main.js / cpusim.js / the qa `attack()` helpers) adopt that
+// hold into the freshly-created attackCtx's own `pierceUsed` flag the moment the real attack begins,
+// so its natural end-of-attack battle correctly skips the second check. A hold that never gets
+// adopted (the attack was, in the end, never declared) is swept at that stack's own next Active Phase
+// (engine.js nextPhase 'unsuspend') so it can never leak into a genuinely unrelated later attack.
+export function consumePierceCheck(state, attackerP, attackerUid) {
+  const ctx = state.attackCtx;
+  if (ctx && ctx.attacker === attackerP && ctx.uid === attackerUid) {
+    if (ctx.pierceUsed) return false;
+    ctx.pierceUsed = true;
+    return true;
+  }
+  const pl = state.players[attackerP];
+  const st = pl.raising && pl.raising.uid === attackerUid ? pl.raising : pl.battle.find(s => s.uid === attackerUid);
+  if (st) {
+    if (st._pierceHeld) return false;
+    st._pierceHeld = true;
+  }
+  return true;
+}
+
 // 「상대 디지몬이 없는 동안 어택할 수 없다」 (e.g. Guardromon): shared by declareAttack and the CPU's attack candidate filter
 export function cannotAttackNoOppDigimon(state, attackerP, stack) {
   return stackHasContinuousAbility(state, attackerP, stack, RE_CANNOT_ATTACK_NO_OPP_DIGIMON) && !state.players[opponentOf(attackerP)].battle.some(s => card(s.cardId).category === 'digimon');

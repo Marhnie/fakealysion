@@ -23,11 +23,16 @@ export function createSim(state, opts = {}) {
     while (guard++ < 60) {
       if (CX) CX.sync(state);
       if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // lazily-recorded DP<=0 rule checks (15-15-5-2) — rule-oracle R-dp0
-      const t = state.pending.find((x) => !x.resolved);
+      // `_running` marks a trigger whose script is already executing further up the call stack (ctx.securityCheck's
+      // ≪관통≫ bonus check calls securityCheck()/drain() reentrantly mid-script) — skip it so this nested pass only
+      // picks up genuinely NEW pending items (e.g. a checked security card's own 【시큐리티】 trigger), never re-runs
+      // the still-in-flight outer trigger a second time.
+      const t = state.pending.find((x) => !x.resolved && !x._running);
       if (!t) { // effect-started attacks (진격/볼텍스/급습/에그제큐트/오버클럭, "이 디지몬으로 어택할 수 있다") run once the effect queue is empty and no attack is in progress (mirrors main.js startAttack)
         if (effAtkQ.length && !state.attackCtx && !state.winner) { const q = effAtkQ.shift(); try { await runEffectAttack(q); } catch (e) { onError('effectAttack', e); } continue; }
         return;
       }
+      t._running = true;
       let cxs = null;
       try {
         if (t.schedFn) { t.schedFn(); S.resolvePending(state, t.uid); continue; }
@@ -59,6 +64,8 @@ export function createSim(state, opts = {}) {
         if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t }))) onceMark = null; } catch (e) { /* keep the mark */ } }
         if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
         const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) effAtkQ.push({ p, uid, direct, o: o || {} }); }, attack: () => state.attackCtx, endAttack() {},
+          // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
+          securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(state, p, uid)) return; await securityCheck(p, uid, op || S.opponentOf(p)); },
           choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
         if (CX) cxs = CX.before(state, t, script);
         H.effectBegin && H.effectBegin(t, script);
@@ -111,7 +118,7 @@ export function createSim(state, opts = {}) {
     else if (direct && tg.includes(direct)) target = direct;
     else if (hit) target = 'PLAYER';
     else if (tg.length) { const op = S.opponentOf(p), me = S.effectiveDP(state, p, st); const dp = (u) => { const d = find(op, u); return d ? S.effectiveDP(state, op, d) : 1e9; }; target = tg.slice().sort((a, b) => (dp(a) < me ? 0 : 1) - (dp(b) < me ? 0 : 1) || dp(b) - dp(a))[0]; }
-    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); return; }
+    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete st._pierceHeld; return; }
     await attack(p, uid, target, o);
   }
   async function attack(p, uid, target, dopts) {
@@ -120,6 +127,7 @@ export function createSim(state, opts = {}) {
     if (!dec.ok) return false;
     stats.attacks++;
     const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
+    pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
     state.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
     H.attackDeclared && H.attackDeclared({ p, op, uid, target, dec, pa });
     S.queueTriggersForStack(state, p, dec.stack, 'attack');
@@ -163,7 +171,7 @@ export function createSim(state, opts = {}) {
       H.battleAfter && H.battleAfter({ p, op, uid, pa, res });
       await drain();
       { const sv = res && res.result === 'attackerWins' && res.destroyedOnlyOpponent ? find(p, uid) : null; if (sv && S.hasKeyword(sv, '전투후액티브')) S.unsuspendStack(state, p, uid); } // ≪전투후액티브≫ (EX1-043 / BT1-112): the UI offers this as a click after the battle; headless play takes it (official Q&A 984)
-      if (res && res.piercing && !state.winner) await securityCheck(p, uid, op);
+      if (res && res.piercing && !state.winner && S.consumePierceCheck(state, p, uid)) await securityCheck(p, uid, op);
     }
     await drain();
     await end();
