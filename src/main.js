@@ -263,6 +263,8 @@ function renderSetup() {
       h('div', { className: 'su-h' }, '저장된 덱이 없습니다'),
       h('div', { className: 'su-note' }, '덱 빌더에서 먼저 덱을 만들어 주세요.'),
       h('button', { className: 'primary su-start', onClick: openDeckBuilder }, '🛠 덱 빌더 열기'),
+    ]), h('div', { className: 'su-more' }, [
+      h('button', { title: '플레이 중 발견한 버그나 이상한 동작을 신고해주세요', onClick: () => window.open('https://forms.gle/uLfLuPv9bnvkxauZ6', '_blank', 'noopener') }, '🐛 버그 리포트'),
     ])]));
     return;
   }
