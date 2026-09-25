@@ -889,8 +889,11 @@ const d39 = { tag: '서로의 턴', has: '옐로인 자신의 테이머 1명을 
 H('BT17-039', d39);
 const d61 = { tag: '서로의 턴', has: '리리스몬」/「X항체」가 있다면', preventLeaveOptions: (st, hp, h, target, tp, cause, mode) => {
   // "다른 디지몬 1마리를 소멸시키는 것으로" — ANY other digimon (either side); each candidate is its own option for the player.
+  // official Q&A (BT9-013/014/031/040/041/043/044/055/056 등, same "「A」/「X항체」가 있다면" bare-quoted-name
+  // pattern): both quoted names are CARD NAMES, never the trait — "X항체" here means specifically the card literally
+  // named "X항체" (BT9-109), not any of the 238 cards that merely carry the 특징:X항체 trait (e.g. 그레이몬 X항체).
   if (target !== h || cause === 'battle' || !leaveMode(mode)) return [];
-  if (!h.sources.some(id => (isNamed(id, '리리스몬') || hasTrait(id, 'X항체')))) return [];
+  if (!h.sources.some(id => isNamedAny(id, ['리리스몬', 'X항체']))) return [];
   if (S.turnUsesRemaining(h, S.onceLimitKey('EX7-061', [d61.tag, d61.has || '']), 1) <= 0) return [];
   const out = [];
   for (const pp of [oppOf(hp), hp]) for (const s of st.players[pp].battle) {
@@ -1282,15 +1285,68 @@ SCRIPTS['BT17-056::서로의 턴@어택의 대상이 변경되었을 때'] = [fn
   revealed.forEach((id, i) => { if (i === pick) h.sources.unshift(id); else pl.trash.push(id); });
   if (h) S.recomputeStackGrants(h);
 })];
-// EX7-014 볼케닉드라몬 / EX7-049 메탈릭드라몬 (서로의 턴) [턴에 1회]: 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 패(EX7-014)/트래시(EX7-049)에서 특징 카드 1장을 코스트 없이 등장
-H('EX7-014', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
-SCRIPTS['EX7-014::서로의 턴@배틀 에어리어를 벗어날 때'] = [{ op: 's4_play', zone: 'hand', pred: (id) => isDigimonCard(id) && hasTraitAny(id, ['기룡형', '천룡형']) }];
-H('EX7-049', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
-SCRIPTS['EX7-049::서로의 턴@배틀 에어리어를 벗어날 때'] = [{ op: 's4_play', zone: 'trash', pred: (id) => isDigimonCard(id) && hasTraitAny(id, ['암룡형', '지룡형']) }];
-// BT18-022/048/063/076 (진화원, 서로의 턴): 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 진화원의 「진화원 효과를 가진 테이머 카드」 1장을 코스트 없이 등장
+// EX7-014 볼케닉드라몬 / EX7-049 메탈릭드라몬 (서로의 턴) [턴에 1회]: "자신의 효과 이외로 배틀 에어리어를 벗어날 때"(예정형) = 즉시형(15-8-5-1);
+// "…등장시킬 수 있다"(선택형) → preventLeaveOptions(passive)로 교체 (docs/effect-classification-rules.md; BT18-022류/tamerSourceLeaveOptions와
+// 동일 패턴). 패(EX7-014)/트래시(EX7-049)는 떠나는 홀더 자신의 진화원이 아니라 별도 존이라 값 자체는 이전과 같지만, [턴 1회] 사용 표시가
+// 홀더 위에 정확히 남아야 하고 같은 시점의 다른 즉시형 후보(회피/방벽 등)와 같은 replAttempt 경로를 타야 하므로 옛 onLeave+state.pending
+// 방식 대신 이 경로로 통일한다.
+function zoneLeaveOptions(zone, pred) {
+  return (state, hp, holder, target, tp, cause, mode, cid) => {
+    if (!holder || target !== holder || cause === 'ownEffect') return [];
+    const d = { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때' };
+    if (S.turnUsesRemaining(holder, S.onceLimitKey(cid, [d.tag, d.has]), 1) <= 0) return [];
+    const pl = state.players[hp];
+    const seen = new Set(), out = [];
+    for (const cardId of pl[zone]) {
+      if (seen.has(cardId) || !pred(cardId)) continue;
+      seen.add(cardId);
+      out.push({
+        passive: true,
+        apply() {
+          if (!S.hookUseOnce(holder, cid, d, 1)) return false;
+          const at = pl[zone].lastIndexOf(cardId);
+          if (at < 0) return false;
+          const st = S.playFreeFromZone(state, hp, zone, at, {});
+          if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, ${zone === 'hand' ? '패' : '트래시'}의 ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+          return !!st;
+        },
+      });
+    }
+    return out;
+  };
+}
+H('EX7-014', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', preventLeaveOptions: zoneLeaveOptions('hand', (id) => isDigimonCard(id) && hasTraitAny(id, ['기룡형', '천룡형'])) });
+H('EX7-049', { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', preventLeaveOptions: zoneLeaveOptions('trash', (id) => isDigimonCard(id) && hasTraitAny(id, ['암룡형', '지룡형'])) });
+// BT18-022/048/063/076 (진화원, 서로의 턴): "…벗어날 때"(예정형) = 즉시형(15-8-5-1) — 떠나기 직전에 끼어들어, 아직 배틀 에어리어에 있는
+// 이 디지몬의 살아있는 진화원에서 골라야 한다 (docs/effect-classification-rules.md). 예전엔 onLeave+queueHookSegment로 유발형(15-8-3)처럼
+// 구현되어 카드가 이미 트래시로 넘어간 *후*에 대기 큐에서 처리됐음 — preventLeaveOptions(passive)로 교체 (BT23-032류와 동일 패턴,
+// src/cards/shard38.js leaveBonusOptions() 참고). "…할 수 있다"(선택형) + "자신의 효과 이외로"만 조건, [턴 1회] 표기 없음.
+function tamerSourceLeaveOptions(state, hp, holder, target, tp, cause) {
+  if (!holder || target !== holder || cause === 'ownEffect') return [];
+  const pl = state.players[hp];
+  const list = holder.sources.filter((_, i) => i >= S.fdCount(holder));
+  const seen = new Set(), out = [];
+  for (const cardId of list) {
+    if (seen.has(cardId) || !(isTamerCard(cardId) && hasSourceEffect(cardId))) continue;
+    seen.add(cardId);
+    out.push({
+      passive: true,
+      apply() {
+        const at = holder.sources.lastIndexOf(cardId); // topmost matching source (identical duplicates are interchangeable)
+        if (at < S.fdCount(holder)) return false;
+        holder.sources.splice(at, 1);
+        S.recomputeStackGrants(holder);
+        pl.trash.push(cardId);
+        const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true });
+        if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+        return !!st;
+      },
+    });
+  }
+  return out;
+}
 for (const id of ['BT18-022', 'BT18-048', 'BT18-063', 'BT18-076']) {
-  H(id, { tag: '서로의 턴', src: 'inheritedKo', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', onLeave: (st, hp, stack, cause) => cause !== 'ownEffect' });
-  SCRIPTS[`${id}::서로의 턴@배틀 에어리어를 벗어날 때`] = [playFromLeftSources((cid) => isTamerCard(cid) && hasSourceEffect(cid), '진화원의 진화원 효과를 가진 테이머 카드를 코스트 없이 등장시킬까요?')];
+  H(id, { tag: '서로의 턴', src: 'inheritedKo', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', preventLeaveOptions: tamerSourceLeaveOptions });
 }
 // ST18-10 그랑게일몬 (진화원, 자신의 턴) [턴에 1회]: 이 디지몬이 상대의 디지몬에게 어택했을 때, 이 디지몬을 액티브로 할 수 있다
 H('ST18-10', { tag: '자신의 턴', src: 'inheritedKo', has: '상대의 디지몬에게 어택했을 때', limit: 1, events: { attackOnDigimon: (st, hp, h, info) => info.owner === hp && info.stack === h } });
@@ -1352,5 +1408,5 @@ SCRIPTS['BT19-024::어택 종료 시'] = [fnOp(async (ctx) => {
 // (the generic compiler kept only the token and dropped the "place this card under" half, so the 4-clock win could never be assembled)
 SCRIPTS['BT17-100::메인'] = [
   { op: 'spawnToken', who: 'self', def: { name: '디아블로몬', cost: 14, level: 6, dp: 3000, colors: ['white'], types: ['불명', '종족불명'], form: '궁극체', attribute: null, effectKo: '' }, n: 1, rested: false, optional: false },
-  { op: 's4_placeThisUnder', pred: (s, ctx) => stackNameHas(ctx.state, s, '디아블로몬') && !s.sources.some(id => isNamed(id, '종말의 시계')), prompt: '「종말의 시계」를 진화원 아래에 놓을 「디아블로몬」 선택' },
+  { op: 's4_placeThisUnder', pred: (s, ctx) => !S.isTokenId(s.cardId) && stackNameHas(ctx.state, s, '디아블로몬') && !s.sources.some(id => isNamed(id, '종말의 시계')), prompt: '「종말의 시계」를 진화원 아래에 놓을 「디아블로몬」 선택' },
 ];

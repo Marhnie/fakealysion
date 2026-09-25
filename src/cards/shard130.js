@@ -304,9 +304,15 @@ SCRIPTS['EX13-041::진화 시'] = SCRIPTS['EX13-041::등장 시'];
 // EX13-045 엑자몬 【진화 시】 조그레스 진화하고 있었다면, 이 디지몬으로 어택하고, 상대의 턴 종료까지 자신의 디지몬 전부를 DP +10000. 그 후, 이 디지몬과 상대의 디지몬 1마리로 배틀할 수 있다.
 sc('EX13-045::진화 시', async (ctx, R) => {
   const { state } = ctx; const st = me(ctx);
-  if (!st || !st.viaFusion) { log(ctx, `${ctx.self} 조그레스 진화가 아니므로 효과 없음`); return; }
-  if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid);
-  await R.runOne({ op: 'modifyDPAll', target: 'self', amount: 10000, duration: 'opponentTurn' }, ctx);
+  if (!st) return;
+  // 공식 Q&A(7356): "조그레스 진화하고 있었다면,"은 어택+DP 상승에만 걸리는 조건이며, "그 후"의 배틀은
+  // 조그레스 진화 여부와 무관하게 처리할 수 있다 — 조건 불충족 시에도 아래로 계속 진행해야 한다(건너뛰면 안 됨).
+  if (st.viaFusion) {
+    if (ctx.startAttack) ctx.startAttack(ctx.self, st.uid);
+    await R.runOne({ op: 'modifyDPAll', target: 'self', amount: 10000, duration: 'opponentTurn' }, ctx);
+  } else {
+    log(ctx, `${ctx.self} 조그레스 진화가 아니므로 어택/DP 상승 없이 "그 후" 배틀만 처리`);
+  }
   if (!findStack(state, ctx.self, st.uid) || !digs(state, ctx.opp).length) return;
   if (!(await ask(ctx, '이 디지몬과 상대의 디지몬 1마리로 배틀합니까?'))) return;
   await R.runOne({ op: 'n5_battle' }, ctx);
@@ -502,8 +508,9 @@ sc('EX13-076::등장 시', async (ctx) => {
   const t = await pickStack(ctx, ctx.self, digs(state, ctx.opp), '진화원을 전부 덱 아래로 되돌리고 배틀할 상대의 디지몬 선택 (안 해도 됨)', { optional: true });
   if (!t) { decline(ctx); return; }
   sourcesToDeckBottom(ctx, ctx.opp, t);
+  // 공식 Q&A(idx6656): 진화원을 되돌린 디지몬과는 (가능한 한) 반드시 배틀한다 — 되돌린 뒤 배틀 여부를 따로 다시 묻지 않는다.
   if (!st || !findStack(state, ctx.self, st.uid) || !findStack(state, ctx.opp, t.uid)) return;
-  if (!(await ask(ctx, `이 디지몬으로 ${C(t.cardId).nameKo}와(과) 배틀합니까? (이 배틀에서는 DP가 아닌 진화원 매수를 비교)`))) return;
+  log(ctx, `${ctx.self} ${C(st.cardId).nameKo}(으)로 ${C(t.cardId).nameKo}와(과) 배틀 (이 배틀에서는 DP가 아닌 진화원 매수를 비교)`);
   state._battleCompareSources = true;
   let res;
   try { res = S.resolveDigimonBattle(state, ctx.self, st.uid, t.uid); } finally { delete state._battleCompareSources; }
@@ -554,8 +561,10 @@ sc('EX13-077::등장 시', async (ctx, R) => {
         if (i == null) break; picked.push(i);
       }
       if (picked.length < 5) { log(ctx, '카드 5장을 고르지 않아 비용을 지불하지 않음'); continue; }
-      const ids = picked.sort((x, y) => y - x).map((i) => otr.splice(i, 1)[0]); PL(ctx, ctx.opp).deck.push(...ids.reverse());
-      log(ctx, `${ctx.opp} 트래시의 카드 5장 → 덱 아래`);
+      const ids = picked.sort((x, y) => y - x).map((i) => otr.splice(i, 1)[0]);
+      // 공식 Q&A(idx6660): 되돌리는 대상으로 디지타마 카드를 고를 수 있고, 그 경우 디지타마 덱 아래로 돌아간다 (일반 덱이 아님).
+      for (const id of ids.reverse()) { if (C(id).category === 'digitama') PL(ctx, ctx.opp).digitamaDeck.push(id); else PL(ctx, ctx.opp).deck.push(id); }
+      log(ctx, `${ctx.opp} 트래시의 카드 5장 → 덱/디지타마 덱 아래`);
       await R.runOne({ op: 'recoverTop', who: 'self' }, ctx);
     }
   }

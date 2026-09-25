@@ -721,6 +721,36 @@ SCRIPTS['BT7-063::등장 시'] = [fn(async (ctx) => {
   }
   S.recomputeStackGrants(st);
 })];
+// ---- BT7-063 (서로의 턴): "이 디지몬이 소멸할 때, 이 디지몬의 진화원에서 「스컬나이트몬」과 「데들리액스몬」 1장씩을 코스트를 지불하지 않고
+// 레스트 상태로 등장시킬 수 있다." — prospective tense ("소멸할 때") is 즉시형 (15-8-5-1, docs/effect-classification-rules.md) even
+// though the literal string is "소멸할 때" and not "벗어날 때" — the rule applies to the TENSE, not this exact phrase. OPTIONAL
+// ("…수 있다"), so preventLeaveOptions (passive, leave still happens); restricted to mode === 'delete' (bounce/return-to-deck is not
+// "소멸"). "A와 B 1장씩" = each named card is its own independent pick (card-text convention), so two hooks, one per name.
+function bt7063LeaveOption(name) {
+  return (state, hp, holder, target, tp, cause, mode) => {
+    if (!holder || target !== holder || mode !== 'delete') return [];
+    let at = -1;
+    for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon' && S.cardNameIs(holder.sources[i], name)) { at = i; break; }
+    if (at < 0) return [];
+    const cardId = holder.sources[at];
+    const pl = state.players[hp];
+    return [{
+      passive: true,
+      apply() {
+        const cur = holder.sources.lastIndexOf(cardId);
+        if (cur < S.fdCount(holder)) return false;
+        holder.sources.splice(cur, 1);
+        S.recomputeStackGrants(holder);
+        pl.trash.push(cardId);
+        const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true, rested: true });
+        if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 소멸하기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 레스트 상태로 등장`);
+        return !!st;
+      },
+    }];
+  };
+}
+D('BT7-063', '서로의 턴', '진화원에서 「스컬나이트몬」', { preventLeaveOptions: bt7063LeaveOption('스컬나이트몬') });
+D('BT7-063', '서로의 턴', '「데들리액스몬」 1장씩', { preventLeaveOptions: bt7063LeaveOption('데들리액스몬') });
 
 // ---- BT7-064 (진화 시): 패의 X항체 블랙 카드 1장을 진화원 가장 아래에 → 다음 상대의 턴 종료 시까지 효과로 소멸하지 않고 DP가 마이너스되지 않는다
 SCRIPTS['BT7-064::진화 시'] = [fn(async (ctx) => {

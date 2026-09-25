@@ -1272,8 +1272,19 @@ H('EX11-012', {
     } }));
   },
 });
-H('EX11-052', { tag: '서로의 턴', has: '벗어날 때', limit: 1, events: { delete: (state, hp, holder, info) => info.owner === hp && hasType(info.stack.cardId, '마룡형', '사룡형') && state.players[hp].hand.length <= 4 } });
-SCRIPTS['EX11-052::서로의 턴'] = [F(async (ctx) => { S.trashTopSecurityByEffect(ctx.state, ctx.opp); })];
+// EX11-052 【서로의 턴】[턴에 1회] 특징 「마룡형」/「사룡형」을 가진 자신의 디지몬이 배틀 에어리어를 벗어날 때, 자신의 패가 4장 이하라면,
+// 상대의 시큐리티 1장을 파기한다 — prospective tense ("벗어날 때") = 즉시형 (15-8-5-1, docs/effect-classification-rules.md) and MANDATORY
+// ("파기한다", no "…수 있다"). Unlike BT14-018 this isn't self-only ("이 디지몬이"): it watches ANY of hp's qualifying digimon leaving
+// (including EX11-052 itself), so it uses forcedOnAnyLeave (state.js hookPreventLeave) rather than forcedOnLeave. Also now correctly
+// covers a bounce/return-to-deck leave too (hookPreventLeave is shared by deleteStack and leaveGate/leavePass), not just deletion.
+H('EX11-052', {
+  tag: '서로의 턴', has: '벗어날 때',
+  forcedOnAnyLeave(state, hp, holder, target, cause, mode, id) {
+    if (!hasType(target.cardId, '마룡형', '사룡형') || state.players[hp].hand.length > 4) return;
+    if (!S.hookUseOnce(holder, id, { tag: '서로의 턴', has: '벗어날 때' }, 1)) return;
+    S.trashTopSecurityByEffect(state, opp(hp));
+  },
+});
 H('EX11-017', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: {
   play: (state, hp, holder, info) => info.stack !== holder && isDig(info.stack.cardId), digivolve: (state, hp, holder, info) => info.stack !== holder && isDig(info.stack.cardId) } });
 SCRIPTS['EX11-017::서로의 턴'] = [F(async (ctx) => {
@@ -1564,12 +1575,16 @@ SCRIPTS['EX11-046::등장 시'] = [F(async (ctx) => {
   }
 })];
 // EX11-073 【상대의 턴 종료 시】[턴에 1회] per link card: trash opp's top security and put an opp digimon at the deck bottom
+// official Q&A (5947): a "○○마다, △△하고, □□한다" effect resolves as "○○ 개수만큼 △△를 전부 한 다음, □□를 전부" — NOT
+// interleaved (△,□,△,□,…) per occurrence. So all N security discards happen first, then all N digimon bounces.
 SCRIPTS['EX11-073::상대의 턴 종료 시'] = [F(async (ctx) => {
   const { state } = ctx;
   const h = holderOf(ctx);
   const n = h ? (h.linkCards || []).length : 0;
   for (let k = 0; k < n; k++) {
     if (state.players[ctx.opp].security.length) S.trashTopSecurityByEffect(state, ctx.opp);
+  }
+  for (let k = 0; k < n; k++) {
     const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp), '덱 아래로 되돌릴 상대 디지몬 선택', { kind: 'bounce' });
     if (t) bounceIt(ctx, ctx.opp, t, 'deckBottom');
   }

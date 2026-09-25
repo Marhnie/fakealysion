@@ -415,22 +415,36 @@ sc('EX5-064::등장 시', [fn(async (ctx) => {
   rotateTopToBottom(ctx, ctx.self, d);
   await evolveGeneric(ctx, { subject: null, cost: { mode: 'free' }, prompt: '진화시킬 디지몬 선택' });
 })]);
-// EX5-070 (진화원) 서로의 턴: leaves the battle area other than by own effect
-hk('EX5-070', { tag: '서로의 턴', src: 'inheritedKo', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause !== 'ownEffect' });
-sc('EX5-070::서로의 턴', [fn(async (ctx) => {
-  const evt = ctx.trigger?.evt; if (!evt) return;
-  const pl = PL(ctx, ctx.self);
-  const inTrash = (id) => pl.trash.includes(id);
-  const pool = evt.sources.filter(inTrash);
-  const dIdx = pool.findIndex(id => C(id).category === 'digimon');
-  const cand = pool.filter(id => C(id).category === 'digimon');
-  if (cand.length) {
-    const pick = cand.length === 1 ? cand[0] : cand[await ctx.choose('multipleChoice', { prompt: '패로 되돌릴 디지몬 카드', options: cand.map(id => C(id).nameKo) }) || 0];
-    pl.trash.splice(pl.trash.lastIndexOf(pick), 1); pl.hand.push(pick);
-  }
-  const x = evt.sources.find(id => (C(id).nameKo === 'X항체' || S.cardNames(id).includes('X항체')) && pl.trash.includes(id)); // 〈룰〉명칭: 「X항체」로도 취급 (X항체PF 등)
-  if (x) { pl.trash.splice(pl.trash.lastIndexOf(x), 1); S.addToSecurity(ctx.state, ctx.self, x, 'top'); }
-})]);
+// EX5-070 (진화원) 【서로의 턴】 이 디지몬이 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원에서 디지몬 카드 1장을 패로
+// 되돌리고, 「X항체」 1장을 시큐리티 위에 놓는다 — MANDATORY ("…놓는다", no "…수 있다") + prospective tense ("벗어날 때") = 즉시형
+// (15-8-5-1, docs/effect-classification-rules.md): a forcedOnLeave that fires right before the leave, reading the still-live evolution
+// sources (not a post-hoc trash scan). Known simplification: if 2+ digimon cards qualify for the "1장" return-to-hand pick, the topmost
+// one is chosen automatically — forcedOnLeave has no interactive sub-choice (unlike the old post-hoc ctx.choose('multipleChoice')).
+hk('EX5-070', {
+  tag: '서로의 턴', src: 'inheritedKo', has: '벗어날 때',
+  forcedOnLeave(state, hp, holder, cause) {
+    if (cause === 'ownEffect') return;
+    const pl = state.players[hp];
+    let dIdx = -1;
+    for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon') { dIdx = i; break; }
+    if (dIdx >= 0) {
+      const pick = holder.sources[dIdx];
+      holder.sources.splice(dIdx, 1);
+      S.recomputeStackGrants(holder);
+      pl.hand.push(pick);
+      S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(pick).nameKo}을(를) 패로 되돌림`);
+    }
+    let xIdx = -1; // 〈룰〉명칭: 「X항체」로도 취급 (X항체PF 등)
+    for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (S.cardNames(holder.sources[i]).includes('X항체')) { xIdx = i; break; }
+    if (xIdx >= 0) {
+      const x = holder.sources[xIdx];
+      holder.sources.splice(xIdx, 1);
+      S.recomputeStackGrants(holder);
+      S.addToSecurity(state, hp, x, 'top');
+      S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 「X항체」 ${C(x).nameKo}을(를) 시큐리티 위에 놓음`);
+    }
+  },
+});
 // EX5-074 (서로의 턴): 상대의 디지몬의 효과를 받지 않는다
 hk('EX5-074', { tag: '서로의 턴', has: '효과를 받지 않는다', effectImmune: (state, hp, holder, target, tp, o) => target === holder && o.src?.category === 'digimon' });
 // P-085 등장 시
@@ -1085,9 +1099,27 @@ sc('EX6-018::자신의 턴 종료 시', [fn(async (ctx) => {
   if (t === st) return;
   await evolveGeneric(ctx, { subject: 'this', zone: 'trash', cardPred: (id) => C(id).nameKo === '루체몬: 폴다운 모드', cost: { mode: 'free' }, cardPrompt: '트래시에서 진화할 카드 선택' });
 })]);
-// EX6-023/024/025/026 서로의 턴: leaves the battle area → return a yellow digimon card from sources to hand
+// EX6-023/024/025/026 서로의 턴: "이 디지몬이 배틀 에어리어를 벗어날 때"(예정형) = 즉시형(15-8-5-1); "…패로 되돌린다"(강제, "…수 있다" 아님) →
+// forcedOnLeave로 교체 (docs/effect-classification-rules.md). 떠나기 직전, 아직 살아있는 진화원에서 옐로 디지몬 카드를 고른다(여러 장이면
+// 첫 매치를 결정적으로 선택 — 예전에도 헤드리스/QA 기본 응답은 항상 첫 후보였다: lib-s1.mjs makeChoose의 multipleChoice 기본값 0).
+// DigiXros 소재로 흡수되어 벗어나는 경우(Q3724/3730/3736/3742 — 이 카드들 자신이 「샤카몬」(EX6-031)의 디지크로스 소재가 됨)는
+// state.js placeXrosMaterials가 deleteStack/leaveGate(hookPreventLeave)를 거치지 않고 hookLeaveTriggers만 직접 호출하므로 forcedOnLeave에는
+// 절대 도달하지 못한다 — 그 경로는 옛 onLeave(cause==='xros' 전용으로 좁힘)로 그대로 유지해 유일한 발동 경로로 남긴다(안 그러면 디지크로스로
+// 벗어날 때는 아예 발동하지 않게 됨). cause!=='xros'인 다른 모든 이탈(배틀 소멸/효과 소멸/바운스 등)은 forcedOnLeave가 전담하므로 이중발동은 없다.
 for (const id of ['EX6-023', 'EX6-024', 'EX6-025', 'EX6-026']) {
-  hk(id, { tag: '서로의 턴', has: '벗어날 때', onLeave: () => true });
+  hk(id, { tag: '서로의 턴', has: '벗어날 때', forcedOnLeave: (state, hp, holder) => {
+    const pl = state.players[hp];
+    const list = holder.sources.filter((_, i) => i >= S.fdCount(holder));
+    const cardId = list.find(x => C(x).category === 'digimon' && colorHas(x, 'yellow'));
+    if (!cardId) return;
+    const at = holder.sources.lastIndexOf(cardId);
+    if (at < S.fdCount(holder)) return;
+    holder.sources.splice(at, 1);
+    S.recomputeStackGrants(holder);
+    pl.hand.push(cardId);
+    S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(cardId).nameKo}을(를) 패로 되돌림`);
+  } });
+  hk(id, { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause === 'xros' });
   sc(`${id}::서로의 턴`, [fn(async (ctx) => {
     const evt = ctx.trigger?.evt; if (!evt) return;
     const pl = PL(ctx, ctx.self);
@@ -1100,17 +1132,36 @@ for (const id of ['EX6-023', 'EX6-024', 'EX6-025', 'EX6-026']) {
 }
 // EX6-031 샤카몬
 hk('EX6-031', { tag: '자신의 턴', has: '《S 어택 -》', sAttackFlip: true });
-// EX6-031 (서로의 턴): 소멸할 때 또는 패/덱으로 되돌아갈 때 → 진화원의 「삼장몬」 1장 + 「손오공몬」/「사고몬」/「초핫카이몬」 1장을 코스트 없이 등장 (leaving stack's sources are in the trash by then)
-hk('EX6-031', { tag: '서로의 턴', has: '소멸할 때 또는 패/덱으로', onLeave: () => true });
-sc('EX6-031::서로의 턴', [fn(async (ctx) => {
-  const evt = ctx.trigger?.evt; if (!evt) return;
-  const pl = PL(ctx, ctx.self);
-  const inTrash = (id) => pl.trash.includes(id);
-  const a = evt.sources.find(id => inTrash(id) && C(id).category === 'digimon' && C(id).nameKo === '삼장몬');
-  const b = evt.sources.find(id => inTrash(id) && C(id).category === 'digimon' && ['손오공몬', '사고몬', '초핫카이몬'].includes(C(id).nameKo));
-  if ((!a && !b) || !(await confirm(ctx, '진화원의 「삼장몬」/「손오공몬」/「사고몬」/「초핫카이몬」을 코스트 없이 등장시킬까요?'))) return;
-  for (const id of [a, b]) { if (!id) continue; const i = pl.trash.lastIndexOf(id); if (i >= 0) S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, {}); }
-})]);
+// EX6-031 (서로의 턴): "소멸할 때 또는 패/덱으로 되돌아갈 때"(예정형) = 즉시형(15-8-5-1); "…등장시킬 수 있다"(선택형) → preventLeaveOptions(passive)로
+// 교체 (docs/effect-classification-rules.md). 예전엔 onLeave+state.pending으로 유발형처럼 구현되어 진화원이 이미 트래시로 넘어간 *후*
+// evt.sources에서 "트래시에 있는" 카드를 되짚어 찾았음 — 이제 떠나기 직전, 아직 살아있는 홀더의 진화원에서 직접 고른다. 원문대로 「삼장몬」
+// 1장 + 「손오공몬」/「사고몬」/「초핫카이몬」 1장을(있는 만큼만, 첫 매치) 하나로 묶은 단일 후보로 제시 — 개수/순서 로직은 그대로, 타이밍만 고침.
+function xuanzangComboOptions(state, hp, holder, target) {
+  if (!holder || target !== holder) return [];
+  const list = holder.sources.filter((_, i) => i >= S.fdCount(holder));
+  const a = list.find((id) => C(id).category === 'digimon' && C(id).nameKo === '삼장몬');
+  const b = list.find((id) => C(id).category === 'digimon' && ['손오공몬', '사고몬', '초핫카이몬'].includes(C(id).nameKo));
+  if (!a && !b) return [];
+  return [{
+    passive: true,
+    apply() {
+      const pl = state.players[hp];
+      let played = false;
+      for (const cardId of [a, b]) {
+        if (!cardId) continue;
+        const at = holder.sources.lastIndexOf(cardId);
+        if (at < S.fdCount(holder)) continue;
+        holder.sources.splice(at, 1);
+        S.recomputeStackGrants(holder);
+        pl.trash.push(cardId);
+        if (S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true })) played = true;
+      }
+      if (played) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원의 「삼장몬」/「손오공몬」·「사고몬」·「초핫카이몬」을 코스트 없이 등장`);
+      return played;
+    },
+  }];
+}
+hk('EX6-031', { tag: '서로의 턴', has: '소멸할 때 또는 패/덱으로', preventLeaveOptions: xuanzangComboOptions });
 // EX6-059 (서로의 턴) [턴에 1회]: 상대의 패가 파기되었을 때 → 트래시의 퍼플 카드(등장 코스트 10 - 상대 패 수 이하)를 코스트 없이 등장
 hk('EX6-059', { tag: '서로의 턴', has: '상대의 패가 파기되었을 때', limit: 1, events: { discard: (state, hp, holder, info) => info.owner !== hp } });
 sc('EX6-059::서로의 턴', [fn(async (ctx) => {
@@ -1139,7 +1190,62 @@ hk('EX6-044', { tag: '상대의 턴', src: 'inheritedKo', has: '벗어나지', p
 // EX6-050 / EX6-051 (진화원) 어택 시 [턴에 1회]
 const felesmon = [{ op: 'oppMayPay', pay: 'discard', n: 1, filter: null, else: [{ op: 'playFree', who: 'self', zone: 'trash', filter: { colors: ['purple'], level: 3, category: 'digimon' } }] }];
 sc('EX6-050::어택 시', felesmon); sc('EX6-051::어택 시', felesmon);
-// EX6-056 / 058 / 060 / 061(2번째) 서로의 턴: 배틀 이외로 벗어날 때 → 트래시의 7대마왕 카드를 육성 에어리어의 「대죄의 문」 진화원 아래에
+// EX6-054 루체몬: 폴다운 모드 (서로의 턴): "이 디지몬이 배틀 에어리어를 벗어날 때"(예정형) = 즉시형(15-8-5-1); "…등장시킬 수 있다"(선택형) →
+// preventLeaveOptions(passive)로 신규 구현 (docs/effect-classification-rules.md — 이 카드는 형제 카드(EX6-056/058/060/061)와 달리 아예
+// 구현이 없었다: hookDescriptorFor가 null이라 audit-effects.mjs가 이 세그먼트를 일반 컴파일러 결과물(costGroup/manualCost/playFree)로
+// "커버됨" 처리했지만, 그 스크립트를 큐에 넣어줄 워처가 어디에도 없어 100% 커버리지에도 불구하고 실제로는 전혀 발동하지 않았다 — 진짜
+// 커버리지 공백이었다). 비용("자신의 트래시 또는 이 디지몬의 진화원에서 「루체몬」 1장을 덱 아래로")과 효과("자신의 트래시에서 「루체몬:
+// 사탄 모드」 또는 Lv.6 + 「7대마왕」 카드 1장을 코스트 없이 등장")을 조합한 (비용 카드, 등장 카드) 쌍마다 하나의 후보를 만든다.
+function lucemonFalldownOptions(state, hp, holder, target) {
+  if (!holder || target !== holder) return [];
+  const pl = state.players[hp];
+  const costCands = []; // { from: 'trash'|'sources', cardId }
+  const seenCost = new Set();
+  for (const cardId of pl.trash) {
+    if (C(cardId).nameKo !== '루체몬' || seenCost.has('t' + cardId)) continue;
+    seenCost.add('t' + cardId); costCands.push({ from: 'trash', cardId });
+  }
+  for (const cardId of holder.sources.filter((_, i) => i >= S.fdCount(holder))) {
+    if (C(cardId).nameKo !== '루체몬' || seenCost.has('s' + cardId)) continue;
+    seenCost.add('s' + cardId); costCands.push({ from: 'sources', cardId });
+  }
+  if (!costCands.length) return [];
+  const benefitOk = (id) => C(id).category === 'digimon' && (C(id).nameKo === '루체몬: 사탄 모드' || (lvl(id) === 6 && traitAny(id, ['7대마왕'])));
+  const benefitCands = [...new Set(pl.trash.filter(benefitOk))];
+  if (!benefitCands.length) return [];
+  const out = [];
+  for (const cost of costCands) for (const benefitId of benefitCands) {
+    out.push({
+      passive: true,
+      apply() {
+        if (cost.from === 'trash') {
+          const ti = pl.trash.lastIndexOf(cost.cardId);
+          if (ti < 0) return false;
+          pl.trash.splice(ti, 1);
+        } else {
+          const si = holder.sources.lastIndexOf(cost.cardId);
+          if (si < S.fdCount(holder)) return false;
+          holder.sources.splice(si, 1);
+          S.recomputeStackGrants(holder);
+        }
+        pl.deck.push(cost.cardId);
+        const bi = pl.trash.lastIndexOf(benefitId);
+        if (bi < 0) return false; // cost/benefit are different names, shouldn't collide, but guard anyway
+        const st = S.playFreeFromZone(state, hp, 'trash', bi, {});
+        if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 「루체몬」 1장을 덱 아래로 되돌리고 ${C(benefitId).nameKo}을(를) 코스트 없이 등장`);
+        return !!st;
+      },
+    });
+  }
+  return out;
+}
+hk('EX6-054', { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: lucemonFalldownOptions });
+// EX6-056 / 058 / 060 / 061(2번째) 서로의 턴: "이 디지몬이 배틀 이외로 배틀 에어리어를 벗어날 때"(예정형) = 즉시형(15-8-5-1); "…놓는다"(강제,
+// "…수 있다" 아님) → forcedOnLeave로 교체 (docs/effect-classification-rules.md). 떠나기 직전엔 이 홀더가 아직 배틀 에어리어에 있어 트래시에
+// 없으므로, 옛 shard83.js sinGate83이 하던 "이 카드 자신을 트래시 후보에서 제외" 우회가 더 이상 필요 없다(자연히 후보에 안 잡힘). DigiXros
+// 소재로 흡수되어 벗어나는 경우는 state.js placeXrosMaterials가 hookPreventLeave를 거치지 않고 hookLeaveTriggers만 호출하므로
+// forcedOnLeave에 도달하지 못한다 — 그 경로는 옛 onLeave(cause==='xros' 전용으로 좁힘)로 남겨 유일한 발동 경로로 유지한다. 그 외 원인
+// (배틀 소멸 제외 — 원문 "배틀 이외로")은 전부 forcedOnLeave가 전담하므로 이중발동은 없다.
 const sinGate = [fn(async (ctx) => {
   const pl = PL(ctx, ctx.self);
   const gate = pl.raising && C(pl.raising.cardId).nameKo === '대죄의 문' ? pl.raising : null;
@@ -1147,7 +1253,22 @@ const sinGate = [fn(async (ctx) => {
   if (!gate || idx < 0) return;
   addSourcesBottom(ctx, ctx.self, gate, pl.trash.splice(idx, 1));
 })];
-for (const id of ['EX6-056', 'EX6-058', 'EX6-060']) { hk(id, { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause !== 'battle' }); sc(`${id}::서로의 턴`, sinGate); }
+function sinGateForced(state, hp, holder, cause) {
+  if (!holder || cause === 'battle') return;
+  const pl = state.players[hp];
+  const gate = pl.raising && C(pl.raising.cardId).nameKo === '대죄의 문' ? pl.raising : null;
+  if (!gate) return;
+  const idx = pl.trash.findIndex((id) => traitAny(id, ['7대마왕']));
+  if (idx < 0) return;
+  const [id] = pl.trash.splice(idx, 1);
+  gate.sources.unshift(id); S.recomputeStackGrants(gate);
+  S.log(state, `${hp} ${C(id).nameKo} → ${C(gate.cardId).nameKo} 진화원 아래 (${C(holder.cardId).nameKo}이(가) 배틀 에어리어를 벗어나기 전)`);
+}
+for (const id of ['EX6-056', 'EX6-058', 'EX6-060']) {
+  hk(id, { tag: '서로의 턴', has: '벗어날 때', forcedOnLeave: sinGateForced });
+  hk(id, { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause === 'xros' });
+  sc(`${id}::서로의 턴`, sinGate);
+}
 // EX6-057 서로의 턴 [턴에 1회]: 배틀 이외로 벗어날 때 Lv.5 이하 디지몬 1마리를 소멸시키는 것으로 벗어나지 않는다
 { const d = { tag: '서로의 턴', has: '벗어나지', preventLeaveOptions: (state, hp, holder, target, tp, cause) => {
   // "Lv.5 이하의 디지몬 1마리를 소멸시키는 것으로" — ANY Lv.5 or lower digimon (either side); each candidate is its own option for the player.
@@ -1167,7 +1288,8 @@ for (const id of ['EX6-056', 'EX6-058', 'EX6-060']) { hk(id, { tag: '서로의 �
 } }; hk('EX6-057', d); }
 // EX6-061 리바이어몬
 hk('EX6-061', { tag: '서로의 턴', has: '등장했을 때', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack) && (info.owner !== hp || traitAny(info.stack.cardId, ['7대마왕'])) } });
-hk('EX6-061', { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause !== 'battle' });
+hk('EX6-061', { tag: '서로의 턴', has: '벗어날 때', forcedOnLeave: sinGateForced });
+hk('EX6-061', { tag: '서로의 턴', has: '벗어날 때', onLeave: (state, hp, stack, cause) => cause === 'xros' });
 sc('EX6-061::서로의 턴@「대죄의 문」', sinGate);
 sc('EX6-061::서로의 턴@진화원을 아래에서부터 3장', [fn(async (ctx) => {
   const i = await pickIdx(ctx, ctx.self, () => true, '파기할 패 1장 선택');

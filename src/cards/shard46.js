@@ -109,7 +109,8 @@ sc('BT26-015::자신의 턴', async (ctx) => {
   const t = await pickOne(ctx, ctx.self, digs(state, ctx.self), 'DP +3000을 얻고 어택할 디지몬 선택');
   if (!t) return;
   S.modifyDP(state, ctx.self, t.uid, 3000, 'opponentTurn');
-  if (!t.suspended && ctx.startAttack && await ask(ctx, `${C(t.cardId).nameKo}(으)로 어택할까요?`)) ctx.startAttack(ctx.self, t.uid);
+  // official Q&A 6972: the Digimon boosted by this effect attacks whenever possible -- not an optional prompt.
+  if (!t.suspended && ctx.startAttack) ctx.startAttack(ctx.self, t.uid);
 });
 sc('BT26-015::서로의 턴', async (ctx) => {
   const st = me(ctx);

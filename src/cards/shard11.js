@@ -985,27 +985,66 @@ sc('BT16-025::진화 시', async (ctx) => {
   if (st.viaFusion) for (const s of digs(state, ctx.opp)) S.setSkipNextUnsuspend(state, ctx.opp, s.uid); // 조그레스 진화하고 있었다면
 });
 
-// ================================================================== EX4-021 / EX4-060 (서로의 턴): 벗어날 때 진화원에서 등장 (hookLeaveTriggers: 소멸·패로 되돌아갈 때)
-async function playNamedFromTrash(ctx, names) {
-  const { state } = ctx, pl = state.players[ctx.self];
-  for (const n of names) {
-    const i = pl.trash.map((id, k) => (nameIs(C(id), n) && C(id).category === 'digimon' ? k : -1)).filter(k => k >= 0).pop();
-    if (i != null) S.playFreeFromZone(state, ctx.self, 'trash', i, {});
-  }
+// ================================================================== EX4-021 / EX4-060 (서로의 턴): "…소멸하거나 패/덱으로 되돌아갈 때" /
+// "…자신의 효과 이외로 배틀 에어리어를 벗어날 때" is prospective tense = 즉시형 (15-8-5-1, docs/effect-classification-rules.md): must
+// interrupt BEFORE the stack actually leaves, reading the still-live (not yet trashed) evolution sources — same passive-immediate shape
+// as BT23-032 (src/cards/shard38.js leaveBonusOptions, the reference implementation). Official Q&A EX4-060 6031/6032: only the named
+// cards actually among the leaving digimon's OWN evolution sources may come out this way (never an unrelated same-named trash card) —
+// reading straight off `holder.sources` at the interrupt point (rather than a post-hoc trash scan) satisfies that automatically.
+// "A와 B 1장씩" = each named card is its own independent optional pick (card-text convention), not a shared "pick one of two" pool, so
+// EX4-021 registers ONE preventLeaveOptions hook per name (each gets its own key via a distinct `has`, so using one doesn't consume the
+// other's chance in the same leave).
+function namedLeaveOption(name) {
+  return (state, hp, holder, target) => {
+    if (!holder || target !== holder) return [];
+    let at = -1;
+    for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon' && nameIs(C(holder.sources[i]), name)) { at = i; break; }
+    if (at < 0) return [];
+    const cardId = holder.sources[at];
+    const pl = state.players[hp];
+    return [{
+      passive: true,
+      apply() {
+        const cur = holder.sources.lastIndexOf(cardId);
+        if (cur < S.fdCount(holder)) return false;
+        holder.sources.splice(cur, 1);
+        S.recomputeStackGrants(holder);
+        pl.trash.push(cardId);
+        const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true });
+        if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+        return !!st;
+      },
+    }];
+  };
 }
-hk('EX4-021', { tag: '서로의 턴', has: '진화원에서 「메탈그레이몬」', onLeave: () => true });
-sc('EX4-021::서로의 턴', async (ctx) => {
-  const evt = ctx.trigger?.evt || {};
-  const srcs = evt.sources || [];
-  if (!['메탈그레이몬', '다크나이트몬'].some(n => srcs.some(id => nameIs(C(id), n)))) return;
-  if (!(await ask(ctx, '진화원의 「메탈그레이몬」과 「다크나이트몬」을 코스트 없이 등장시킬까요?'))) return;
-  await playNamedFromTrash(ctx, ['메탈그레이몬', '다크나이트몬']);
-});
-hk('EX4-060', { tag: '서로의 턴', has: '진화원의 「크레스가루몬」', onLeave: (state, p, stack, cause) => cause !== 'ownEffect' });
-sc('EX4-060::서로의 턴', async (ctx) => {
-  const { state } = ctx, pl = state.players[ctx.self];
-  const evt = ctx.trigger?.evt || {};
-  await playNamedFromTrash(ctx, ['크레스가루몬', '블리츠그레이몬']);
-  const id = evt.cardId; if (!id) return;
-  for (const z of ['trash', 'hand', 'deck']) { const i = pl[z].lastIndexOf(id); if (i !== -1) { takeFrom(pl[z], i); S.addToSecurity(state, ctx.self, id, 'bottom'); return; } }
+hk('EX4-021', { tag: '서로의 턴', has: '진화원에서 「메탈그레이몬」', preventLeaveOptions: namedLeaveOption('메탈그레이몬') });
+hk('EX4-021', { tag: '서로의 턴', has: '「다크나이트몬」 1장씩', preventLeaveOptions: namedLeaveOption('다크나이트몬') });
+
+// EX4-060: "…1장씩을 코스트를 지불하지 않고 등장시킨다. 그 후, 이 디지몬을 시큐리티 아래에 놓는다." — MANDATORY (no "…수 있다"), so it's a
+// forcedOnLeave: fires unconditionally right before the leave, never offered as a declinable candidate. It also redirects the
+// destination — once forcedOnLeave has spliced `holder` out of battle/raising and placed it under security itself, the normal
+// deleteStackCore/leaveGate zone-placement code that runs afterward finds nothing left at `uid` and harmlessly no-ops.
+hk('EX4-060', {
+  tag: '서로의 턴', has: '진화원의 「크레스가루몬」',
+  forcedOnLeave(state, hp, holder, cause) {
+    if (cause === 'ownEffect') return;
+    const pl = state.players[hp];
+    for (const name of ['크레스가루몬', '블리츠그레이몬']) {
+      let at = -1;
+      for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon' && nameIs(C(holder.sources[i]), name)) { at = i; break; }
+      if (at < 0) continue;
+      const cardId = holder.sources[at];
+      holder.sources.splice(at, 1);
+      S.recomputeStackGrants(holder);
+      pl.trash.push(cardId);
+      const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true });
+      if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+    }
+    // 그 후, 이 디지몬을 시큐리티 아래에 놓는다: the leaving digimon is redirected to the bottom of Security instead of wherever it was
+    // headed; its remaining sources/link cards still go to the trash, same as a normal "이 디지몬을 시큐리티에 놓는다" from battle.
+    if (pl.raising === holder) pl.raising = null; else { const bi = pl.battle.indexOf(holder); if (bi !== -1) pl.battle.splice(bi, 1); }
+    pl.trash.push(...holder.sources.filter((id) => !C(id).isToken), ...(holder.linkCards || []).map((l) => l.cardId));
+    S.addToSecurity(state, hp, holder.cardId, 'bottom');
+    S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나는 대신 시큐리티 아래에 놓임`);
+  },
 });

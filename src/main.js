@@ -665,7 +665,7 @@ function dbRefreshResultsInner() {
   if (!dbEls) return;
   const r = DBS.runSearch(dbFilter, S.CARDS, dbIndex, dbCtx());
   dbMatched = r.ids; dbTerms = r.terms;
-  if (dbIdFilter) dbMatched = Object.keys(S.CARDS).filter(id => dbIdFilter.ids.has(id)); // checkup warning: only the related cards (other filters ignored)
+  if (dbIdFilter) dbMatched = Object.keys(S.CARDS).filter(id => dbIdFilter.ids.has(id)).sort(DBS.cardNoCompare); // checkup warning: only the related cards (other filters ignored), still in card-number order
   const shown = dbMatched.slice(0, dbFilter.pageSize);
   dbEls.grid.replaceChildren(...(dbIdFilter ? [h('div', { className: 'dt-idfilter' }, [`🩺 점검 항목 「${dbIdFilter.label}」 관련 카드만 표시 중 (${dbMatched.length}장) `, h('button', { onClick: () => { dbIdFilter = null; dbRefreshResults(); } }, '해제 ✕')])] : []), ...shown.map(dbTile));
   dbEls.more.replaceChildren(dbMatched.length > shown.length
@@ -885,7 +885,7 @@ function pumpReplacementPrompt() {
   if (e.cands.length > 1) { // 18-2: several replacements could be used — the player picks which one (or none)
     state.uiChoice = {
       kind: 'multipleChoice',
-      payload: { player: e.p, prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 사용할 효과를 선택하세요 (룰 18-2, 즉시형 15-8-5)`, options: [...e.cands.map((c, i) => `${i + 1}. ${promptSafeLines(c.lines).filter(l => !/스택 소멸/.test(l)).join(' / ') || c.lines[0] || '(생존 효과)'}`), '사용하지 않는다'] },
+      payload: { player: e.p, prompt: `${e.p}: ${nm}이(가) ${verb} 합니다 — 대신 사용할 효과를 선택하세요 (룰 18-2, 즉시형 15-8-5)`, options: [...e.cands.map((c, i) => `${i + 1}. ${promptSafeLines(c.lines).filter(l => !/스택 소멸/.test(l)).join(' / ') || '(생존 효과)'}`), '사용하지 않는다'] },
       resolve: (val) => { state.uiChoice = null; S.resumeReplacement(state, e, val == null || val >= e.cands.length ? -1 : val); render(); },
     };
     return;
@@ -2050,7 +2050,33 @@ async function runPendingScript(trigger, opts = {}) {
   if (opts.delay) await new Promise(r => setTimeout(r, Math.round(1500 * READ_SPEEDS[READ.speed] / 1.7)));
   if (stale()) return;
   const ctx = { state, S, E, self: trigger.player, opp: S.opponentOf(trigger.player), sourceCardId: trigger.cardId, sourceStackUid: trigger.stackUid, choose: (k, pl) => (stale() ? new Promise(() => {}) : ctxChoose(k, k === 'confirmEffect' ? { ...pl, _pendingResolution: true, _triggerUid: trigger.uid } : pl)), trigger, attack: () => sel.pendingAttack, endAttack: () => { endAttack(); render(); },
-    startAttack: (p, uid, directTarget, atkOpts) => { sel.atkQueued = (sel.atkQueued || 0) + 1; setTimeout(() => { if (stale()) return; sel.atkQueued--; if (!sel.pendingAttack) { attackFlow(p, uid, directTarget, true, atkOpts); } render(); }, 0); },
+    // 11-2-2/11-2-3: the DECLARATION (S.declareAttack + pa/state.attackCtx setup, and — once a target is already
+    // known — the same fireDeclare/queueTriggersForStack(...,'attack') path a normal attack uses) must happen AT
+    // ONCE as part of resolving the triggering effect, not one JS tick later via setTimeout. The old deferred
+    // version let a fully synchronous turn-end (checkAutoEndTurn -> beginTurnEnd+settleTurnEnd, main.js render())
+    // complete first whenever the triggering script had nothing left to await (no opponent digimon to ask about a
+    // bonus battle, e.g.) — observed on EX13-045: the forced attack either fired one turn late (already the wrong
+    // activePlayer, so S.declareAttack's 11-2-1 check silently refused it) or was lost outright. attackFlow()
+    // itself already only fires the declaration triggers once a target is fixed (immediately for a directTarget,
+    // otherwise once the player/CPU picks one) — calling it synchronously here just lets that existing state
+    // machine carry the attack the rest of the way, instead of inventing a separate deferred path. sel.atkQueued
+    // still brackets the call (kept for busy()/settleTurnEndIfIdle()/snapshot.js, and as a defensive marker in
+    // case attackFlow's own render() re-enters before pa is assigned).
+    startAttack: (p, uid, directTarget, atkOpts) => {
+      if (stale()) return;
+      sel.atkQueued = (sel.atkQueued || 0) + 1;
+      try {
+        if (sel.pendingAttack) { // 11-2-3 / 공식 Q&A 3123: 어택이 이미 진행 중이면 새 어택은 선언될 수 없음 — 조용히 버리지 않고 로그를 남긴다
+          const st0 = findStack({ player: p, uid });
+          S.log(state, `${p} ${st0 ? S.card(st0.cardId).nameKo : uid} 효과의 어택 — 이미 다른 어택이 진행 중이라 선언하지 못함 (룰 11-2-3)`);
+          return;
+        }
+        attackFlow(p, uid, directTarget, true, atkOpts);
+      } finally {
+        sel.atkQueued--;
+        render();
+      }
+    },
     // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
     securityCheck: async (p, uid, op) => { if (stale() || !S.consumePierceCheck(state, p, uid)) return; await scriptedSecurityCheck(p, uid, op || S.opponentOf(p)); } };
   // 16-17 ≪딜레이≫ on an event/turn-triggered PLACED Option without a bespoke script (BT17-096, BT24-098, P-2xx 유니크 엠블럼 …): the watcher queued only the trigger

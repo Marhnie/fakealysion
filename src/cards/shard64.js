@@ -100,6 +100,19 @@ sc('P-142::등장 시', async (ctx, R) => {
     return S.condFix('p033|' + target.uid, () => S.effectiveDP(state, hp, target) >= 13000) ? ['관통'] : [];
   },
 });
+// P-033 진화원 효과 (official Q&A 4146): while an evolution source, its own holder gets 《시큐리티 어택 +1》 whenever
+// THAT digimon is black with DP 13000+ (evaluated live, same threshold family as the own-effect grant above). This is
+// "<색>인 DP N 이상인 동안" — a combined color+DP condition contGrantCond()/parseContGrants() can't parse (only bare
+// "DP N 이상의 이 디지몬은" or bare color/name/trait conditions), so the generic continuous-grant scanner silently
+// dropped this line and the inherited ability granted nothing at all.
+(HOOKS['P-033'] ||= []).push({
+  tag: '자신의 턴', src: 'inheritedKo', has: 'DP 13000 이상인 동안, 이 디지몬은',
+  kwNum: (state, hp, holder) => {
+    if (!holder || C(holder.cardId).category !== 'digimon') return 0;
+    if (!S.stackColors(holder).includes('black')) return 0;
+    return S.condFix('p033inh|' + holder.uid, () => S.effectiveDP(state, hp, holder) >= 13000) ? 1 : 0;
+  },
+});
 
 // ---- shared helpers for "place a digimon/tamer of either side into a security stack" costs
 const digsOf = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');

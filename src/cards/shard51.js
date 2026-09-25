@@ -50,6 +50,28 @@ sc('BT18-101::진화 시', async (ctx, R) => {
   await R.runScript(compileToScript('상대의 디지몬/테이머 1마리(명)를 소멸시킨다.'), ctx);
 });
 
+// ST9-06 황제드라몬: 드래곤 모드 【진화 시】 이 디지몬의 진화원에서 Lv.4 이하의 블루와 그린의 디지몬 카드 1장씩을 코스트 없이 등장시킬 수 있다.
+// (official Q&A: this is one all-or-nothing optional action — you may decline it entirely, but if BOTH a Lv.4-
+// or-lower blue AND green source card are present you may not take only one of them. The generic compiler's
+// moveEach(groups) instead offered each color as its own independently-skippable slot, letting a player take
+// blue while declining an available green — fixed with a single up-front confirm + forced per-color fill.)
+sc('ST9-06::진화 시', async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me];
+  const st = findStack(state, me, ctx.sourceStackUid); if (!st) return;
+  const cand = (color) => st.sources.map((id, i) => ({ id, i })).filter((x) => x.i >= S.fdCount(st) && C(x.id).category === 'digimon' && C(x.id).level <= 4 && (C(x.id).colors || []).includes(color));
+  if (!cand('blue').length && !cand('green').length) return;
+  if (!(await ctx.choose('confirmEffect', { player: me, prompt: '진화원의 Lv.4 이하 블루와 그린 디지몬을 1장씩 등장시킬까요?' }))) return;
+  for (const color of ['blue', 'green']) {
+    const cs = cand(color); if (!cs.length) continue;
+    let pick = cs[0];
+    if (cs.length > 1) { const k = await ctx.choose('pickFromZoneIndex', { player: me, zone: 'sources', eligibleIdxs: cs.map((x) => x.i), prompt: `등장시킬 ${color === 'blue' ? '블루' : '그린'} 카드 선택` }); pick = cs.find((x) => x.i === k) || cs[0]; }
+    const i = st.sources.indexOf(pick.id); if (i < 0) continue;
+    const [id] = st.sources.splice(i, 1); S.recomputeStackGrants(st);
+    pl.trash.push(id);
+    S.playFreeFromZone(state, me, 'trash', pl.trash.length - 1, { fromSources: true });
+  }
+});
+
 // BT22-028 【진화 시】 이 디지몬의 진화원에서 특징으로 「수생」을 포함하는 Lv.3·Lv.4·Lv.5 디지몬 카드 1장씩을 코스트 없이 등장 (the generic compile only left a manual note)
 sc('BT22-028::진화 시@진화원에서', async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me];

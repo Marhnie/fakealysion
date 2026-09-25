@@ -3896,7 +3896,10 @@ function compileToScriptCore(text) {
       { re: /^이\s*디지몬의\s*진화원에\s*(레드|블루|옐로우?|그린|블랙|퍼플|화이트)인\s*카드가\s*있을\s*때,?\s*(.+)$/s, skip: /진격/, body: 2,
         test: (m) => (ctx) => { const st = ctx.state.players[ctx.self].battle.find(x => x.uid === ctx.sourceStackUid); return !!st && st.sources.some(id => (ctx.S.card(id).colors || []).includes(COLORS[m[1]])); } },
       { re: /^[《≪]\s*(디코드|파티션)\s*[》≫]\s*(?:로|으로)\s*등장했었다면,?\s*(.+)$/s, body: 2,
-        test: (m) => (ctx) => { const uid = ctx.trigger?.evtStackUid; const st = uid && [...ctx.state.players.p1.battle, ...ctx.state.players.p2.battle].find(x => x.uid === uid); return !!st && st.playedByKw === m[1]; } },
+        // official Q&A (EX11-058 Q5911/5912): a combined "등장/진화했을 때" watcher re-fired by a LATER evolution of the same digimon must NOT
+        // satisfy this condition even though the digimon did enter via 《디코드》/《파티션》 earlier — playedByKw is a persistent per-stack flag
+        // that survives evolution, so it alone can't tell "this trigger instance" apart from a later evolve-triggered one; evtKind can.
+        test: (m) => (ctx) => { if (ctx.trigger && ctx.trigger.evtKind === 'digivolve') return false; const uid = ctx.trigger?.evtStackUid; const st = uid && [...ctx.state.players.p1.battle, ...ctx.state.players.p2.battle].find(x => x.uid === uid); return !!st && st.playedByKw === m[1]; } },
       { re: /^[《≪]\s*오버클럭\s*[》≫]\s*(?:로|으로)\s*소멸했다면,?\s*(.+)$/s, body: 1,
         test: () => (ctx) => { const uid = ctx.trigger?.evtStackUid; return !!uid && !!ctx.state.deletedInfo?.[uid]?.byOverclock; } },
     ];
