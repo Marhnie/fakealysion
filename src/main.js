@@ -9,6 +9,7 @@ import { createDeckAnalysis } from './decktools-ui.js'; // deck stats / checkup 
 import * as DT from './decktools.js';
 import * as CD from './cpudeck.js'; // CPU-evolved decks (data/cpu-decks.json, optional) + 'CPU가 덱 짜주기'
 import { parseDeckText, deckToText } from './deckimport.js'; // 붙여넣기 덱 가져오기/내보내기
+import { exportDeckRecipeDocx } from './deckrecipe.js'; // 덱 레시피(.docx) 내보내기 (대회 제출 서식)
 import { fxFieldOn, fxFieldSetOn, fxFieldSync, fxFieldRender, FIELD_LABELS } from './fxfield.js'; // on-field effect annotations (presentation only)
 import { peekWrap, peekNone, peekIdOf } from './peek.js'; // 👁 필드 보기: fold any prompt into a pill
 import { renderSecurityZone } from './securityui.js'; // 시큐리티 존 (스택/TOP/체크 연출)
@@ -307,6 +308,7 @@ function renderSetup() {
     spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js)
     h('div', { className: 'su-more' }, [
       h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
+      h('button', { title: '플레이 중 발견한 버그나 이상한 동작을 신고해주세요', onClick: () => window.open('https://forms.gle/uLfLuPv9bnvkxauZ6', '_blank', 'noopener') }, '🐛 버그 리포트'),
       ext,
     ]),
   ].filter(Boolean)));
@@ -592,6 +594,7 @@ function renderDeckBuilderScreen() {
     h('div', { className: 'actions-row' }, [
       h('button', { className: 'primary', onClick: () => openDeckImport() }, '📋 덱 가져오기 (붙여넣기)'),
       h('button', { onClick: () => { const t = deckToText(dbDraft, S); if (!t) { dbLastError = '내보낼 카드가 없습니다'; dbRefreshDeck(); return; } (navigator.clipboard?.writeText(t) || Promise.reject()).then(() => { dbLastError = ''; showToast('덱 리스트를 복사했습니다'); }).catch(() => { openDeckImport(t); }); } }, '덱 복사(내보내기)'),
+      h('button', { onClick: async () => { const r = await exportDeckRecipeDocx(dbDraft, S); if (!r.ok) { dbLastError = r.error || '레시피 파일을 만들지 못했습니다'; dbRefreshDeck(); return; } dbLastError = ''; showToast('덱 레시피(.docx)를 다운로드했습니다'); dbRefreshDeck(); } }, '📄 레시피 다운로드(docx)'),
       h('button', { onClick: () => { dbDraft = DB.newDraft(); dbSavedName = ''; dbLastError = ''; dbRefreshDeck(); } }, '새로 만들기(초기화)'),
     ]),
     cpuBuildRow(),
@@ -812,13 +815,16 @@ function startNewGame() {
 
 function renderMulliganStage() {
   app.innerHTML = '';
-  app.appendChild(h('div', { className: 'topbar' }, [h('b', {}, '오프닝 핸드 확인 / 멀리건'), h('button', { className: 'pr-btn', title: '같은 덱으로 새로 셔플해 오프닝 핸드부터 다시 (혼자 연습용)', onClick: () => restartHand() }, '🎲 시작 핸드 다시 뽑기')]));
+  const hero = h('div', { className: 'su-hero' }, [
+    h('div', { className: 'su-logo' }, '⟁'),
+    h('div', {}, [h('div', { className: 'su-title' }, '오프닝 핸드 확인'), h('div', { className: 'su-sub' }, '멀리건 여부를 정하세요 (룰 5-2-1)')]),
+  ]);
   const panels = ['p1', 'p2'].map(p => {
     const pl = state.players[p];
     const justDealt = mulliganDealFlash[p];
     mulliganDealFlash[p] = false;
-    return h('div', { className: 'player-panel' }, [
-      h('div', { className: 'player-header' }, [h('b', {}, p.toUpperCase()), h('span', {}, pl.deckName)]),
+    return h('div', { className: `su-card su-${p}` }, [
+      h('div', { className: 'su-h' }, `${p.toUpperCase()} · ${pl.deckName}`),
       h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => (isCpuSide(p) && !CPU_CFG.reveal && !state.winner) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, { owner: p }))),
       isCpuSide(p) ? h('div', { className: 'actions-row' }, [h('span', {}, mulliganDecided[p] ? ('🤖 CPU 결정 완료 ✔' + (state.cpuMulled ? ' (멀리건함)' : ' (핸드 유지)')) : '🤖 CPU가 결정 중…')]) :
       h('div', { className: 'actions-row' }, [
@@ -836,7 +842,11 @@ function renderMulliganStage() {
       ].filter(Boolean)),
     ]);
   });
-  app.appendChild(h('div', { className: 'board' }, panels));
+  app.appendChild(h('div', { className: 'su-wrap' }, [
+    hero,
+    h('div', { className: 'su-more', style: 'margin-bottom:2px' }, [h('button', { title: '같은 덱으로 새로 셔플해 오프닝 핸드부터 다시 (혼자 연습용)', onClick: () => restartHand() }, '🎲 시작 핸드 다시 뽑기')]),
+    ...panels,
+  ]));
   cpuMulliganMaybe();
 }
 
