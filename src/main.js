@@ -17,6 +17,7 @@ import { fxEmit, fxGetMode, fxSetMode, fxWhenIdle, fxBusyMs, fxUnbooked, FX_MODE
 import * as CpuSearch from './cpusearch.js'; // 어려움 lookahead (registers itself into Cpu.HOOKS.search)
 import { spectateSection } from './spectate-ui.js'; // 🍿 CPU끼리 구경하기 (start screen)
 import * as Cpu from './cpu.js'; // vs-CPU opponent (decisions + UI driver); the glue lives in the "vs CPU" section below
+import * as Net from './netplay.js'; // 🌐 온라인 대전 (host-authoritative P2P over WebRTC via PeerJS) — design: docs/netplay-design.md
 
 const PHASE_LABEL = { unsuspend: '액티브 페이즈', draw: '드로우 페이즈', breeding: '육성 페이즈', main: '메인 페이즈' };
 
@@ -67,11 +68,21 @@ let cpuOn = false;      // the running game is vs the CPU
 let cpuActing = false;  // the CPU driver is inside one of its own actions (its prompts / attack calls are allowed)
 let cpuDrv = null;
 const isCpuSide = (p) => cpuOn && p === CPU_P;
+// 🌐 온라인 대전: the HOST's own `state` is the real, unredacted authoritative object (only the copy sent to the
+// GUEST over the wire is redacted — see netplay.buildSnapshot) — so without this, the host's own screen would
+// still show the guest's real hand locally. Mirrors isCpuSide's hand-hiding for the seat that is NOT this
+// client's own seat while hosting; a guest's `state` already arrives pre-redacted (opponent hand = null ids),
+// so this is a no-op for the guest (its own `state.players[p].hand` already has the right values either way).
+const netHideHand = (p) => Net.NET.role === 'host' && p !== Net.NET.mySeat;
 // during the CPU's turn the human may not act (drag, pass, breeding…) — they still answer prompts / blocks that belong to them
 const cpuHumanLocked = () => cpuOn && !cpuActing && !!state && !state.winner && state.activePlayer === CPU_P;
 const cpuTurnView = () => cpuOn && !!state && !state.winner && state.activePlayer === CPU_P; // for rendering (disabled buttons): true for the whole CPU turn, even while the CPU is mid-action
 const cpuPendingOwner = () => { const t = state && runningPendingUid ? state.pending.find(x => x.uid === runningPendingUid) : null; return t ? t.player : null; };
 const uiChoiceByCpu = (uc) => cpuOn && !!uc && (uc.by ? uc.by === CPU_P : Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() }) === CPU_P);
+// 🌐 온라인 대전: 이 선택이 "내 자리"의 결정이 아니라 상대(다른 컴퓨터의 사람) 몫이면 — 버튼을 그대로 보여주면 상대의 결정을
+// 내 화면에서 대신 눌러버릴 수 있다 (예: 상대의 시큐리티 체크 순서 선택을 내가 가로채는 것과 같음). uiChoiceByCpu와 같은
+// deciderFor 폴백을 그대로 재사용해, 이미 buildSnapshot()이 게스트에게 보낼 때 쓰는 것과 동일한 기준으로 판단한다.
+const uiChoiceByOpponentOnline = (uc) => !!(Net.NET.role && uc && (uc.by || Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() })) !== Net.NET.mySeat);
 const cpuApiObj = {
   getState: () => (cpuOn && !PR.isReplay() ? state : null), // (never play inside the replay viewer's scratch state)
   busy: () => busy(),
@@ -121,6 +132,73 @@ const cpuApiObj = {
     close: (pa) => { endAttack(); render(); },
   },
 };
+
+// ---------- 🌐 온라인 대전 (host-authoritative P2P over WebRTC; design: docs/netplay-design.md) ----------
+// The host runs the exact same engine/state as solo play and additionally broadcasts a redacted snapshot after
+// every render(); intents from the guest are applied through `cpuApiObj` above (zero duplicated game logic —
+// it's the same table the CPU driver already calls into). The guest's `state`/`sel.pendingAttack` are pure
+// mirrors, assigned wholesale from whatever the host last sent; see netIntercept() for how a guest's own clicks
+// become intents instead of local mutations.
+let netStatus = '';
+Net.NET.onStatus = (t) => { netStatus = t; render(); };
+function netApplyIntent(action, args) {
+  if (!state) return;
+  // 호스트는 항상 'p1', 접속한 게스트는 항상 그 반대 자리 — 게스트가 보낸 의도(intent)의 "누구 몫인지"는 게스트 쪽 화면 버그나
+  // 조작으로 바뀔 수 있으니, args가 주장하는 자리를 그대로 믿지 않고 실제 접속 자리로 강제한다 (호스트 자신의 결정을 게스트가
+  // 원격으로 가로채 대신 눌러버리는 것을 막는다 — renderMulliganStage/renderModal의 화면단 가림과 짝을 이루는 서버측 검증).
+  const guestSeat = S.opponentOf(Net.NET.mySeat);
+  try {
+    if (action === 'mulligan') { const p = guestSeat; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'keepHand') { const p = guestSeat; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'answer') {
+      const uc = state.uiChoice;
+      const owner = uc && (uc.by || Cpu.deciderFor(state, uc.kind, uc.payload, { pendingOwner: cpuPendingOwner() }));
+      if (uc && owner === guestSeat) cpuApiObj.answer(uc, args[0]);
+      return;
+    }
+    if (action === 'stackDrop') { const [p, stackUid, zoneKind, drag] = args; const st = findStack({ player: p, uid: stackUid }); if (st) handleStackDrop(p, st, zoneKind, drag); return; }
+    if (action === 'playFreshFromDrag') { const [drag, p] = args; playFreshFromDrag(drag, p); return; }
+    // redirect options carry a closure (`opt.pay`) that can't cross the wire — sent by index into the HOST's own
+    // (never-serialized) `pa.redirectOptions` instead of the option object itself (see the '변경' onClick above).
+    if (action === 'pa.useRedirect') {
+      const pa = sel.pendingAttack; const opt = pa && pa.redirectOptions && pa.redirectOptions[args[0]];
+      if (!pa || !opt) return;
+      (async () => {
+        if (opt.pay) { const paid = await opt.pay(ctxChoose); if (!paid) { render(); return; } }
+        if (opt.endsAttack) { endAttack(); render(); return; }
+        const tUid = opt.targetUid || opt.stackUid;
+        if (opt.toPlayer) { pa.targetKind = 'player'; pa.targetUid = null; } else { pa.targetKind = 'digimon'; pa.targetUid = tUid; }
+        if (opt.limit != null) S.markRedirectUsed(state, pa.opp, opt.stackUid, opt.cardId);
+        noteRedirect(pa);
+        enterCounterTiming(pa); render();
+      })();
+      return;
+    }
+    if (action === 'pa.unsuspendAfterBattle') { const pa = sel.pendingAttack; if (pa) S.unsuspendStack(state, pa.attacker, args[0]); render(); return; }
+    if (action.startsWith('pa.')) { const sub = action.slice(3); const pa = sel.pendingAttack; if (pa && typeof cpuApiObj.pa[sub] === 'function') cpuApiObj.pa[sub](pa, ...args); return; }
+    if (typeof cpuApiObj[action] === 'function') { cpuApiObj[action](...args); return; }
+    console.warn('netplay: unknown intent', action);
+  } catch (e) { console.warn('netplay: intent failed', action, args, e); }
+}
+Net.NET.onIntent = netApplyIntent;
+function netOnState(msg) {
+  const rev = Net.reviveIncoming(msg);
+  state = rev.state;
+  if (rev.mulliganDecided) mulliganDecided = rev.mulliganDecided;
+  sel.pendingAttack = rev.pa;
+  cpuOn = false; // an online match is never also a CPU match
+  if (state.phase === 'setup') renderMulliganStage(); else render();
+}
+Net.NET.onState = netOnState;
+// Host: broadcast after anything that changes what the guest should see. Safe/cheap to call when not hosting
+// (no-op — see netplay.broadcastState) or when `sel.pendingAttack` doesn't exist yet (null is a valid "no
+// attack in progress" value on the wire too).
+function netBroadcast() { if (Net.NET.role === 'host' && state) Net.broadcastState(state, sel.pendingAttack, { mulliganDecided: { ...mulliganDecided } }); }
+// A network GUEST's own click that would otherwise mutate shared engine state: send it to the host instead and
+// bail out of the local handler. Host / CPU / local-2p: always false (Net.NET.role is null there), so this is
+// fully inert outside online play — those modes' behavior is unchanged byte-for-byte.
+function netIntercept(action, args) { if (Net.NET.role !== 'guest') return false; Net.sendIntent(action, args); return true; }
+
 // coming back to a hidden tab: the CPU carries on immediately (its heartbeat timer was throttled) and the view is refreshed
 try { document.addEventListener('visibilitychange', () => { if (!document.hidden && cpuOn && cpuDrv && state && !state.winner) { cpuDrv.beat().catch(() => {}); render(); } }); } catch (e) { /* ignore */ }
 function cpuApplySearchCfg() { if (cpuDrv) cpuDrv.setSearch({ enabled: CPU_CFG.search !== false, budgetMs: Math.max(200, Math.min(2500, Number(CPU_CFG.budget) || 900)), hardCapMs: 2500, showLine: !!CPU_CFG.showLine }); }
@@ -246,7 +324,50 @@ function setupDeckInfo(key) {
   } catch (e) { return { main: 0, egg: 0, colors: [] }; }
 }
 
+// 🌐 온라인 대전: local-only UI state for the room-code input box (not persisted, not part of `state`/`sel`).
+let netJoinCode = '';
+function netRoomCard() {
+  const role = Net.NET.role;
+  const rows = [h('div', { className: 'su-h' }, '🌐 온라인 대전 (베타)')];
+  if (!role) {
+    rows.push(h('div', { className: 'su-note' }, '호스트가 방을 만들고 코드를 게스트에게 알려주면, 게스트가 그 코드로 참가합니다. 서버 없이 P2P(WebRTC)로 직접 연결됩니다 — 계정이 필요하지 않습니다.'));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('button', { className: 'primary', onClick: () => { netStatus = '방 만드는 중…'; render(); Net.hostRoom().then(() => render()).catch((e) => { netStatus = '방 생성 실패: ' + (e && e.message || e); render(); }); } }, '🚪 방 만들기 (호스트)'),
+    ]));
+    rows.push(h('div', { className: 'actions-row' }, [
+      h('input', { type: 'text', id: 'netJoinCodeInput', placeholder: '방 코드 입력 (예: AB12CD)', value: netJoinCode, style: 'text-transform:uppercase;width:12em', oninput: (e) => { netJoinCode = e.target.value; }, onkeydown: (e) => { if (e.key === 'Enter') document.getElementById('netJoinBtn').click(); } }),
+      h('button', { id: 'netJoinBtn', onClick: () => {
+        const code = (document.getElementById('netJoinCodeInput').value || netJoinCode || '').trim();
+        if (!code) return;
+        netJoinCode = code; netStatus = '연결 중…'; render();
+        Net.joinRoom(code).then(() => render()).catch((e) => { netStatus = '참가 실패: ' + (e && e.message || e); render(); });
+      } }, '🔗 참가하기 (게스트)'),
+    ]));
+  } else if (role === 'host') {
+    rows.push(h('div', { className: 'su-note' }, [
+      h('b', {}, '방 코드: '), h('span', { style: 'font-size:1.3em;letter-spacing:.15em;font-weight:bold' }, Net.NET.roomCode),
+      h('button', { style: 'margin-left:8px', onClick: () => { try { navigator.clipboard.writeText(Net.NET.roomCode); } catch (e) { /* ignore */ } } }, '📋 복사'),
+    ]));
+    rows.push(h('div', { className: 'su-note' }, Net.NET.connected ? '✅ 게스트와 연결됨 — 아래에서 양쪽 덱을 고르고 시작하세요 (P2 = 게스트).' : '⏳ ' + (netStatus || '게스트의 접속을 기다리는 중…')));
+  } else if (role === 'guest') {
+    rows.push(h('div', { className: 'su-note' }, Net.NET.connected ? '✅ 호스트와 연결됨 — 호스트가 게임을 시작하면 자동으로 화면이 전환됩니다.' : '⏳ ' + (netStatus || '연결 중…')));
+  }
+  if (role) rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { Net.reset(); netStatus = ''; renderSetup(); } }, '✖ 연결 끊기')]));
+  return h('div', { className: 'su-card' }, rows);
+}
+// Guest, before the host has started a game: nothing to pick (host owns both deck choices — see docs/netplay-design.md)
+// — just the connection card, no deck grid / start button (which wouldn't do anything on a guest anyway).
+function renderNetGuestWaiting() {
+  app.innerHTML = '';
+  const hero = h('div', { className: 'su-hero' }, [
+    h('div', { className: 'su-logo' }, '⟁'),
+    h('div', {}, [h('div', { className: 'su-title' }, '디지몬 카드게임'), h('div', { className: 'su-sub' }, '시뮬레이터 · 🌐 온라인 대전 (게스트)')]),
+  ]);
+  app.appendChild(h('div', { className: 'su-wrap' }, [hero, netRoomCard()]));
+}
+
 function renderSetup() {
+  if (CPU_CFG.mode === 'net' && Net.NET.role === 'guest') return renderNetGuestWaiting();
   app.innerHTML = '';
   const options = deckOptionsList();
   if (!setupPick.p1 && options[0]) setupPick.p1 = options[0].key;
@@ -293,7 +414,8 @@ function renderSetup() {
   };
   const cpu = CPU_CFG.mode === 'cpu';
   const seg = (items, cur, onPick) => h('div', { className: 'su-seg', role: 'group' }, items.map(([v, l, tip]) => h('button', { className: 'su-segbtn' + (v === cur ? ' on' : ''), title: tip || '', onClick: () => onPick(v) }, l)));
-  const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
+  const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작'], ['net', '🌐 온라인 대전', 'WebRTC로 다른 브라우저와 온라인 대전 (베타)']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
+  const net = CPU_CFG.mode === 'net';
   const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대', expert: '자가대전으로 조정한 파라미터 + 더 깊은 수 읽기' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
 
   const heroWithBug = h('div', { className: 'su-hero' }, [
@@ -302,17 +424,19 @@ function renderSetup() {
     h('button', { className: 'su-bugreport', title: '플레이 중 발견한 버그나 이상한 동작을 신고해주세요', onClick: () => window.open('https://forms.gle/uLfLuPv9bnvkxauZ6', '_blank', 'noopener') }, '🐛 버그 리포트'),
   ]);
   const ext = PR.startScreenExtras();
+  const netReady = net && Net.NET.role === 'host' && Net.NET.connected; // host-only gate: guest never sees this screen (see renderNetGuestWaiting)
   app.appendChild(h('div', { className: 'su-wrap' }, [
     heroWithBug,
-    h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : 'P1 덱'), deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : 'P2 덱')]),
     h('div', { className: 'su-card' }, [
       h('div', { className: 'su-h' }, '대전 방식'), modeSeg,
       cpu ? h('div', { className: 'su-h su-h2' }, 'CPU 강도') : null, lvSeg,
       cpu ? h('div', { className: 'su-note' }, '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
     ].filter(Boolean)),
+    net ? netRoomCard() : null,
+    (!net || netReady) ? h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : (net ? 'P1 덱 (호스트=나)' : 'P1 덱')), deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : (net ? 'P2 덱 (게스트) — 내가 고름' : 'P2 덱'))]) : null,
     setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
-    h('button', { className: 'primary su-start', onClick: startNewGame }, '⚔ 새 게임 시작'),
-    spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js)
+    (!net || netReady) ? h('button', { className: 'primary su-start', onClick: startNewGame }, '⚔ 새 게임 시작') : null,
+    net ? null : spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js) — irrelevant once a network room is open
     h('div', { className: 'su-more' }, [
       h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
       ext,
@@ -825,14 +949,21 @@ function renderMulliganStage() {
     h('div', { className: 'su-logo' }, '⟁'),
     h('div', {}, [h('div', { className: 'su-title' }, '오프닝 핸드 확인'), h('div', { className: 'su-sub' }, '멀리건 여부를 정하세요 (룰 5-2-1)')]),
   ]);
-  const panels = ['p1', 'p2'].map(p => {
+  // 🌐 온라인 대전: renderBoard()와 동일하게 "자신의 진영은 항상 자기 화면 아래쪽" 원칙 적용 (Net.NET.mySeat가 null이면 기존처럼 p1-then-p2 고정 순서).
+  const bottomSeat = Net.NET.mySeat || 'p1';
+  const topSeat = S.opponentOf(bottomSeat);
+  const panels = [topSeat, bottomSeat].map(p => {
     const pl = state.players[p];
     const justDealt = mulliganDealFlash[p];
     mulliganDealFlash[p] = false;
     return h('div', { className: `su-card su-${p}` }, [
       h('div', { className: 'su-h' }, `${p.toUpperCase()} · ${pl.deckName}`),
-      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => (isCpuSide(p) && !CPU_CFG.reveal && !state.winner) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, { owner: p }))),
+      h('div', { className: 'hand-list' + (justDealt ? ' mulligan-hand' : '') }, pl.hand.map(id => ((isCpuSide(p) && !CPU_CFG.reveal && !state.winner) || id == null || netHideHand(p)) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, { owner: p }))),
       isCpuSide(p) ? h('div', { className: 'actions-row' }, [h('span', {}, mulliganDecided[p] ? ('🤖 CPU 결정 완료 ✔' + (state.cpuMulled ? ' (멀리건함)' : ' (핸드 유지)')) : '🤖 CPU가 결정 중…')]) :
+      // 🌐 온라인 대전: 상대 자리의 멀리건 버튼을 내 화면에 보여주면, 그걸 눌러 상대의 결정을 내가 대신 내려버릴 수 있다
+      // (netIntercept는 "내 클릭을 상대에게 보낼지"만 가릴 뿐, 애초에 상대 몫 버튼이 내 화면에 떠 있는 것 자체를 막지 않는다).
+      // 상대 자리는 읽기 전용 문구로만 보여준다.
+      (Net.NET.role && p !== Net.NET.mySeat) ? h('div', { className: 'actions-row' }, [h('span', {}, mulliganDecided[p] ? '결정 완료 ✔' : (p !== state.firstPlayer && !mulliganDecided[state.firstPlayer]) ? `선공(${state.firstPlayer.toUpperCase()})이 먼저 멀리건 여부를 결정합니다 (룰 5-2-1-4)` : '⏳ 상대가 결정 중…')]) :
       h('div', { className: 'actions-row' }, [
         mulliganDecided[p]
           ? h('span', {}, '결정 완료 ✔')
@@ -840,20 +971,21 @@ function renderMulliganStage() {
           ? h('span', {}, `선공(${state.firstPlayer.toUpperCase()})이 먼저 멀리건 여부를 결정합니다 (룰 5-2-1-4)`)
           : h('button', {
               className: 'primary',
-              onClick: () => { E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); },
+              onClick: () => { if (netIntercept('mulligan', [p])) return; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); },
             }, '멀리건 (새로 5장)'),
         !mulliganDecided[p] && (p === state.firstPlayer || mulliganDecided[state.firstPlayer]) && h('button', {
-          onClick: () => { mulliganDecided[p] = true; afterMulliganCheck(); },
+          onClick: () => { if (netIntercept('keepHand', [p])) return; mulliganDecided[p] = true; afterMulliganCheck(); },
         }, '이 핸드 유지'),
       ].filter(Boolean)),
     ]);
   });
   app.appendChild(h('div', { className: 'su-wrap' }, [
     hero,
-    h('div', { className: 'su-more', style: 'margin-bottom:2px' }, [h('button', { title: '같은 덱으로 새로 셔플해 오프닝 핸드부터 다시 (혼자 연습용)', onClick: () => restartHand() }, '🎲 시작 핸드 다시 뽑기')]),
+    Net.NET.role === 'guest' ? h('div', { className: 'su-note' }, '🌐 온라인 대전 (게스트) — 방장의 화면을 따라갑니다') : h('div', { className: 'su-more', style: 'margin-bottom:2px' }, [h('button', { title: '같은 덱으로 새로 셔플해 오프닝 핸드부터 다시 (혼자 연습용)', onClick: () => restartHand() }, '🎲 시작 핸드 다시 뽑기')]),
     ...panels,
   ]));
   cpuMulliganMaybe();
+  netBroadcast();
 }
 
 function afterMulliganCheck() {
@@ -917,7 +1049,7 @@ function pumpReplacementPrompt() {
 let renderErrCount = 0;
 function render() {
   { const pa0 = sel && sel.pendingAttack; if (pa0 && pa0.rulesEnded && state && (state.turnNumber !== pa0.turn0 || state.phase !== 'main')) sel.pendingAttack = null; }
-  try { renderInner(); renderErrCount = 0; }
+  try { renderInner(); renderErrCount = 0; netBroadcast(); }
   catch (e) {
     console.error('render failed', e);
     try {
@@ -959,25 +1091,33 @@ function healIdleLeak() {
 }
 function renderInner() {
   if (!state) return renderSetup();
-  healIdleLeak();
-  settleTurnEndIfIdle();
-  pumpReplacementPrompt();
-  if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // 17-1-3-1 (rule-oracle): a recorded DP penalty that took effect lazily while no effect was resolving (15-15-5-2) is rule-checked at the next safe point
-  if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
-  E.autoAdvance(state);
-  autoRunMandatoryPending();
-  // 6-1-4: once memory sits on the opponent's side and there's genuinely
-  // nothing left to resolve (no pending effect, no attack/choice in
-  // progress), the turn ends immediately — don't wait for a manual "다음
-  // 페이즈" click. Checked on every render, so it also catches memory
-  // shifted by a card effect (e.g. an "어택 시 메모리 -2" effect) finishing
-  // resolution, not just the direct memory-spending actions that already
-  // called checkAutoEndTurn themselves.
-  if (state.phase === 'main' && !state.pending.length && !attackActive() && !state.uiChoice && !state.turnEnding) {
-    if (E.checkAutoEndTurn(state)) { // turn end begun (6-6-1): start resolving its effects / finish right away when none
-      settleTurnEndIfIdle();
-      E.autoAdvance(state);
-      autoRunMandatoryPending();
+  // A network GUEST's `state` is a thin mirror assigned wholesale from the host's last broadcast (see
+  // netOnState) — never actually driven by this engine locally. Running the same auto-advance/rule-check
+  // machinery the HOST runs here would, at best, duplicate work the host already did and re-broadcast, and at
+  // worst crash or diverge: the guest's copy is missing real ids for hidden zones (opponent hand/either deck)
+  // and `state.pending` entries had their script closures stripped by JSON transit (see docs/netplay-design.md).
+  // Only the host (netIntercept()===false path, i.e. Net.NET.role !== 'guest') runs this block.
+  if (Net.NET.role !== 'guest') {
+    healIdleLeak();
+    settleTurnEndIfIdle();
+    pumpReplacementPrompt();
+    if (state._rcPending && !(state._rcDepth > 0)) S.flushRuleChecks(state); // 17-1-3-1 (rule-oracle): a recorded DP penalty that took effect lazily while no effect was resolving (15-15-5-2) is rule-checked at the next safe point
+    if (BREED.auto && state.phase === 'breeding' && state.breedingActionTaken && !busy() && !state.winner) E.nextPhase(state); // setting: leave the breeding phase right after the hatch/move
+    E.autoAdvance(state);
+    autoRunMandatoryPending();
+    // 6-1-4: once memory sits on the opponent's side and there's genuinely
+    // nothing left to resolve (no pending effect, no attack/choice in
+    // progress), the turn ends immediately — don't wait for a manual "다음
+    // 페이즈" click. Checked on every render, so it also catches memory
+    // shifted by a card effect (e.g. an "어택 시 메모리 -2" effect) finishing
+    // resolution, not just the direct memory-spending actions that already
+    // called checkAutoEndTurn themselves.
+    if (state.phase === 'main' && !state.pending.length && !attackActive() && !state.uiChoice && !state.turnEnding) {
+      if (E.checkAutoEndTurn(state)) { // turn end begun (6-6-1): start resolving its effects / finish right away when none
+        settleTurnEndIfIdle();
+        E.autoAdvance(state);
+        autoRunMandatoryPending();
+      }
     }
   }
   // a full rebuild resets scroll positions — remember/restore them (essential on a phone where the board scrolls)
@@ -1055,10 +1195,10 @@ function renderTopbar() {
     bar,
     mbSummary(h, { turn: state.turnNumber, player: state.activePlayer.toUpperCase(), phase: PHASE_LABEL[state.phase] || state.phase, memory: state.memory }),
     h('span', { className: 'mem-top' + (state.memory > 0 ? ' plus' : state.memory < 0 ? ' minus' : '') }, `메모리 ${state.memory > 0 ? '+' : ''}${state.memory}`),
-    h('button', { className: state.phase === 'main' ? 'mb-hide-m' : '', disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
+    h('button', { className: state.phase === 'main' ? 'mb-hide-m' : '', disabled: state.phase === 'main' || cpuTurnView(), title: state.phase === 'main' ? '메인 페이즈는 패스로만 끝낼 수 있음 (룰 6-5-1-7)' : '', onClick: () => { if (netIntercept('skipBreeding', [])) return; if (blockIfBusy()) return; E.nextPhase(state); render(); } }, '다음 페이즈 ▶'),
     h('button', {
       className: 'danger' + (state.phase !== 'main' ? ' mb-hide-m' : ''), disabled: state.phase !== 'main' || cpuTurnView(),
-      onClick: () => { if (blockIfBusy()) return; if (passNeedsConfirm()) return; E.declarePass(state); render(); },
+      onClick: () => { if (netIntercept('pass', [])) return; if (blockIfBusy()) return; if (passNeedsConfirm()) return; E.declarePass(state); render(); },
     }, ['패스', passArmed() ? h('span', { className: 'pass-warn' }, ` ⚠ 지금 낼 수 있는 카드 ${passFreeCount()}장 — 한 번 더 누르면 패스`) : h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
     h('div', { className: 'mb-drawer' }, [
       PR.topbarButtons(),
@@ -1199,6 +1339,7 @@ function activeKeywordBadges(stack) {
 // opposing stack) being "dropped" on `stack`. Everything the drop did lives here so a tap does exactly the same.
 async function handleStackDrop(p, stack, zoneKind, drag) {
   if (!drag) return;
+  if (netIntercept('stackDrop', [p, stack.uid, zoneKind, drag])) return; // drag-drop evolve/attack — see doEvolve/attackFlow for the tap-flow equivalents
   // An opposing battle stack dropped directly onto this one is a direct
   // attack declaration on THIS specific digimon — no separate target-
   // choice menu needed, the drop location already said which target.
@@ -1309,8 +1450,8 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
 }
 function handDrag(p, idx) { const cardId = state.players[p].hand[idx]; return cardId == null ? null : { kind: 'hand', player: p, idx, cardId }; }
 // Tap-flow entry points (same code path as the drops).
-const doEvolve = (p, stackUid, handIdx) => { const st = findStack({ player: p, uid: stackUid }); const d = handDrag(p, handIdx); return st && d ? handleStackDrop(p, st, state.players[p].raising?.uid === st.uid ? 'raising' : 'battle', d) : undefined; };
-const doPlayFromHand = (p, handIdx) => playFreshFromDrag(handDrag(p, handIdx), p);
+const doEvolve = (p, stackUid, handIdx) => { if (netIntercept('evolve', [p, stackUid, handIdx])) return; const st = findStack({ player: p, uid: stackUid }); const d = handDrag(p, handIdx); return st && d ? handleStackDrop(p, st, state.players[p].raising?.uid === st.uid ? 'raising' : 'battle', d) : undefined; };
+const doPlayFromHand = (p, handIdx) => { if (netIntercept('play', [p, handIdx])) return; return playFreshFromDrag(handDrag(p, handIdx), p); };
 
 // Shared by the 🔗 badge drop AND the badge tap (hand card or another battle stack → link onto `stack`).
 async function handleLinkDrop(p, stack, drag) {
@@ -1346,6 +1487,7 @@ function stackActionList(p, stack, zoneKind) {
   const delayBody = zoneKind === 'battle' ? S.parseDelayEffect(S.card(stack.cardId).effectKo) : null;
   if (delayBody && p === state.activePlayer && state.phase === 'main' && state.turnNumber > stack.placedTurn) {
     out.push({ kind: 'delay', label: '🗑딜레이', title: `《딜레이》 발동: ${delayBody}`, run: () => {
+      if (netIntercept('useDelay', [p, stack.uid])) return;
       if (blockIfBusy()) return;
       const cardId = S.discardForDelay(state, p, stack.uid);
       if (cardId) state.pending.push({ uid: 'delay' + Math.random().toString(36).slice(2), player: p, cardId, stackUid: null, tags: ['메인'], text: delayBody, resolved: false });
@@ -1355,7 +1497,7 @@ function stackActionList(p, stack, zoneKind) {
   // ≪트레이닝≫ — activated main-phase ability (also usable from the raising area).
   if ((zoneKind === 'battle' || zoneKind === 'raising') && p === state.activePlayer && state.phase === 'main'
     && S.hasKeyword(stack, '트레이닝') && !stack.suspended && state.players[p].deck.length > 0) {
-    out.push({ kind: 'train', label: '🏋트레이닝', title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음', run: () => { if (blockIfBusy()) return; S.useTraining(state, p, stack.uid); render(); } });
+    out.push({ kind: 'train', label: '🏋트레이닝', title: '《트레이닝》 — 이 디지몬을 레스트시키고 덱 위 1장을 진화원 아래에 놓음', run: () => { if (netIntercept('train', [p, stack.uid])) return; if (blockIfBusy()) return; S.useTraining(state, p, stack.uid); render(); } });
   }
   // Activated 【메인】 abilities printed on Digimon/Tamer cards (incl. 《디지버스트》).
   const mainAbilities = (zoneKind === 'battle' || zoneKind === 'raising') ? S.activatableMainAbilities(state, p, stack, zoneKind) : [];
@@ -1364,6 +1506,7 @@ function stackActionList(p, stack, zoneKind) {
     out.push({ kind: 'main', label: mainAbilities.length > 1 ? `⚡메인${i + 1} · ${S.card(ab.cardId).nameKo}${ab.cardId === stack.cardId ? '' : '(진화원)'}` : '⚡메인', disabled: !payable, // 여러 개일 때 어느 카드의 효과인지(진화원 효과 포함) 이름으로 구분 // 15-8-4-4-1
       title: `【메인】 ${ab.text.replace(/\n/g, ' ')}${payable ? '' : ' — 처리 조건(비용)을 지금 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'}`,
       run: () => {
+        if (netIntercept('useMain', [p, stack.uid, i])) return;
         if (blockIfBusy()) return;
         if (!Effects.mainAbilityPayable(state, S, p, stack.uid, ab.cardId, ab.tags, ab.text)) { S.log(state, '처리 조건을 실행할 수 없어 발동을 선언할 수 없음 (룰 15-8-4-4-1)'); render(); return; }
         state.pending.push({ uid: 'main' + Math.random().toString(36).slice(2), player: p, cardId: ab.cardId, stackUid: stack.uid, tags: ab.tags, text: ab.text, resolved: false });
@@ -1441,6 +1584,7 @@ function openJogress(p, cardId, preUid) {
 }
 // The one engine path (rule 8-2): validate → cost incl. evolve-cost modifiers (8-2-2-5) → S.fuseStacks (stacking order 8-2-2-2, attack cleanup).
 async function runJogress(p, uidA, uidB, cardId) {
+  if (netIntercept('jogress', [p, uidA, uidB, cardId])) return false;
   const stA = findStack({ player: p, uid: uidA }), stB = findStack({ player: p, uid: uidB });
   if (!stA || !stB || !state.players[p].hand.includes(cardId)) return false;
   const jr = S.canJogress(stA, stB, cardId);
@@ -1646,6 +1790,7 @@ function renderStack(p, stack, zoneKind, opts = {}) {
 const askYN = (player, prompt) => ctxChoose('confirmEffect', { player, prompt, yesLabel: '예', noLabel: '아니오' });
 
 async function playFreshFromDrag(drag, p) {
+  if (netIntercept('playFreshFromDrag', [drag, p])) return;
   if (blockIfBusy()) return;
   if (!drag || drag.kind !== 'hand' || drag.player !== p || p !== state.activePlayer || state.phase !== 'main') return;
   const category = S.isDual(drag.cardId) ? 'option' : S.card(drag.cardId).category; // 4-6-2: a dual card dropped on the board is USED (option side); dropped on a Digimon it evolves (Digimon side)
@@ -1755,11 +1900,11 @@ function renderPlayerPanel(p) {
     zonePill(canMoveRaising ? '육성 에어리어 (카드 탭=배틀 이동)' : '육성 에어리어'),
     h('div', { className: 'hex-slot-row' }, [
       pl.raising
-        ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } } : {})
+        ? renderStack(p, pl.raising, 'raising', canMoveRaising ? { onClickOverride: () => { if (netIntercept('move', [p])) return; if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } } : {})
         : h('div', { className: 'empty-slot' }, '비어있음'),
       // digitama pile lives right next to the raising area it feeds, not
       // grouped with the unrelated deck/security/trash counters
-      pileChip(canHatch ? '디지타마 (탭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } : undefined),
+      pileChip(canHatch ? '디지타마 (탭=부화)' : '디지타마', pl.digitamaDeck.length, 'pile-digitama', canHatch ? () => { if (netIntercept('hatch', [p])) return; if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } : undefined),
     ]),
   ]);
 
@@ -1794,7 +1939,7 @@ function renderPlayerPanel(p) {
   const justDrawnCount = pl.pendingDrawFlash || 0;
   pl.pendingDrawFlash = 0;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
-    zonePill(isCpuSide(p) && !CPU_CFG.reveal && !state.winner ? `🤖 CPU 핸드 (${pl.hand.length}장, 비공개)` : [`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택'), (p === state.activePlayer && state.phase === 'main' && !isCpuSide(p)) ? h('span', { className: 'hint-legend' }, [' ', h('i', { className: 'lg-free' }, '■'), '지금 가능 ', h('i', { className: 'lg-evo' }, '■'), '진화 가능 ', h('i', { className: 'lg-costly' }, '■'), '메모리 초과(턴 넘어감) ', h('i', { className: 'lg-none' }, '■'), '불가']) : null]),
+    zonePill((isCpuSide(p) && !CPU_CFG.reveal && !state.winner) ? `🤖 CPU 핸드 (${pl.hand.length}장, 비공개)` : netHideHand(p) ? `🌐 상대 핸드 (${pl.hand.length}장, 비공개)` : [`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택'), (p === state.activePlayer && state.phase === 'main' && !isCpuSide(p)) ? h('span', { className: 'hint-legend' }, [' ', h('i', { className: 'lg-free' }, '■'), '지금 가능 ', h('i', { className: 'lg-evo' }, '■'), '진화 가능 ', h('i', { className: 'lg-costly' }, '■'), '메모리 초과(턴 넘어감) ', h('i', { className: 'lg-none' }, '■'), '불가']) : null]),
     ...(() => {
       if (isCpuSide(p)) return []; // the CPU's hand abilities are its own business
       // "[패]【메인】"/"[트래시]【메인】" abilities printed on Digimon/Tamer cards (usable from hand / trash in the main phase)
@@ -1808,7 +1953,7 @@ function renderPlayerPanel(p) {
         },
       }, `⚡메인(${a.zone === 'hand' ? '패' : '트래시'}) ${S.card(a.cardId).nameKo}`)))] : [];
     })(),
-    h('div', { className: 'hand-list', 'data-fxhand': p }, pl.hand.map((id, i) => (isCpuSide(p) && !CPU_CFG.reveal && !state.winner) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, {
+    h('div', { className: 'hand-list', 'data-fxhand': p }, pl.hand.map((id, i) => ((isCpuSide(p) && !CPU_CFG.reveal && !state.winner) || id == null || netHideHand(p)) ? h('div', { className: 'card-chip cpu-hidden' }, '🂠') : cardChip(id, {
       owner: p,
       selected: sel.hand && sel.hand.player === p && sel.hand.idx === i,
       draggable: p === state.activePlayer && state.phase === 'main' && !isCpuSide(p),
@@ -1840,7 +1985,12 @@ function renderPlayerPanel(p) {
 // Horizontal memory-gauge number line (-10..0..+10 with a position marker),
 // shared between both panels — mirrors the physical "메모리 게이지" strip.
 function renderMemoryTrack() {
-  // 아래쪽 플레이어(P1)가 플러스, 위쪽 플레이어(P2)가 마이너스. 플러스는 왼쪽으로 진행.
+  // 아래쪽 플레이어(P1)가 플러스, 위쪽 플레이어(P2)가 마이너스. 플러스는 왼쪽으로 진행 (이 좌우 배치는 엔진 부호
+  // 규약이라 화면과 무관하게 고정). 단, "아래/위"라는 방향 단어 자체는 온라인 대전에서 게스트 화면처럼 P1/P2가
+  // 뒤집혀 보일 때는 실제 패널 위치(bottomSeat)에 맞게 바꿔줘야 한다 — renderBoard()와 같은 원칙.
+  const bottomSeat = Net.NET.mySeat || 'p1';
+  const leftWord = bottomSeat === 'p1' ? '아래' : '위';
+  const rightWord = bottomSeat === 'p2' ? '아래' : '위';
   const m = state.memory;
   const cells = [];
   for (let n = 10; n >= 1; n--) cells.push({ n, side: 'bottom' });
@@ -1849,12 +1999,12 @@ function renderMemoryTrack() {
   const activeIdx = m > 0 ? 10 - m : m === 0 ? 10 : 10 + Math.abs(m);
   const numRow = h('div', { className: 'mem-numbers' },
     cells.map((c, i) => h('span', { className: `mem-num mem-${c.side}` + (i === activeIdx ? ' mem-active' : '') }, String(c.n))));
-  const who = m > 0 ? '아래 P1' : m < 0 ? '위 P2' : '';
+  const who = m > 0 ? `${leftWord} P1` : m < 0 ? `${rightWord} P2` : '';
   return h('div', { className: 'mem-track' }, [
     h('div', { className: 'mem-head' }, [
-      h('div', { className: 'mem-side mem-side-bottom' + (m > 0 ? ' on' : '') }, [h('span', {}, '◀ 아래 P1 (플러스)'), m > 0 ? h('b', {}, `+${m}`) : null]),
+      h('div', { className: 'mem-side mem-side-bottom' + (m > 0 ? ' on' : '') }, [h('span', {}, `◀ ${leftWord} P1 (플러스)`), m > 0 ? h('b', {}, `+${m}`) : null]),
       h('div', { className: 'mem-readout' }, m === 0 ? '메모리 0' : `메모리 ${who} ${Math.abs(m)}`),
-      h('div', { className: 'mem-side mem-side-top' + (m < 0 ? ' on' : '') }, [m < 0 ? h('b', {}, `${m}`) : null, h('span', {}, '위 P2 (마이너스) ▶')]),
+      h('div', { className: 'mem-side mem-side-top' + (m < 0 ? ' on' : '') }, [m < 0 ? h('b', {}, `${m}`) : null, h('span', {}, `${rightWord} P2 (마이너스) ▶`)]),
     ]),
     numRow,
   ]);
@@ -1862,11 +2012,18 @@ function renderMemoryTrack() {
 
 function renderBoard() {
   const over = !!state.winner; // game over: keep the final position visible (read-only) so the player can see why it ended
+  // 🌐 온라인 대전: each side's own field always renders at the BOTTOM of THEIR OWN screen (sit-across-the-table
+  // orientation), symmetric on both ends — host is always 'p1', guest is always 'p2' (see docs/netplay-design.md).
+  // Outside online play `Net.NET.mySeat` is null, so bottomSeat is always 'p1' here: byte-for-byte the previous
+  // fixed p2-top/p1-bottom order for CPU mode (human is always p1) and local 2p (an arbitrary shared convention
+  // that doesn't depend on orientation anyway) — this is additive-only for netplay.
+  const bottomSeat = Net.NET.mySeat || 'p1';
+  const topSeat = S.opponentOf(bottomSeat);
   return h('div', { className: 'board' + (over ? ' gameover-board' : '') }, [
     h('div', { className: 'table-surface' }, [
-      renderPlayerPanel('p2'),
+      renderPlayerPanel(topSeat),
       renderMemoryTrack(),
-      renderPlayerPanel('p1'),
+      renderPlayerPanel(bottomSeat),
     ]),
   ]);
 }
@@ -2422,6 +2579,10 @@ function renderModal() {
     const pr = state.uiChoice.payload && state.uiChoice.payload.prompt;
     return h('div', { className: 'cpu-choice-note' }, ['🤖 CPU가 선택 중…', pr ? h('div', { className: 'meta' }, String(pr).slice(0, 160)) : null]);
   }
+  if (state.uiChoice && uiChoiceByOpponentOnline(state.uiChoice)) { // 상대 자리의 결정: 읽기 전용으로만 보여준다 (버튼 없음)
+    const pr = state.uiChoice.payload && state.uiChoice.payload.prompt;
+    return h('div', { className: 'cpu-choice-note' }, ['⏳ 상대가 선택 중…', pr ? h('div', { className: 'meta' }, String(pr).slice(0, 160)) : null]);
+  }
   const choiceUi = renderUiChoice();
   if (choiceUi) {
     const uc = state.uiChoice, pr = String((uc.payload && uc.payload.prompt) || '').replace(/\s+/g, ' ');
@@ -2887,6 +3048,7 @@ function paBlock(pa, uid) {
 }
 
 function attackFlow(p, uid, directTarget, force = false, atkOpts = {}) {
+  if (!force && netIntercept('attack', [p, uid, directTarget])) return; // force=true attacks are effect-granted (script-driven on the host only, never a guest click) — never intercepted
   if (!force && blockIfBusy()) return;
   if (force) { // effect-granted attack ("이 디지몬으로 상대의 디지몬에게 어택할 수 있다"): with no legal target it cannot be declared at all (else the target picker had nothing to pick = softlock)
     const pre = findStack({ player: p, uid });
@@ -3017,7 +3179,7 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'actions-row' }, [
         h('button', {
           className: 'primary',
-          onClick: () => { pa.targetKind = 'player'; enterRedirectTiming(pa); render(); },
+          onClick: () => { if (netIntercept('pa.chooseTarget', ['PLAYER'])) return; pa.targetKind = 'player'; enterRedirectTiming(pa); render(); },
         }, `${pa.opp} 본체 공격`),
       ]));
     } else {
@@ -3030,6 +3192,7 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'stack-list' }, pa.digimonTargets.map(uid => {
         const st = state.players[pa.opp].battle.find(s => s.uid === uid);
         return cardChip(st.cardId, { owner: pa.opp, onClick: () => {
+          if (netIntercept('pa.chooseTarget', [uid])) return;
           pa.targetKind = 'digimon'; pa.targetUid = uid; enterRedirectTiming(pa); render();
         } });
       })));
@@ -3037,11 +3200,11 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'meta' }, '어택 대상이 될 레스트 상태의 상대 디지몬이 없음 (플레이어에게만 어택 가능)'));
     }
     if (!pa.canHitPlayer && (blockedByDynamic || !pa.digimonTargets.length)) { // nothing to pick: never leave the prompt without an exit
-      rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { pa.terminate(); } }, '어택 종료 (대상 없음)')]));
+      rows.push(h('div', { className: 'actions-row' }, [h('button', { onClick: () => { if (netIntercept('pa.close', [])) return; pa.terminate(); } }, '어택 종료 (대상 없음)')]));
     }
   } else if (pa.stage === 'redirectTiming' && !pa.paused) {
     if (pa.redirectOptions.length) rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 대상 변경 기회`));
-    pa.redirectOptions.forEach(opt => {
+    pa.redirectOptions.forEach((opt, optIdx) => {
       const tUid = opt.targetUid || opt.stackUid;
       const st = state.players[pa.opp].battle.find(s => s.uid === tUid);
       if (!st && !opt.toPlayer) return;
@@ -3050,6 +3213,9 @@ function renderPendingAttack() {
         h('span', {}, opt.label || (opt.toPlayer ? '플레이어(으)로 어택 대상 변경' : `${S.card(st.cardId).nameKo}(으)로 어택 대상 변경` + (tUid !== opt.stackUid && srcSt ? ` (${S.card(opt.cardId).nameKo})` : ''))),
         h('button', {
           onClick: async () => {
+            // Sent by index (not the option object itself): `opt.pay` is a closure and would not survive JSON
+            // transit — the host resolves it against its OWN (unstripped) `pa.redirectOptions[optIdx]`.
+            if (netIntercept('pa.useRedirect', [optIdx])) return;
             // card-specific redirects may carry a cost (opt.pay) and/or redirect to the player (opt.toPlayer)
             if (opt.pay) { const paid = await opt.pay(ctxChoose); if (!paid) { render(); return; } }
             if (opt.endsAttack) { endAttack(); render(); return; } // shard2: "그 어택을 종료한다"
@@ -3061,7 +3227,7 @@ function renderPendingAttack() {
         }, '변경'),
       ]));
     });
-    rows.push(h('button', { className: 'primary', onClick: () => { enterCounterTiming(pa); render(); } }, pa.redirectOptions.length ? '넘기기' : '진행 (카운터 단계로)'));
+    rows.push(h('button', { className: 'primary', onClick: () => { if (netIntercept('pa.passRedirect', [])) return; enterCounterTiming(pa); render(); } }, pa.redirectOptions.length ? '넘기기' : '진행 (카운터 단계로)'));
   } else if (pa.stage === 'counterTiming' && !pa.paused) {
     rows.push(h('div', { className: 'zone-label' }, `${pa.opp}의 카운터 기회`));
     pa.counters.forEach(opt => {
@@ -3069,11 +3235,11 @@ function renderPendingAttack() {
         h('span', {}, `${S.card(opt.cardId).nameKo}: ${opt.body}`),
         h('button', {
           disabled: !!pa.counterUsed,
-          onClick: () => paUseCounter(pa, opt),
+          onClick: () => { if (netIntercept('pa.useCounter', [opt])) return; paUseCounter(pa, opt); },
         }, '발동'),
       ]));
     });
-    rows.push(h('button', { className: 'primary', onClick: () => { enterBlockCheck(pa); render(); } }, '넘기기'));
+    rows.push(h('button', { className: 'primary', onClick: () => { if (netIntercept('pa.passCounter', [])) return; enterBlockCheck(pa); render(); } }, '넘기기'));
   } else if (pa.stage === 'digimonResult' && pa.paused) {
     if (pa.battlePreview) rows.push(renderVsBattle(pa.battlePreview.aCard, pa.battlePreview.aDp, pa.battlePreview.dCard, pa.battlePreview.dDp, null, pa.attacker, pa.opp));
   } else if (pa.stage === 'digimonResult') {
@@ -3087,7 +3253,7 @@ function renderPendingAttack() {
       if (survivorsWithKw.length) {
         rows.push(h('div', { className: 'actions-row' }, [
           h('span', {}, '≪전투후액티브≫ 액티브로 되돌리기?'),
-          ...survivorsWithKw.map(s => cardChip(s.cardId, { owner: pa.attacker, onClick: () => { S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
+          ...survivorsWithKw.map(s => cardChip(s.cardId, { owner: pa.attacker, onClick: () => { if (netIntercept('pa.unsuspendAfterBattle', [s.uid])) return; S.unsuspendStack(state, pa.attacker, s.uid); render(); } })),
         ]));
       }
     }
@@ -3103,11 +3269,11 @@ function renderPendingAttack() {
           // Piercing's bonus check is still part of THIS attack's single
           // "성립의 확인" — Counter/Block Timing already happened once for
           // this attack and don't repeat here.
-          onClick: () => { pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
+          onClick: () => { if (netIntercept('pa.pierce', [])) return; pa.targetKind = 'player'; runSecurityCheck(pa); render(); },
         }, '체크'),
       ]));
     } else {
-      rows.push(h('button', { onClick: () => { endAttack(); render(); } }, '닫기'));
+      rows.push(h('button', { onClick: () => { if (netIntercept('pa.close', [])) return; endAttack(); render(); } }, '닫기'));
     }
   } else if (pa.stage === 'blockCheck' && !pa.paused) {
     {
@@ -3120,7 +3286,7 @@ function renderPendingAttack() {
       pa.mandatoryBlock ? '≪충돌≫ — 상대는 반드시 블록해야 함, 막을 디지몬 선택:' : '≪블로커≫로 막을 디지몬 선택 (없으면 넘기기):'));
     rows.push(h('div', { className: 'stack-list' }, pa.blockers.map(s => cardChip(s.cardId, {
       owner: pa.opp,
-      onClick: () => paBlock(pa, s.uid),
+      onClick: () => { if (netIntercept('pa.block', [s.uid])) return; paBlock(pa, s.uid); },
     }))));
     { // why the others can't block (a human blocker wonders about every Digimon that is NOT offered)
       const no = state.players[pa.opp].battle.filter(x => S.card(x.cardId).category === 'digimon' && !pa.blockers.some(b => b.uid === x.uid));
@@ -3130,7 +3296,7 @@ function renderPendingAttack() {
       rows.push(h('div', { className: 'actions-row' }, [
         h('button', {
           className: 'primary',
-          onClick: () => { resolveFinalTarget(pa); render(); },
+          onClick: () => { if (netIntercept('pa.passBlock', [])) return; resolveFinalTarget(pa); render(); },
         }, '넘기기'),
       ]));
     }
@@ -3154,10 +3320,10 @@ function renderPendingAttack() {
         rows.push(h('div', { className: 'meta' }, '공격측 소멸 (생존 효과가 있다면 범용 도구로 처리)'));
         rows.push(h('button', {
           className: 'primary',
-          onClick: () => { endAttack(); render(); },
+          onClick: () => { if (netIntercept('pa.close', [])) return; endAttack(); render(); },
         }, '닫기'));
       } else {
-        rows.push(h('button', { onClick: () => { endAttack(); render(); }, }, '닫기'));
+        rows.push(h('button', { onClick: () => { if (netIntercept('pa.close', [])) return; endAttack(); render(); }, }, '닫기'));
       }
     }
   }
@@ -3385,7 +3551,7 @@ function breedingStatus() {
   else reason = '육성 에어리어의 카드를 배틀 에어리어로 이동할 수 있습니다. 부화/이동은 선택사항입니다.';
   return { p, canHatch, canMove, reason };
 }
-function breedingSkip() { if (!state || state.phase !== 'breeding' || busy() || cpuHumanLocked()) return; E.nextPhase(state); render(); }
+function breedingSkip() { if (!state || state.phase !== 'breeding' || busy() || cpuHumanLocked()) return; if (netIntercept('skipBreeding', [])) return; E.nextPhase(state); render(); }
 function renderBreedingBar() {
   if (!state || state.winner || state.phase !== 'breeding' || busy() || cpuTurnView()) return null;
   const { p, canHatch, canMove, reason } = breedingStatus();
@@ -3395,8 +3561,8 @@ function renderBreedingBar() {
     h('div', { className: 'breed-title' }, `🥚 ${p.toUpperCase()} 육성 페이즈`),
     h('div', { className: 'breed-reason' }, reason),
     h('div', { className: 'breed-btns' }, [
-      canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
-      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, ['⬆ ', h('span', { className: 'lbl-mob-hide' }, '배틀 에어리어로 '), '이동']) : null,
+      canHatch ? h('button', { className: 'breed-btn', onClick: () => { if (netIntercept('hatch', [p])) return; if (blockIfBusy()) return; S.hatchDigitama(state, p); render(); } }, '🥚 부화') : null,
+      canMove ? h('button', { className: 'breed-btn', onClick: () => { if (netIntercept('move', [p])) return; if (blockIfBusy()) return; S.moveRaisingToBattle(state, p); render(); } }, ['⬆ ', h('span', { className: 'lbl-mob-hide' }, '배틀 에어리어로 '), '이동']) : null,
       h('button', { className: 'breed-btn breed-skip' + (nothingElse ? ' primary' : ''), title: '단축키: Space / Enter', onClick: breedingSkip }, ['⏭ ', MB.compact ? '넘김' : '아무것도 안 함 → 메인 페이즈로']),
     ]),
     h('button', { className: 'breed-info', title: '설명 보기', 'aria-label': '설명', onClick: (e) => e.currentTarget.closest('.breed-bar').classList.toggle('show-reason') }, 'ⓘ'),
