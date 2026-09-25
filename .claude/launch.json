@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["--yes", "serve", "-l", "5588", "D:\\닼웤롴덬\\digimon-sim"],
       "port": 5588
+    },
+    {
+      "name": "digimon-sim-standalone-dist",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["--yes", "serve", "-l", "5589", "D:\\닼웤롴덬\\digimon-sim\\dist"],
+      "port": 5589
     }
   ]
 }
