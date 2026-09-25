@@ -79,46 +79,71 @@ hk('BT24-064', { tag: '서로의 턴', has: '디지몬/테이머가 레스트했
 hk('BT24-030', { tag: '서로의 턴', has: '이 디지몬이 레스트가 되었을 때', limit: 1, events: { rest: (state, hp, h, info) => info.stack === h } });
 
 // =====================================================================================================================
-// C. "이 디지몬이 (자신의 효과 이외로) 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원/링크 카드에서 … 등장" (onLeave: the stack is already gone,
-//    its cards are in the trash; pending.evt.sources / .linkCards list them)
-// =====================================================================================================================
-async function pickIdx(ctx, who, ids, idxs, prompt) {
-  if (!idxs.length) return null;
-  const pl = ctx.state.players[who];
-  pl.s38tmp = ids;
-  try { return await ctx.choose('pickFromZoneIndex', { player: who, zone: 's38tmp', eligibleIdxs: idxs, prompt }); } finally { delete pl.s38tmp; }
+// C. "이 디지몬이 (자신의 효과 이외로) 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원/링크 카드에서 … 등장" — printed "벗어날 때" (prospective
+//    tense) is 즉시형 (15-8-5-1), not 유발형: it must interrupt BEFORE the stack actually leaves, reading the still-live evolution
+//    sources / link cards, and it must NOT by itself stop the leave (the leave still happens afterward — same "passive immediate
+//    effect" shape as ≪머티리얼 세이브≫, see applyMaterialSave in state.js). Wired as a `preventLeaveOptions` candidate with
+//    `passive: true` so it plugs into the SAME 18-2 replacement gate as ≪회피≫/≪방벽≫/etc: every eligible card is its own candidate,
+//    the player may pick this ability, decline it, or (per official Q6250 for BT23-032/シャッコウモン) instead pick a genuine
+//    "prevent leaving" candidate like ≪방벽≫ granted by an evolution source. Order matters exactly like the ruling describes: if the
+//    player resolves THIS ability first and plays away the very source card that was granting ≪방벽≫, a fresh probe (see
+//    resumeReplacement's post-passive re-run) correctly finds ≪방벽≫ no longer available. (The reverse — using ≪방벽≫ first and
+//    STILL getting to use this ability afterward, per the full Q6250 answer — is not modelled: once a non-passive survive candidate
+//    succeeds, deleteStackCore returns immediately and no further candidates for this stack are offered. See
+//    docs/effect-classification-rules.md 후속 조치 for this known remaining gap.)
+function leaveBonusOptions(listKey, pred, limit, causeOk) {
+  return (state, hp, holder, target, tp, cause, mode, cid) => {
+    if (!holder || target !== holder) return []; // "이 디지몬이 ~벗어날 때": only the holder's own leave
+    if (causeOk && !causeOk(cause)) return [];
+    const d = { tag: '서로의 턴', has: listKey === 'linkCards' ? '이 디지몬의 링크 카드' : '이 디지몬의 진화원' };
+    if (limit != null && S.turnUsesRemaining(holder, S.onceLimitKey(cid, [d.tag, d.has]), limit) <= 0) return [];
+    const list = listKey === 'linkCards'
+      ? (holder.linkCards || []).map((l) => l.cardId)
+      : holder.sources.filter((_, i) => i >= S.fdCount(holder));
+    const seen = new Set(), out = [];
+    for (const cardId of list) {
+      if (seen.has(cardId) || !pred(cardId)) continue; // identical duplicate cards are the same choice
+      seen.add(cardId);
+      out.push({
+        passive: true,
+        apply() {
+          if (limit != null && !S.hookUseOnce(holder, cid, d, limit)) return false;
+          const pl = state.players[hp];
+          if (listKey === 'linkCards') {
+            const at = holder.linkCards.findIndex((l) => l.cardId === cardId);
+            if (at < 0) return false;
+            pl.trash.push(holder.linkCards.splice(at, 1)[0].cardId);
+          } else {
+            const at = holder.sources.lastIndexOf(cardId); // topmost matching source (identical duplicates are interchangeable)
+            if (at < S.fdCount(holder)) return false;
+            holder.sources.splice(at, 1);
+            S.recomputeStackGrants(holder);
+            pl.trash.push(cardId);
+          }
+          const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true });
+          if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, ${listKey === 'linkCards' ? '링크 카드' : '진화원'} ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+          return !!st;
+        },
+      });
+    }
+    return out;
+  };
 }
-async function playLeft(ctx, listKey, pred, label) {
-  const evt = evtOf(ctx); if (!evt) return;
-  const pl = ctx.state.players[ctx.self];
-  const cand = (evt[listKey] || []).filter((id) => pl.trash.includes(id) && pred(id));
-  if (!cand.length) return;
-  const uniq = [...new Set(cand)];
-  const k = uniq.length === 1 ? 0 : await pickIdx(ctx, ctx.self, uniq, uniq.map((_, i) => i), `${label} 선택 (취소=안 함)`);
-  if (k == null) return;
-  if (uniq.length === 1 && !(await confirm(ctx, `${C(uniq[0]).nameKo}을(를) 코스트를 지불하지 않고 등장시킬까요?`))) return;
-  const i = pl.trash.lastIndexOf(uniq[k]);
-  if (i >= 0) S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, { fromSources: listKey === 'sources' });
-}
-const notOwnEffect = (state, hp, stack, cause) => cause !== 'ownEffect';
+const notOwnEffect = (cause) => cause !== 'ownEffect';
 { // BT23-023 / BT23-032: 자신의 효과 이외로 …, 이 디지몬의 진화원에서 Lv.4 이하의, 특징 「CS」를 가지거나 <색>인 디지몬 카드 1장 (both the card's own text and inherited copy)
   const cfg = { 'BT23-023': ['blue'], 'BT23-032': ['yellow', 'black'] };
   for (const [id, cols] of Object.entries(cfg)) {
     const pred = (x) => C(x).category === 'digimon' && (C(x).level ?? 99) <= 4 && (hasT(x, 'CS') || (C(x).colors || []).some((c) => cols.includes(c)));
-    for (const src of ['effectKo', 'inheritedKo']) {
-      hk(id, { tag: '서로의 턴', src, has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: notOwnEffect, noAuto: true });
-    }
-    sc(`${id}::서로의 턴@벗어날 때`, async (ctx) => { await playLeft(ctx, 'sources', pred, '등장시킬 진화원 카드'); });
+    const opts = leaveBonusOptions('sources', pred, 1, notOwnEffect);
+    for (const src of ['effectKo', 'inheritedKo']) hk(id, { tag: '서로의 턴', src, has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', preventLeaveOptions: opts });
   }
 }
 // BT22-081 / BT22-082: 【서로의 턴】 이 디지몬이 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원에서 「…」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
 for (const [id, nm] of [['BT22-081', '카미시로 유코'], ['BT22-082', '사나다 아라타']]) {
-  hk(id, { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', onLeave: () => true, noAuto: true });
-  sc(`${id}::서로의 턴@벗어날 때`, async (ctx) => { await playLeft(ctx, 'sources', (x) => S.cardNames(x).includes(nm), `등장시킬 「${nm}」`); });
+  hk(id, { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: leaveBonusOptions('sources', (x) => S.cardNames(x).includes(nm), null, null) });
 }
 // BT22-075: 【서로의 턴】[턴 1회] 이 디지몬이 배틀 에어리어를 벗어날 때, 이 디지몬의 링크 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
-hk('BT22-075', { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', limit: 1, onLeave: () => true, noAuto: true });
-sc('BT22-075::서로의 턴@벗어날 때', async (ctx) => { await playLeft(ctx, 'linkCards', (x) => C(x).category === 'digimon', '등장시킬 링크 카드'); });
+hk('BT22-075', { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: leaveBonusOptions('linkCards', (x) => C(x).category === 'digimon', 1, null) });
 
 // =====================================================================================================================
 // D. compile fixes (generic compile dropped a clause / mis-ordered / lost a "대신")

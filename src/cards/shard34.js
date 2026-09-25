@@ -65,8 +65,11 @@ sc('BT10-068::진화 시', async (ctx, R) => {
   const until = ctx.state.activePlayer === ctx.self ? ctx.state.turnNumber + 1 : ctx.state.turnNumber;
   await R.runOne({ op: 'modifyDPAll', target: 'self', amount: 2000, duration: 'nextOpponentTurn' }, ctx);
   for (const s of pl.battle.filter(x => C(x.cardId).category === 'digimon')) {
-    S.grantShield(ctx.state, ctx.self, s.uid, { kinds: ['bounce'], until });
-    (s.s1 = s.s1 || {}).noNegDP = until;
+    // 'dpDown' shield (not the ad hoc s1.noNegDP flag): goes through grantGate/effectBlocked, so a negative DP already
+    // applied by an OPPONENT's effect before this resolves is retroactively undone (settleDeferred) — matching the
+    // official ruling ("DP가 마이너스되지 않는다" restores original DP, then this effect's own +2000 applies on top).
+    // noNegDP would also (incorrectly) have blocked the OWNER's own DP-reducing effects, which this text never protects against.
+    S.grantShield(ctx.state, ctx.self, s.uid, { kinds: ['bounce', 'dpDown'], until });
   }
 });
 
@@ -307,13 +310,18 @@ sc('BT11-112::서로의 턴', async (ctx, R) => {
   const evUid = ctx.trigger?.evtStackUid;
   const dg = evUid ? pl.battle.find(s => s.uid === evUid) : null;
   if (!dg || !isDig(dg) || !C(dg.cardId).nameKo.includes('브이드라몬')) return;
+  if (S.evoTrigSuppressed(ctx.state, ctx.self, dg)) return; // Q7198: 「【진화 시】 효과는 발휘하지 않는다」가 걸려 있다면 이 효과로도 발휘할 수 없음
   const segs = S.parseEffectSegments(C(dg.cardId).effectKo || '').segments.filter(sg => sg.tags.some(t => t.includes('진화 시')));
   if (!segs.length) return;
   let seg = segs[0];
   if (segs.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: '발휘할 【진화 시】 효과 선택', options: segs.map(sg => sg.body.replace(/\n/g, ' ').slice(0, 60)) }); if (k != null) seg = segs[k]; }
+  // Q7199 (공식 Q&A): 대상 카드 자신의 [턴 N회] 상한을 이번 턴 이미 다 썼다면, 이 효과로도 발휘할 수 없다.
+  const lm = String(seg.body || '').trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/);
+  const onceKey = lm ? S.onceLimitKey(dg.cardId, seg.tags) : null;
+  if (onceKey && S.turnUsesRemaining(dg, onceKey, Number(lm[1])) <= 0) { S.log(ctx.state, `${C(dg.cardId).nameKo} 【${seg.tags.join('】【')}】 효과는 이번 턴 사용 횟수를 넘어서 발휘할 수 없음`); return; }
   const Fx = await import('../effects.js');
   const script = Fx.lookupCardSpecific(dg.cardId, seg.tags, seg.body) || Fx.compileToScript(seg.body);
-  if (script && script.length) await R.runScript(script, { ...ctx, sourceCardId: dg.cardId, sourceStackUid: dg.uid });
+  if (script && script.length) { await R.runScript(script, { ...ctx, sourceCardId: dg.cardId, sourceStackUid: dg.uid }); if (onceKey) S.markTurnEffectUsed(dg, onceKey); }
   else S.log(ctx.state, `${C(dg.cardId).nameKo} 【진화 시】 효과를 자동 처리할 수 없음: ${seg.body}`);
 });
 

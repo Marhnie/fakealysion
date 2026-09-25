@@ -34,4 +34,24 @@ T(3, '이미 쓴 [턴 1회] 효과는 발동 대기 목록에도 올라오지 �
   ok('턴 제한 없는 소멸 효과는 대기열에 있음', st.pending.filter(x => !x.resolved).length >= 1);
   await drain(st);
 });
+T(4, '드레인 없이 같은 트리거가 연달아 큐잉돼도 [턴 1회] 사본은 하나만 대기한다 (유령 옵션 버그)', async () => {
+  // 버그 재현: 같은 타이밍에 두 트리거 창이 겹쳐 드레인 전에 queueTriggersForStack이 두 번 불리면(15-4-3-2),
+  // 첫 사본이 아직 turnEffectUses를 올리지 않았으므로 두 번째 사본도 큐잉을 통과해 — 첫 사본을 쓴 뒤에도
+  // 화면에 선택 가능해 보이지만 실행하면 아무 일도 안 하는 유령 옵션이 남았다.
+  const { st, m } = setup();
+  S.queueTriggersForStack(st, 'p1', m, 'attack');
+  S.queueTriggersForStack(st, 'p1', m, 'attack'); // 드레인 없이 곧바로 다시 큐잉
+  const onceCopies = st.pending.filter(x => !x.resolved && /^\[턴 1회\]/.test(String(x.text).trim()));
+  eq('[턴 1회] 사본은 단 하나만 대기 (유령 사본 없음)', onceCopies.length, 1);
+  await drain(st);
+  ok('그 하나는 정상적으로 발동해 액티브가 됨', !m.suspended);
+});
+T(5, '서로 다른 [턴 1회] 여부의 두 세그먼트는 같은 태그를 공유해도 둘 다 큐잉된다 (회귀 방지)', async () => {
+  // T4의 수정이 오탐하지 않는지 확인: 마그네틱드라몬의 두 효과(무제한 소멸 효과 / [턴 1회] 액티브 효과)는
+  // 둘 다 【진화 시】【어택 시】 태그를 쓰지만 본문이 다르므로, 하나의 진화 트리거로 둘 다 큐잉돼야 한다.
+  const { st, m } = setup();
+  S.queueTriggersForStack(st, 'p1', m, 'digivolve');
+  eq('두 세그먼트 모두 대기열에 올라옴', st.pending.filter(x => !x.resolved).length, 2);
+  await drain(st);
+});
 await runAll('qa-magnetdramon-once');

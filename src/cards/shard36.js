@@ -173,14 +173,16 @@ sc('BT17-082::등장 시', async (ctx, R) => {
   await R.runOne({ op: 'moveEach', who: 'self', from: ['hand', 'sources'], groups: [{ filter: { exactAny: ['래브라몬', '시사몬'], category: 'digimon' }, max: 1, label: '「래브라몬」/「시사몬」' }], dest: 'play', rested: false, noTriggers: false }, ctx);
 });
 // BT17-078 (등장/진화 시): 조그레스 진화하고 있었다면 상대의 디지몬 1마리를 선택, 그 디지몬과 같은 Lv.의 상대의 디지몬 전부를 덱 아래로. 그 후 상대의 디지몬 1마리를 소멸 (generic did it in the wrong order / returned everything)
+// 룰링: "조그레스 진화하고 있었다면" 조건을 만족하지 못해도 "그 후" 이하의 소멸 효과는 그대로 발휘된다 (조건은 앞 절만 제한함).
 const sc078 = async (ctx, R) => {
   const { state } = ctx, h = holderOf(ctx);
-  if (!h || !h.viaFusion) return;
-  const opl = state.players[ctx.opp];
-  const chosen = await pickUid(ctx, ctx.self, opl.battle.filter(isDigimon), '선택할 상대의 디지몬 (같은 Lv.의 상대 디지몬 전부를 덱 아래로)');
-  if (chosen) {
-    const lv = C(chosen.cardId).level;
-    await R.runOne({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter: { level: lv, category: 'digimon' }, requireSuspended: null, dest: 'deckBottom' }, ctx);
+  if (h && h.viaFusion) {
+    const opl = state.players[ctx.opp];
+    const chosen = await pickUid(ctx, ctx.self, opl.battle.filter(isDigimon), '선택할 상대의 디지몬 (같은 Lv.의 상대 디지몬 전부를 덱 아래로)');
+    if (chosen) {
+      const lv = C(chosen.cardId).level;
+      await R.runOne({ op: 'returnToHandStripSources', target: 'opponent', all: true, filter: { level: lv, category: 'digimon' }, requireSuspended: null, dest: 'deckBottom' }, ctx);
+    }
   }
   await R.runOne({ op: 'destroy', target: 'opponent', mode: 'choose' }, ctx);
 };

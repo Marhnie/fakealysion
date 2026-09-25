@@ -155,16 +155,13 @@ D('EX2-036', '서로의 턴', '1장마다', { dp: (state, hp, holder, target, tp
 D('EX2-043', '자신의 턴', '패를 파기', { limit: 1, events: { discard: (state, hp, holder, info) => info.owner === hp && !!state._fxSrc && state._fxSrc.player === hp } });
 // EX2-054 ADR-09=게이트 키퍼 【상대의 턴】 진화원을 6장 이상 가진 자신의 「마더 디·리퍼」가 있는 동안 상대 디지몬 전부는 《S 어택 -1》 (compiled as a one-shot permanent grant that never ran)
 D('EX2-054', '상대의 턴', '마더 디·리퍼', { sAtkOpp: (state, hp, holder, aStack) => (state.players[hp].battle.some(s => C(s.cardId).nameKo === '마더 디·리퍼' && s.sources.length >= 6) ? -1 : 0) });
-// EX2-056 오유민 【자신의 턴】 자신의 디지몬이 명칭에 「듀크몬」/「그라우몬」을 포함하는 디지몬으로 진화할 때, 이 턴 동안 그 디지몬은 「【진화 시】《진격》」을 얻는다 (was a manual noop):
-// the evolved digimon's 【진화 시】 《진격》 is queued as an extra pending effect for that digimon
-D('EX2-056', '자신의 턴', '듀크몬', { events: { digivolve: (state, hp, holder, info) => {
-  if (info.owner !== hp || !info.stack || !isDigimon(info.stack)) return false;
-  const nm = C(info.stack.cardId).nameKo;
-  if (!(nm.includes('듀크몬') || nm.includes('그라우몬'))) return false;
-  S.queuePending(state, { player: hp, cardId: 'EX2-056', stackUid: info.stack.uid, tags: ['진화 시'], text: '《진격》', topId: info.stack.cardId, evt: { kind: 'digivolve' } });
-  S.log(state, `${hp} 오유민: ${nm}은(는) 이 턴 【진화 시】 《진격》을 얻음`);
-  return false; // handled here — nothing more to queue from the segment text
-} }, skipTrigger: true });
+// EX2-056 오유민 【자신의 턴】 자신의 디지몬이 명칭에 「듀크몬」/「그라우몬」을 포함하는 디지몬으로 진화할 때, 이 턴 동안 그 디지몬은 「【진화 시】《진격》」을 얻는다
+// — "진화할 때" is prospective tense = 즉시형 (15-8-5-1, docs/effect-classification-rules.md): the grant must land BEFORE this SAME
+// digivolve's own 【진화 시】 triggers are queued, so it now lives in src/cards/shard2.js's beforeDigivolve (called at the exact digivolve
+// call site right before queueTriggersForStack), not a post-hoc events.digivolve hook (which only ran after that queueing already
+// happened, always missing the current digivolve's own trigger window). This empty descriptor (no .events) exists only so the coverage
+// audit's hookDescriptorFor exception still matches this segment — same convention used for BT14-018's beforeDigivolve half.
+D('EX2-056', '자신의 턴', '듀크몬', {});
 // EX2-064 앨리스 맥코이 【자신의 턴】〔턴에 1회〕 Lv.5인 자신의 디지몬이 Lv.6으로 진화할 때, 자신의 디지몬 1마리를 소멸시키는 것으로 지불하는 진화 코스트 -3 (was a manual noop)
 D('EX2-064', '자신의 턴', 'Lv.6으로', { s1evoOption: (state, hp, holder, info) => {
   if (info.p !== hp || state.activePlayer !== hp || !isDigimon(info.stack) || C(info.stack.cardId).level !== 5 || C(info.targetId).category !== 'digimon' || C(info.targetId).level !== 6) return null;

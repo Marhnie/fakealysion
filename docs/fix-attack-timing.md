@@ -38,6 +38,16 @@
 | 【어택 종료 시】 | 11-6-2 | 보류: endAttack이 큐잉 전에 attackCtx를 비움 (어택 종료 시에서 어택하는 카드는 없음, 검색 0건) |
 | 시뮬 전투 유발 순서 (양 플레이어) | 4-3-2 | OK |
 
+## 추가 수정 (2026-09) — 효과가 만든 어택(ctx.startAttack)이 턴 종료와 경쟁하던 문제
+
+**증상 (실사용 버그 리포트)**: EX13-045 엑자몬 【진화 시】("조그레스 진화하고 있었다면, 이 디지몬으로 어택하고, …")의 강제 어택이 즉시 일어나지 않고 다음 턴에야 (또는 아예) 일어남.
+
+**원인**: `src/main.js`의 `ctx.startAttack`은 어택 전체(`S.declareAttack` + `pa`/`state.attackCtx` 생성 포함)를 `setTimeout(fn, 0)`으로 한 틱 미뤘다. 트리거 스크립트가 그 호출 뒤에 더 이상 기다릴 게 없으면(예: 상대 디지몬이 없어 "그 후" 보너스 배틀을 묻지 않고 바로 끝남) 스크립트가 끝난 직후의 같은 렌더에서 `renderInner()`가 `E.checkAutoEndTurn()`을 호출하는데, 이 호출은 `!attackActive()`(`sel.pendingAttack`)만 볼 뿐 아직 세팅되지 않은 `sel.atkQueued`는 보지 않는다. 그래서 진짜 선언(`S.declareAttack`)이 일어나기도 전에 턴 종료가 통째로(`beginTurnEnd`→`settleTurnEnd`) 동기적으로 끝나버렸다. 그 뒤 setTimeout 콜백이 실행될 땐 `state.activePlayer`가 이미 바뀌어 있어 `declareAttack`의 11-2-1 체크(`attackerP !== state.activePlayer`)에 조용히(로그 없이) 막힘 — 브라우저(`window.__dbg()`)로 `sel.atkQueued`/`sel.pendingAttack`/`state.attackCtx`/`state.turnEnding`/`state.turnNumber`에 트레이스를 걸어 실측 확인함.
+
+**수정**: `ctx.startAttack`이 `attackFlow()`를 (setTimeout 없이) 그 자리에서 동기 호출하도록 변경 — `attackFlow`는 이미 대상이 정해져 있을 때만 `fireDeclare`(=`queueTriggersForStack(...,'attack')`)를 같이 실행하고, 대상이 없으면(플레이어/CPU가 나중에 고름) 기존 그대로 대기하므로 별도의 "선언만 즉시" 경로를 새로 만들 필요가 없었다. 이미 다른 어택이 진행 중이면(11-2-3, 공식 Q&A 3123) 예전처럼 조용히 버리지 않고 로그를 남긴다.
+
+**검증**: 위 트레이스를 수정 전/후로 비교 — 수정 전엔 `atkQueued=1`→`turnEnding=true/false`→`turnNumber+1` 순으로 어택이 선언되기 전에 턴이 끝났고, 수정 후엔 같은 틱에서 `atkQueued=1`→`pendingAttack=true`→`attackCtx=true`가 찍히고 `turnNumber`는 그대로였다. 회귀 테스트: `scripts/qa/qa-ex13-045-jogress-attack-timing.mjs` (헤드리스 하네스는 이 setTimeout 경합 자체가 없어 대신 "체크되는 계약" — 큐잉된 어택은 `checkAutoEndTurn` 전에 반드시 먼저 완전히 해결돼야 함 — 을 엔진 레벨에서 고정; Q2927/BT18-018 케이스 포함).
+
 ## DCGO(디지몬 카드게임 온라인) 조사
 웹 검색/페이지 확인 결과 얻은 정보는 제한적이다 (설계 문서는 없고 패치 노트와 저장소 구조만 확인).
 - DCGO2/DCGO-Card-Scripts: `AttackProcess.cs`, `AutoProcessing.cs`, `CardEffectFactory.cs`/`CardEffectCommons.cs`로 어택 진행/자동 처리/카드 효과 팩토리를 분리. 진행은 [어택 시] -> [카운터 > 블록] -> [성립 확인] 순서. 우리 구조(카드별 스크립트 + 공통 큐)와 방향이 같다.

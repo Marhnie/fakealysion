@@ -29,7 +29,7 @@ const out = {};
 for (const c of raw) {
   const kor = c.localeCardData?.find(l => l.locale === 'KOR');
   const eng = c.localeCardData?.find(l => l.locale === 'ENG');
-  const colors = [c.color1, c.color2].filter(Boolean).map(x => x.toLowerCase());
+  const colors = [c.color1, c.color2, c.color3].filter(Boolean).map(x => x.toLowerCase());
   const entry = {
     id: c.cardNo,
     cardId: c.cardId,

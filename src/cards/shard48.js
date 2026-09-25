@@ -62,8 +62,16 @@ sc('BT10-066::서로의 턴', async (ctx) => {
   S.playFreeFromZone(state, ctx.self, 'trash', pi, { fromSources: true });
 });
 
-// ------------------------------------------------------------------ AD1-006 【서로의 턴】 leaves the battle area other than by DigiXros: put up to 4 evolution cards with 「크로스 하트」/「블루 플레어」 under one of your Tamers, then play 1 of them free
+// ------------------------------------------------------------------ AD1-006 【서로의 턴】 leaves the battle area other than by DigiXros: put up to 4 evolution cards with 「크로스 하트」/「블루 플레어」 under one of your Tamers, then play 1 (a DIFFERENT, still-remaining) one of them free
 // (the evolution cards are already in the trash when the leave trigger resolves; evt.sources lists them)
+// official Q&A (6059-6063): the "up to 4 placed under a Tamer" group and the "1 played free" card are drawn from the
+// SAME shared pool of eligible (특징 「크로스 하트」/「블루 플레어」) source cards, consumed in order — NOT "place N,
+// then re-summon one of those same N cards". Placing under a Tamer is mandatory (at least 1, up to 4, whenever a
+// Tamer exists and the effect is activated at all — Q6062); the free summon then comes from whatever of the pool
+// remains AFTERWARD, so with exactly 1 eligible card total it gets consumed by the mandatory placement and there is
+// nothing left to summon (Q6062, "다만 진화원이 1장뿐인 경우 그 카드는 먼저 테이머 아래에 놓이고, 등장시킬 수 없다").
+// With NO Tamer at all, the placement step is simply skipped (nothing to place a card under) and the summon proceeds
+// straight from the whole pool (Q6063).
 hk('AD1-006', { tag: '서로의 턴', has: '디지크로스 이외로', onLeave: (state, p, stack, cause) => cause !== 'xros' });
 sc('AD1-006::서로의 턴', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
@@ -73,26 +81,25 @@ sc('AD1-006::서로의 턴', async (ctx) => {
   const idxs = () => { const rest = pool.slice(); const out = []; pl.trash.forEach((id, i) => { const k = rest.indexOf(id); if (k >= 0) { rest.splice(k, 1); if (isT(id)) out.push(i); } }); return out; };
   if (!idxs().length) return;
   const tamers = state.players[ctx.self].battle.filter(s => C(s.cardId).category === 'tamer');
-  if (!tamers.length) return;
-  if (!(await ask(ctx, '진화원의 「크로스 하트」/「블루 플레어」 카드를 최대 4장 테이머 아래에 놓고, 1장을 코스트 없이 등장시킬까요?'))) return;
-  const tm = tamers.length === 1 ? tamers[0] : findStack(state, ctx.self, await ctx.choose('pickStack', { player: ctx.self, uids: tamers.map(s => s.uid), prompt: '카드를 아래에 놓을 테이머 선택' }));
-  if (!tm) return;
-  const placed = [];
-  for (let n = 0; n < 4; n++) {
-    const el = idxs();
-    if (!el.length) break;
-    const i = el.length === 1 && n === 0 ? el[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: el, prompt: `테이머 아래에 놓을 카드 선택 (${n + 1}/4, 선택 안 함 = 종료)`, ...(n === 0 ? { required: true } : {}) }); // Q6062: 발동한 이상 최소 1장은 반드시 놓아야 한다(고르는 카드만 임의) — 2번째부터는 "4장까지" 선택
-    if (i == null || !el.includes(i)) break;
-    const id = pl.trash[i];
-    pool.splice(pool.indexOf(id), 1);
-    if (S.saveCardUnderTamer(state, ctx.self, id, tm.uid)) placed.push(id);
+  if (!(await ask(ctx, tamers.length ? '진화원의 「크로스 하트」/「블루 플레어」 카드를 최대 4장 테이머 아래에 놓고, 남은 카드 중 1장을 코스트 없이 등장시킬까요?' : '진화원의 「크로스 하트」/「블루 플레어」 카드 1장을 코스트 없이 등장시킬까요?'))) return;
+  if (tamers.length) {
+    const tm = tamers.length === 1 ? tamers[0] : findStack(state, ctx.self, await ctx.choose('pickStack', { player: ctx.self, uids: tamers.map(s => s.uid), prompt: '카드를 아래에 놓을 테이머 선택' }));
+    if (tm) {
+      for (let n = 0; n < 4; n++) {
+        const el = idxs();
+        if (!el.length) break;
+        const i = el.length === 1 && n === 0 ? el[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: el, prompt: `테이머 아래에 놓을 카드 선택 (${n + 1}/4, 선택 안 함 = 종료)`, ...(n === 0 ? { required: true } : {}) }); // Q6062: 발동한 이상 최소 1장은 반드시 놓아야 한다(고르는 카드만 임의) — 2번째부터는 "4장까지" 선택
+        if (i == null || !el.includes(i)) break;
+        const id = pl.trash[i];
+        pool.splice(pool.indexOf(id), 1);
+        S.saveCardUnderTamer(state, ctx.self, id, tm.uid);
+      }
+    }
   }
-  const cand = placed.filter(id => C(id).category === 'digimon');
-  if (!cand.length) return;
-  if (!(await ask(ctx, '테이머 아래에 놓은 카드 중 1장을 코스트 없이 등장시킬까요?'))) return;
-  const pid = cand.length === 1 ? cand[0] : cand[await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 's48tmp', eligibleIdxs: cand.map((_, i) => i), prompt: '등장시킬 카드 선택' }) ?? 0];
-  const k = tm.sources.indexOf(pid);
-  if (k < 0) return;
-  tm.sources.splice(k, 1); pl.trash.push(pid);
-  S.playFreeFromZone(state, ctx.self, 'trash', pl.trash.length - 1, {});
+  const rest = idxs(); // Q6059/6062/6063: whatever of the eligible pool is STILL in the trash — never a card just placed under the Tamer
+  if (!rest.length) return;
+  if (!(await ask(ctx, '남은 진화원 카드 중 1장을 코스트 없이 등장시킬까요?'))) return;
+  const pi = rest.length === 1 ? rest[0] : await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 'trash', eligibleIdxs: rest, prompt: '등장시킬 카드 선택' });
+  if (pi == null || !rest.includes(pi)) return;
+  S.playFreeFromZone(state, ctx.self, 'trash', pi, {});
 });

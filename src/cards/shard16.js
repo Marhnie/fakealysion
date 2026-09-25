@@ -105,6 +105,19 @@ OPS.s16_bt16060 = async (instr, ctx, R) => {
 };
 SCRIPTS['BT16-060::등장 시'] = [{ op: 's16_bt16060' }];
 
+// ---- BT16-065 (hand play cost, Q2654/2655): 특징 「반쵸」를 가진 디지몬이 있다면(자신/상대 불문) -6.
+//      추가로 자신의 트래시에서 특징 「D-브리가드」를 가진 카드 6장을 덱 위로 되돌리는 것으로 추가 -6 (합계 -12 가능) — 둘 다 훅이 없어 전혀 적용되지 않고 있었음
+(HOOKS['BT16-065'] ||= []).push({ tag: '__handPlay', selfPlayDiscount: (state, hp) => ([...state.players[hp].battle, ...state.players[opp(hp)].battle].some((s) => hasT(s.cardId, '반쵸')) ? -6 : 0) });
+(HOOKS['BT16-065'] ||= []).push({ tag: '__handPlay', handPlayOption: (state, p) => {
+  const pl = state.players[p];
+  if (pl.trash.filter((id) => hasT(id, 'D-브리가드')).length < 6) return null;
+  return { label: '자신의 트래시에서 특징 「D-브리가드」를 가진 카드 6장을 덱 위로 되돌려 등장 코스트 -6?', apply: () => {
+    let n = 0;
+    for (let i = pl.trash.length - 1; i >= 0 && n < 6; i--) if (hasT(pl.trash[i], 'D-브리가드')) { pl.deck.unshift(pl.trash.splice(i, 1)[0]); n++; }
+    S.log(state, `${p} 트래시의 「D-브리가드」 카드 6장을 덱 위로 되돌림 (등장 코스트 -6)`);
+    return -6;
+  } };
+} });
 // ---- BT16-065 등장 시/진화 시: 3장 오픈. 그중 디지몬 카드 1장의 등장 코스트 이하의 상대 디지몬 1마리를 소멸. 오픈한 카드는 파기
 OPS.s16_bt16065 = async (instr, ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];

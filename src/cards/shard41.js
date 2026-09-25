@@ -68,7 +68,7 @@ D('EX8-026', '서로의 턴', '레스트할 수 없다', { restLock: (state, hp,
 D('EX6-043', '서로의 턴', '【진화 시】 효과 1개', { limit: 1, events: { play: (state, hp, h, info) => info.owner !== hp && isDig(info.stack) } });
 D('EX8-074', '서로의 턴', '【진화 시】 효과 1개', { limit: 1, events: { play: (state, hp, h, info) => isDig(info.stack) } });
 for (const id of ['EX6-043', 'EX8-074']) sc(`${id}::서로의 턴@【진화 시】 효과 1개`, async (ctx, R) => {
-  const t = me(ctx); if (!t) return;
+  const t = me(ctx); if (!t || S.evoTrigSuppressed(ctx.state, ctx.self, t)) return; // QA-S6 Q6792: 【진화 시】 suppressed
   if (!(await ask(ctx, '이 디지몬의 【진화 시】 효과 1개를 발휘할까요?'))) return;
   await runTagOf(ctx, R, t, '진화 시');
 });
@@ -276,6 +276,16 @@ sc('EX7-037::진화 시@색이 서로 다른', async (ctx) => {
 
 // (EX8-005/047/048/051 "이 카드가 특징으로 「광물형」/「광석형」을 가진 디지몬의 진화원에서 효과로 파기되었을 때": handled generically by state.js queueOwnDiscardTriggers)
 
+// EX8-012 그라우몬 X항체 【진화 시】 《1 드로우》하고, 자신의 패 1장을 파기한다. 그 후, 이 디지몬의 진화원에 「그라우몬」/「X항체」가 있다면, 상대의 턴 종료까지 이 디지몬은 「【소멸 시】 자신의 트래시에서 명칭에 「길몬」을 포함하는 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.」의 효과를 얻는다.
+// (the generic compiler split on the nested 「길몬」 quote inside the granted-ability text and fell back to an unconditional immediate playFree from hand with filter:null — letting 길몬/듀크몬/anything be played straight from hand. Replaced with draw/discard + a conditional grantText, so the ability is a delayed 【소멸 시】 play from the TRASH, name-filtered to 「길몬」.)
+sc('EX8-012::진화 시', async (ctx, R) => {
+  await R.runOne({ op: 'draw', who: 'self', n: 1 }, ctx);
+  await R.runOne({ op: 'trashHand', who: 'self', n: 1 }, ctx);
+  const t = me(ctx); if (!t) return;
+  if (srcCards(t).some(id => S.cardNames(id).some(n => n === '그라우몬') || (C(id).types || []).includes('X항체'))) {
+    await R.runOne({ op: 'grantText', trigger: 'delete', label: '자신의 트래시에서 명칭에 「길몬」을 포함하는 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.', until: 'opponentTurn', thisStack: true }, ctx);
+  }
+});
 // EX8-015 메가로그라우몬 X항체 【진화 시】 상대의 턴 종료까지 이 디지몬은 패/덱으로 되돌아가지 않고, DP +3000. 그 후, 이 디지몬의 진화원에 「메가로그라우몬」/「X항체」가 있다면, DP 10000 이하의 상대의 디지몬 1마리를 소멸시킨다.
 // (compiled version dropped the protection + DP+3000 and only ran the conditional destroy)
 const oppTurnEnd = (state, p) => (state.activePlayer === p ? state.turnNumber + 1 : state.turnNumber);

@@ -130,14 +130,31 @@ export function evolveBan(state, p, stack) {
   return !!(r && r.cardId === 'BT13-007' && state.activePlayer === p);
 }
 // BT14-018: evolving away destroys its tokens (+ 《리커버리 +1》)
-export function beforeDigivolve(state, p, stack) {
+export function beforeDigivolve(state, p, stack, newCardId) {
   if (stack && stack.cardId === 'BT14-018' && tokenCleanup(state, p)) S.recoverTopOfDeckToSecurity(state, p);
+  // EX2-056 오유민 【자신의 턴】 자신의 디지몬이 명칭에 「듀크몬」/「그라우몬」을 포함하는 디지몬으로 진화할 때, 이 턴 동안 그 디지몬은
+  // 「【진화 시】 《진격》」을 얻는다 — prospective tense ("진화할 때") = 즉시형 (15-8-5-1, docs/effect-classification-rules.md): the grant
+  // must exist BEFORE this SAME digivolve's own 【진화 시】 triggers get queued (state.js calls beforeDigivolve, then
+  // queueTriggersForStack -> S2.queueGranted, for the very same digivolve), so the newly-granted 《진격》 fires as part of THIS
+  // digivolve's own 【진화 시】 batch — not just future ones this turn. The old implementation queued it from a POST-hoc
+  // events.digivolve hook (dispatched only AFTER queueTriggersForStack already ran for this digivolve), which always missed the
+  // current digivolve's own trigger window. NOTE: `stack.cardId` is still the PRE-evolution card at this point (state.js reassigns
+  // it to `newCardId` only after this call), so the target card's identity must be checked via the `newCardId` parameter.
+  if (stack && newCardId && state.activePlayer === p && C(newCardId).category === 'digimon' && state.players[p].battle.some((s) => s.cardId === 'EX2-056')) {
+    const nm = C(newCardId).nameKo;
+    if (nm.includes('듀크몬') || nm.includes('그라우몬')) {
+      grantEffect(state, stack, { trigger: 'digivolve', label: '《진격》', until: state.turnNumber });
+      S.log(state, `${p} 오유민: ${nm}은(는) 이 턴 【진화 시】 《진격》을 얻음`);
+    }
+  }
 }
 // BT10-084: "효과로 자신의 다른 디지몬의 진화원을 파기할 때, 대신 이 디지몬의 진화원을 파기할 수 있다." → returns the stack to trash from instead
 export function sourceTrashRedirect(state, p, stack) {
   if (!state._fxSrc || state.activePlayer === p) return null;
   for (const h of state.players[p].battle) {
-    if (h === stack || h.cardId !== 'BT10-084' || h.sources.length < 1) continue;
+    // 공식 룰링(idx1364/id2002, id2004): 이 카드의 진화원이 없어도(또는 파기 지정 매수보다 적어도) 치환할 수 있다 — trashEvoSources
+    // already clamps count to stack.sources.length, so redirecting onto an empty-source Taktimon just discards 0 cards.
+    if (h === stack || h.cardId !== 'BT10-084') continue;
     if (askUser(`${C(h.cardId).nameKo}: ${C(stack.cardId).nameKo} 대신 이 디지몬의 진화원을 파기할까요?`)) return h;
   }
   return null;
@@ -1271,7 +1288,9 @@ hk('RB1-016', '서로의 턴', '젤리몬', { preventLeave: (s, hp, h, t, tp, ca
 // "소멸할 때" side effect (BT12-072) / leaving the area (BT14-018): queue the segment's script
 hk('BT12-072', '서로의 턴', '소멸할 때', { onLeave: (s, hp, h) => onceOk(h, 'BT12-072') && (onceMark(h, 'BT12-072'), true) });
 hk('BT12-072', '서로의 턴', '진화원에 있는', {});
-hk('BT14-018', '서로의 턴', '벗어날 때', { onLeave: () => true });
+// "벗어날 때" (prospective) is 즉시형 (15-8-5-1): forced ("소멸시킨다", not "…시킬 수 있다"), so it must run unconditionally right
+// before the leave, not as a declinable replacement candidate (see state.js hookPreventLeave's d.forcedOnLeave).
+hk('BT14-018', '서로의 턴', '벗어날 때', { forcedOnLeave: (s, hp, h) => { if (tokenCleanup(s, hp)) S.recoverTopOfDeckToSecurity(s, hp); } });
 hk('BT10-084', '상대의 턴', '진화원을 파기할 때', {});
 // ── DP / S-attack / keywords
 const royalOrSister = (c) => nameHas(c, '시스터몬') || hasTrait(c, '로얄 나이츠');
@@ -1340,10 +1359,11 @@ hki('BT11-070', '상대의 턴', '벰몬', { redirectOptions: (s, hp, h, ap, a) 
   if (!rag || !redirLimitOk(h, 'BT11-070')) return [];
   return [{ targetUid: h.uid, limit: 1, label: `${C(rag.cardId).nameKo}의 「벰몬」 2장을 덱 아래로 되돌리고 ${C(h.cardId).nameKo}(으)로 대상 변경`, pay: async () => {
     for (let n = 0; n < 2; n++) { const i = rag.sources.findIndex(id => nameIs(C(id), '벰몬')); s.players[hp].deck.push(...rag.sources.splice(i, 1)); } S.recomputeStackGrants(rag); return true; } }]; } });
+// 공식 룰링(id2102): "가장 DP가 높은 상대의 디지몬이 어택했을 때" 조건은 어택 선언 시점의 스냅샷(declareAttack이 기록하는
+// a.s1.wasHighestDPAtDeclare)으로 판정한다 — 【어택 시】 효과로 DP가 올라 사후에 최고 DP가 되어도 이 조건은 만족하지 않는다.
 hk('BT11-074', '상대의 턴', '가장 DP가 높은', { redirectOptions: (s, hp, h, ap, a) => {
   if (!redirLimitOk(h, 'BT11-074')) return [];
-  const max = Math.max(...digimonStacks(s, ap).map(x => S.effectiveDP(s, ap, x)));
-  return S.effectiveDP(s, ap, a) >= max ? [{ targetUid: h.uid, limit: 1 }] : []; } });
+  return a.s1?.wasHighestDPAtDeclare ? [{ targetUid: h.uid, limit: 1 }] : []; } });
 hk('BT11-092', '상대의 턴', '플레이어에게 어택했을', { redirectOptions: (s, hp, h) => {
   if (!attackedPlayer(s) || h.suspended) return [];
   return digimonStacks(s, hp).filter(d => C(d.cardId).level === 6 && hasTrait(C(d.cardId), '머신형')).map(d => ({ targetUid: d.uid, label: `${C(h.cardId).nameKo} 레스트 → ${C(d.cardId).nameKo}(으)로 대상 변경`, pay: async () => { S.restStack(s, hp, h.uid); return h.suspended; } })); } });

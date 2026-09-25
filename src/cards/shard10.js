@@ -231,8 +231,13 @@ sc('BT4-090::진화 시', async (ctx, R) => {
   if (t && ctx.startAttack) ctx.startAttack(ctx.self, st.uid, t.uid, { anyActive: true });
 });
 
+// BT5-019 has TWO separate 【진화 시】 segments ("《진격》(...)" and this card-placement effect) sharing the
+// same tag, so they queue as two separate pending triggers; a plain 'BT5-019::진화 시' key would catch BOTH
+// (lookupCardSpecific only keys on cardId+tag) and silently eat the 《진격》 grant. Disambiguate with an
+// '@'-needle key (same mechanism as BT10-086's '@가장 Lv'/'@X항체') so only this segment's text is intercepted
+// and the 《진격》 segment falls through to the generic compiler's bare-keyword-grant handling.
 // BT5-019 패의 레드 디지몬 1장을 진화원 가장 위에 둘 수 있다. 그 후, 진화원의 「오메가샤우트몬」/「지크그레이몬」 1장마다 DP 5000 이하 상대 디지몬 1마리 소멸.
-sc('BT5-019::진화 시', async (ctx, R) => {
+sc('BT5-019::진화 시@레드인', async (ctx, R) => {
   const st = meStack(ctx); if (!st) return;
   const pl = P(ctx);
   const idxs = pl.hand.map((id, i) => i).filter(i => C(pl.hand[i]).category === 'digimon' && (C(pl.hand[i]).colors || []).includes('red'));

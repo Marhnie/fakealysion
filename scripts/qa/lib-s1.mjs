@@ -71,7 +71,12 @@ export async function drain(st) {
       const om = String(t.text || '').match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); let onceMark = null;
       if (om && t.stackUid) { const s1 = findS(st, t.player, t.stackUid); if (s1) { const key = S.onceLimitKey(t.cardId, t.tags); if (S.turnUsesRemaining(s1, key, Number(om[1])) <= 0) { S.resolvePending(st, t.uid); continue; } onceMark = { stack: s1, key }; } }
       if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {},
+      // NOTE: this queue is intentionally NOT auto-drained here (unlike src/cpusim.js's effAtkQ) -- tests assert on
+      // its contents directly (e.g. qa-ex13-c.mjs, qa-audit-g5-t1b1-bt20102-forced-attack.mjs) to check the effect
+      // requested the right attack without having to also simulate the whole target/counter/block flow. `direct` (the
+      // requested target, e.g. 'PLAYER') used to be silently dropped -- kept now so a test can act on the SAME
+      // request the effect actually made (see scripts/qa/qa-ex13-045-jogress-attack-timing.mjs).
+      const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, direct: d, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {},
         securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(st, p, uid)) return; await securityCheck(st, p, uid, op || S.opponentOf(p)); }, choose: makeChoose(st) };
       await Fx.runScript(script, ctx);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }

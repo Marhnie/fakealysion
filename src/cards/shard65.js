@@ -80,18 +80,36 @@ SCRIPTS['EX10-061::등장 시'] = [{ op: 'c65_fn', fn: async (ctx) => {
 } }];
 
 // BT24-037 실피드몬 【서로의 턴】[턴에 1회] 이 디지몬이 자신의 효과 이외로 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원에서, Lv.4 이하의, 특징으로 「TS」를 가졌거나, 옐로/레드 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다. (own text + inherited copy; Q5618/5619: which cards may be played)
+// "벗어날 때" is prospective tense = 즉시형 (15-8-5-1, docs/effect-classification-rules.md): must interrupt BEFORE the stack actually
+// leaves the battle area, reading the still-live (not yet trashed) evolution sources — same passive-immediate shape as BT23-032
+// (src/cards/shard38.js leaveBonusOptions, the reference implementation; copied inline here since that helper isn't exported).
 {
   const pred = (x) => C(x).category === 'digimon' && (C(x).level ?? 99) <= 4 && ((C(x).types || []).includes('TS') || (C(x).colors || []).some((c) => ['yellow', 'red'].includes(c)));
-  for (const src of ['effectKo', 'inheritedKo']) hk('BT24-037', { tag: '서로의 턴', src, has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때', limit: 1, onLeave: (state, hp, stack, cause) => cause !== 'ownEffect', noAuto: true });
-  sc('BT24-037::서로의 턴@벗어날 때', async (ctx) => {
-    const evt = ctx.trigger?.evt; if (!evt) return;
-    const pl = ctx.state.players[ctx.self];
-    const uniq = [...new Set((evt.sources || []).filter((id) => pl.trash.includes(id) && pred(id)))];
-    if (!uniq.length) return;
-    let pick = uniq[0];
-    if (uniq.length > 1) { pl.s65tmp = uniq; try { const k = await ctx.choose('pickFromZoneIndex', { player: ctx.self, zone: 's65tmp', eligibleIdxs: uniq.map((_, i) => i), prompt: '등장시킬 진화원 카드 선택 (취소=안 함)' }); pick = k == null ? null : uniq[k]; } finally { delete pl.s65tmp; } }
-    else if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `${C(uniq[0]).nameKo}을(를) 코스트를 지불하지 않고 등장시킬까요?` }))) pick = null;
-    if (!pick) return;
-    const i = pl.trash.lastIndexOf(pick); if (i >= 0) S.playFreeFromZone(ctx.state, ctx.self, 'trash', i, { fromSources: true });
-  });
+  const hd = { tag: '서로의 턴', has: '자신의 효과 이외로 배틀 에어리어를 벗어날 때' };
+  const opts = (state, hp, holder, target, tp, cause, mode, cid) => {
+    if (!holder || target !== holder || cause === 'ownEffect') return [];
+    if (S.turnUsesRemaining(holder, S.onceLimitKey(cid, [hd.tag, hd.has]), 1) <= 0) return [];
+    const pl = state.players[hp];
+    const seen = new Set(), out = [];
+    for (const cardId of holder.sources.filter((_, i) => i >= S.fdCount(holder))) {
+      if (seen.has(cardId) || !pred(cardId)) continue; // identical duplicate cards are the same choice
+      seen.add(cardId);
+      out.push({
+        passive: true,
+        apply() {
+          if (!S.hookUseOnce(holder, cid, hd, 1)) return false;
+          const at = holder.sources.lastIndexOf(cardId); // topmost matching source (identical duplicates are interchangeable)
+          if (at < S.fdCount(holder)) return false;
+          holder.sources.splice(at, 1);
+          S.recomputeStackGrants(holder);
+          pl.trash.push(cardId);
+          const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true });
+          if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 배틀 에어리어를 벗어나기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 등장`);
+          return !!st;
+        },
+      });
+    }
+    return out;
+  };
+  for (const src of ['effectKo', 'inheritedKo']) hk('BT24-037', { tag: hd.tag, src, has: hd.has, preventLeaveOptions: opts });
 }
