@@ -1989,22 +1989,31 @@ function renderMemoryTrack() {
   // 규약이라 화면과 무관하게 고정). 단, "아래/위"라는 방향 단어 자체는 온라인 대전에서 게스트 화면처럼 P1/P2가
   // 뒤집혀 보일 때는 실제 패널 위치(bottomSeat)에 맞게 바꿔줘야 한다 — renderBoard()와 같은 원칙.
   const bottomSeat = Net.NET.mySeat || 'p1';
-  const leftWord = bottomSeat === 'p1' ? '아래' : '위';
-  const rightWord = bottomSeat === 'p2' ? '아래' : '위';
-  const m = state.memory;
+  // 요청: 게스트 화면은 메모리 게이지 자체를 좌우반전해서 보여준다 (호스트 화면은 기존 그대로 왼쪽=P1/플러스, 오른쪽=P2/마이너스).
+  const mirror = Net.NET.role === 'guest';
+  const leftSeat = mirror ? 'p2' : 'p1';
+  const rightSeat = mirror ? 'p1' : 'p2';
+  const leftWord = leftSeat === bottomSeat ? '아래' : '위';
+  const rightWord = rightSeat === bottomSeat ? '아래' : '위';
+  const m = state.memory; // 엔진 규약: m>0=P1측 유리, m<0=P2측 유리 (부호 자체는 화면 좌우/반전과 무관하게 고정)
+  const magnitude = Math.abs(m);
+  const leftFavored = mirror ? m < 0 : m > 0;
+  const rightFavored = mirror ? m > 0 : m < 0;
   const cells = [];
   for (let n = 10; n >= 1; n--) cells.push({ n, side: 'bottom' });
   cells.push({ n: 0, side: 'zero' });
   for (let n = 1; n <= 10; n++) cells.push({ n, side: 'top' });
-  const activeIdx = m > 0 ? 10 - m : m === 0 ? 10 : 10 + Math.abs(m);
+  const activeIdx = m === 0 ? 10 : leftFavored ? 10 - magnitude : 10 + magnitude;
   const numRow = h('div', { className: 'mem-numbers' },
     cells.map((c, i) => h('span', { className: `mem-num mem-${c.side}` + (i === activeIdx ? ' mem-active' : '') }, String(c.n))));
-  const who = m > 0 ? `${leftWord} P1` : m < 0 ? `${rightWord} P2` : '';
+  const who = leftFavored ? `${leftWord} ${leftSeat.toUpperCase()}` : rightFavored ? `${rightWord} ${rightSeat.toUpperCase()}` : '';
+  const signOf = (seat) => (seat === 'p1' ? '+' : '-');
+  const wordOf = (seat) => (seat === 'p1' ? '플러스' : '마이너스');
   return h('div', { className: 'mem-track' }, [
     h('div', { className: 'mem-head' }, [
-      h('div', { className: 'mem-side mem-side-bottom' + (m > 0 ? ' on' : '') }, [h('span', {}, `◀ ${leftWord} P1 (플러스)`), m > 0 ? h('b', {}, `+${m}`) : null]),
-      h('div', { className: 'mem-readout' }, m === 0 ? '메모리 0' : `메모리 ${who} ${Math.abs(m)}`),
-      h('div', { className: 'mem-side mem-side-top' + (m < 0 ? ' on' : '') }, [m < 0 ? h('b', {}, `${m}`) : null, h('span', {}, `${rightWord} P2 (마이너스) ▶`)]),
+      h('div', { className: 'mem-side mem-side-bottom' + (leftFavored ? ' on' : '') }, [h('span', {}, `◀ ${leftWord} ${leftSeat.toUpperCase()} (${wordOf(leftSeat)})`), leftFavored ? h('b', {}, `${signOf(leftSeat)}${magnitude}`) : null]),
+      h('div', { className: 'mem-readout' }, m === 0 ? '메모리 0' : `메모리 ${who} ${magnitude}`),
+      h('div', { className: 'mem-side mem-side-top' + (rightFavored ? ' on' : '') }, [rightFavored ? h('b', {}, `${signOf(rightSeat)}${magnitude}`) : null, h('span', {}, `${rightWord} ${rightSeat.toUpperCase()} (${wordOf(rightSeat)}) ▶`)]),
     ]),
     numRow,
   ]);

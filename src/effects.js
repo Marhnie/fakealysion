@@ -516,6 +516,11 @@ function wrapChoose(ctx) {
   ctx._fxWrapped = true;
   const orig = ctx.choose;
   ctx.choose = async (kind, payload) => {
+    // 온라인 대전: "이 선택은 누구 몫인가"를 렌더링 쪽(main.js의 uiChoiceByOpponentOnline)이 payload.player로 판단하는데,
+    // 카드 스크립트 중 상당수(특히 정보성 multipleChoice)가 player를 아예 안 채운다 — 그 경우 렌더 쪽 추정(Cpu.deciderFor)이
+    // 'p1'으로 잘못 단정해서, 실제로는 상대(예: 게스트) 몫인 선택창이 그 상대 화면에서 "상대가 선택 중…"으로 숨어버리는
+    // 사고가 났다. 이 효과를 실행하고 있는 주체(ctx.self)가 사실상 항상 맞는 기본값이므로 여기서 채워 넣는다.
+    if (payload && payload.player === undefined) payload = { ...payload, player: ctx.self };
     // 1-3-6: when a rule/effect makes you choose cards, you must choose at least 1 — unless the effect text is an
     // optional one ("…할 수 있다" / "N장까지"). The UI hides its cancel button for required picks that have candidates.
     if (PICK_KINDS.has(kind) && payload && payload.required === undefined && ctx.trigger && typeof ctx.trigger.text === 'string') {
