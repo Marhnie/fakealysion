@@ -35,6 +35,9 @@ try {
   for (const f of files) if (f.endsWith('.js')) imports['./' + f] = `./${f}?v=${head}`;
   let html = fs.readFileSync(path.join(W, 'index.html'), 'utf8');
   html = html.replace(/href="(\.\/src\/[^"?]+\.css)"/g, `href="$1?v=${head}"`);
+  // import map은 모듈 "안"에서 하는 import만 다시 쓴다 — 진입점 <script type="module" src="...">의 src 자체는 import map의 적용 대상이
+  // 아니라서, 이걸 그대로 두면 이 파일 하나만 GitHub Pages 캐시(약 10분)에 갇혀 정작 새로 배포한 main.js가 안 실행되는 사고가 난다.
+  html = html.replace(/(<script type="module" src="\.\/src\/[^"?]+\.js)(")/, `$1?v=${head}$2`);
   html = html.replace('<script type="module"', `<script type="importmap">${JSON.stringify({ imports })}</script>\n  <script type="module"`);
   fs.writeFileSync(path.join(W, 'index.html'), html);
   if (!fs.existsSync(path.join(W, '.nojekyll'))) fs.writeFileSync(path.join(W, '.nojekyll'), '');
