@@ -744,6 +744,8 @@ body.pr-replay #app .board { overflow: auto; }
 /* 시작 화면 */
 .su-wrap { max-width: 760px; margin: 0 auto; padding: 28px 16px 40px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
 .su-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.su-bugreport { margin-left: auto; align-self: flex-start; font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+@media (max-width: 640px) { .su-bugreport { font-size: 11px; padding: 5px 8px; } }
 .su-logo { width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center; font-size: 34px; color: #1a1408; background: linear-gradient(145deg, #f2d48c, #b98a3c); box-shadow: 0 6px 22px rgba(217,179,108,.35); }
 .su-title { font-size: 28px; font-weight: 900; letter-spacing: .5px; line-height: 1.1; }
 .su-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }

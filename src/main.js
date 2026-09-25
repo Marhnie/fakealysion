@@ -296,9 +296,14 @@ function renderSetup() {
   const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
   const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대', expert: '자가대전으로 조정한 파라미터 + 더 깊은 수 읽기' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
 
+  const heroWithBug = h('div', { className: 'su-hero' }, [
+    h('div', { className: 'su-logo' }, '⟁'),
+    h('div', {}, [h('div', { className: 'su-title' }, '디지몬 카드게임'), h('div', { className: 'su-sub' }, '시뮬레이터 · 룰 엔진 + CPU 대전')]),
+    h('button', { className: 'su-bugreport', title: '플레이 중 발견한 버그나 이상한 동작을 신고해주세요', onClick: () => window.open('https://forms.gle/uLfLuPv9bnvkxauZ6', '_blank', 'noopener') }, '🐛 버그 리포트'),
+  ]);
   const ext = PR.startScreenExtras();
   app.appendChild(h('div', { className: 'su-wrap' }, [
-    hero,
+    heroWithBug,
     h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : 'P1 덱'), deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : 'P2 덱')]),
     h('div', { className: 'su-card' }, [
       h('div', { className: 'su-h' }, '대전 방식'), modeSeg,
@@ -310,7 +315,6 @@ function renderSetup() {
     spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js)
     h('div', { className: 'su-more' }, [
       h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
-      h('button', { title: '플레이 중 발견한 버그나 이상한 동작을 신고해주세요', onClick: () => window.open('https://forms.gle/uLfLuPv9bnvkxauZ6', '_blank', 'noopener') }, '🐛 버그 리포트'),
       ext,
     ]),
   ].filter(Boolean)));
