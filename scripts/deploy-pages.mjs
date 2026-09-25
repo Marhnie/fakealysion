@@ -24,9 +24,12 @@ sh(`git worktree add -q -f "${W}" origin/gh-pages`, { cwd: root });
 try {
   sh('git checkout -q -B gh-pages-deploy origin/gh-pages', { cwd: W });
   fs.rmSync(path.join(W, 'src'), { recursive: true, force: true });
+  fs.rmSync(path.join(W, 'assets'), { recursive: true, force: true });
   // MSYS tar(Git for Windows 번들)에 역슬래시 경로를 넘기면 cmd.exe -> msys 이중 이스케이프로 깨진다 (한글 등 비ASCII 경로에서 특히 두드러짐) — 슬래시로 바꿔서 넘긴다
   const Wposix = W.split(path.sep).join('/');
-  sh(`git archive HEAD src index.html ${DATA.join(' ')} | tar -x -C "${Wposix}"`, { cwd: root, shell: true });
+  let hasAssets = true;
+  try { sh('git cat-file -e HEAD:assets', { cwd: root }); } catch { hasAssets = false; }
+  sh(`git archive HEAD src index.html ${hasAssets ? 'assets ' : ''}${DATA.join(' ')} | tar -x -C "${Wposix}"`, { cwd: root, shell: true });
   const files = sh('git ls-tree -r --name-only HEAD src', { cwd: root }).split('\n').filter(f => /\.(js|css)$/.test(f));
   const imports = {};
   for (const f of files) if (f.endsWith('.js')) imports['./' + f] = `./${f}?v=${head}`;
