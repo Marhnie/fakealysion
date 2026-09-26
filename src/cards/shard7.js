@@ -178,12 +178,13 @@ async function linkFrom(ctx, who, host, zone, cardId, delta) {
 // ---- evolving
 function evoCheck(ctx, st, cardId, o = {}) {
   const E = ctx.E;
-  if (o.ignoreCond) { // 8-1-2-2: ignoring the condition does not lift "cannot evolve"/"only evolves into X" restrictions
+  if (o.ignoreCond && !S.s1HookAny(ctx.state, 's1evoIgnoreLocked', {})) { // BT8-059 (Q1100-1103): the ignore-lock voids it. 8-1-2-2: ignoring the condition does not lift "cannot evolve"/"only evolves into X" restrictions
     const rc = E.evoRestrictionCheck(cardId, S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
     return rc.ok ? { ok: true, cost: (C(cardId).evoNormal && C(cardId).evoNormal.cost) || 0 } : rc;
   }
-  const r = E.canEvolveAny(st.cardId, cardId, S.evoExtraArg(ctx.state, null, st), S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
-  if (r.ok || !o.ignoreLevel) return r;
+  const xa = S.evoExtraArg(ctx.state, null, st); if (o.ignoreLevel) xa.ignoreLevel = true; // W8 (Q5604 BT24-025): "Lv.을 무시하고" — every printed condition is checked with only its Lv. dropped, so the cheapest satisfied one (e.g. 「TS」 Lv.5: 코스트 3) applies, not always the normal-line cost
+  const r = E.canEvolveAny(st.cardId, cardId, xa, S.evolveTargetRestriction(ctx.state, ownerOf(ctx.state, st), st));
+  if (r.ok || !o.ignoreLevel || S.s1HookAny(ctx.state, 's1evoIgnoreLocked', {})) return r;
   // ignore the Lv. requirement: accept when the colour of the normal condition matches
   const tgt = C(cardId);
   const cols = (tgt.evoNormal && tgt.evoNormal.colors) || [];
@@ -554,16 +555,30 @@ function spawnToken(ctx, who, tid) {
 // run one printed 【등장 시】/【진화 시】 segment of a stack
 async function runSegmentOf(ctx, who, stack, tagPred, prompt) {
   const Fx = await import('../effects.js');
-  const segs = S.parseEffectSegments(C(stack.cardId).effectKo || '').segments.filter((sg) => sg.tags.some(tagPred));
-  if (!segs.length) return false;
-  let seg = segs[0];
-  if (segs.length > 1) {
-    const k = await ctx.choose('multipleChoice', { prompt, options: segs.map((sg) => sg.body.slice(0, 40)) });
-    seg = segs[k == null ? 0 : k];
+  const onceOf = (sg) => { const m = sg.body.trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); return m ? Number(m[1]) : null; };
+  // 공식 Q&A idx6137 (BT24-102): 《계승》으로 얻고 있는 【등장 시】/【진화 시】 효과도 발휘할 수 있다 — the inherited source card's printed segments count as this stack's own
+  const ik = S.inheritKeywordSource ? S.inheritKeywordSource(stack) : null;
+  const cids = ik && ik !== stack.cardId ? [stack.cardId, ik] : [stack.cardId];
+  const segs = [];
+  for (const cid of cids) {
+    for (const sg of S.parseEffectSegments(C(cid).effectKo || '').segments.filter((sg) => sg.tags.some(tagPred))
+      // W8 (Q5721/Q6029 BT24-102): a 【진화 시】-only (or 【등장 시】-only) effect the target is barred from ("발휘하지 않는다") cannot be borrowed — a 【등장 시】【진화 시】 dual one can still be used as its 【등장 시】;
+      // and a [턴에 N회] effect that is already used up this turn cannot be activated through another card's effect either.
+      .filter((sg) => !(sg.tags.some((t) => t.includes('진화 시')) && !sg.tags.some((t) => t.includes('등장 시')) && S.evoTrigSuppressed(ctx.state, who, stack)))
+      .filter((sg) => !(sg.tags.some((t) => t.includes('등장 시')) && !sg.tags.some((t) => t.includes('진화 시')) && S.hookSuppressTrigger(ctx.state, who, stack, '등장 시')))
+      .filter((sg) => { const lim = onceOf(sg); return lim == null || S.turnUsesRemaining(stack, S.onceLimitKey(cid, sg.tags), lim) > 0; })) segs.push({ cid, sg });
   }
-  const script = Fx.lookupCardSpecific(stack.cardId, seg.tags, seg.body) || Fx.compileToScript(seg.body);
+  if (!segs.length) return false;
+  let pick = segs[0];
+  if (segs.length > 1) {
+    const k = await ctx.choose('multipleChoice', { prompt, options: segs.map((x) => x.sg.body.slice(0, 40)) });
+    pick = segs[k == null ? 0 : k];
+  }
+  const { cid, sg: seg } = pick;
+  const script = Fx.lookupCardSpecific(cid, seg.tags, seg.body) || Fx.compileToScript(seg.body);
   if (!script || !script.length) return false;
-  const c2 = { ...ctx, self: who, opp: opp(who), sourceCardId: stack.cardId, sourceStackUid: stack.uid, trigger: { tags: seg.tags, text: seg.body, evt: { kind: 'play' } } };
+  if (onceOf(seg) != null) S.markTurnEffectUsed(stack, S.onceLimitKey(cid, seg.tags)); // the borrowed activation spends the [턴에 N회] (15-x)
+  const c2 = { ...ctx, self: who, opp: opp(who), sourceCardId: cid, sourceStackUid: stack.uid, trigger: { tags: seg.tags, text: seg.body, evt: { kind: 'play' } } };
   await Fx.runScript(script, c2);
   return true;
 }
@@ -1212,6 +1227,7 @@ H('EX11-027', {
     holder.sources.unshift(l.cardId);
     S.recomputeStackGrants(holder);
     S.log(state, `${hp} ${C(holder.cardId).nameKo}의 링크 카드 ${C(l.cardId).nameKo}을(를) 진화원 아래에 놓아 벗어나지 않음`);
+    S.emitGameEvent(state, 'sourcesAdded', { owner: hp, stack: holder, cause: 'effect', added: [l.cardId], srcPlayer: hp, srcCategory: C(l.cardId).category }); // W8 (Q5823): the card moved from the link slot under the sources IS an increase of this digimon's 진화원 (「진화원이 효과로 늘어났을 때」 fires)
     return true;
   },
 });
@@ -1695,8 +1711,7 @@ H('EX11-033', { tag: '서로의 턴', src: 'inheritedKo', limit: 1, events: { ba
 H('EX11-026', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 이겼', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder } });
 H('EX11-032', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder && hasType(holder.cardId, '볼텍스 워리어') } });
 // BT24-045: 【패에서 파기】 (untagged preamble, acts from the trash) + inherited 【자신의 턴】 evolve on own hand discard
-H('BT24-045', { tag: '패에서 파기', zone: 'trash', text: '자신의 패가 5장 이하라면 《1 드로우》', events: { discard: (state, hp, holder, info) => info.owner === hp && info.cardId === 'BT24-045' } });
-SCRIPTS['BT24-045::패에서 파기'] = [F(async (ctx) => { if (ctx.state.players[ctx.self].hand.length <= 5) S.drawCards(ctx.state, ctx.self, 1); })];
+// (W8: the 【패에서 파기】 draw preamble is handled by state.queueOwnDiscardTriggers like BT24-013/026 — a second hardcoded hook here made it draw TWICE per discard; removed)
 H('BT24-045', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { discard: (state, hp, holder, info) => info.owner === hp && isDig(holder.cardId) && hasType(holder.cardId, '귀인형', '타이탄족') } });
 SCRIPTS['BT24-045::자신의 턴'] = [F(async (ctx) => {
   const st = holderOf(ctx);
@@ -2052,6 +2067,12 @@ SCRIPTS['BT25-020::등장 시'] = [F(async (ctx) => {
 })];
 H('BT25-020', { tag: '서로의 턴', has: '배틀에서 승리', limit: 1, events: { battleWin: (state, hp, holder, info) => info.owner === hp && hasType(info.stack.cardId, 'TS') } });
 SCRIPTS['BT25-020::서로의 턴'] = [F(async (ctx) => { S.trashTopSecurityByEffect(ctx.state, ctx.opp); })];
+// W9r2 (official Q6346/6347, BT25-058 칼리스몬): 「효과로 디지몬이 등장하거나 진화했을 때」 (either side, incl. itself) had NO watcher registered (the "등장하거나 진화했을" wording is not a generic pattern) -> the script never fired.
+const byFxEvt = (state, info) => !!state._fxSrc || info.cause === 'effect' || info.cause === 'ownEffect';
+H('BT25-058', { tag: '서로의 턴', has: '등장하거나 진화했을', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack.cardId) && byFxEvt(state, info), digivolve: (state, hp, holder, info) => isDig(info.stack.cardId) && byFxEvt(state, info) } });
+// W9r2 (BT25-060 리부트몬): 「이 디지몬이 링크되거나 액티브되었을 때」 — same gap (no watcher registered)
+const selfLinkedOrActive = (state, hp, holder, info) => info.stack === holder && info.owner === hp;
+H('BT25-060', { tag: '서로의 턴', has: '링크되거나 액티브', limit: 1, events: { linked: selfLinkedOrActive, active: selfLinkedOrActive, unsuspend: selfLinkedOrActive } });
 H('BT25-028', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (digimonsOf(state, opp(hp)).some((x) => lv(x.cardId) >= 6) ? -5 : 0) });
 H('BT25-028', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack.cardId), digivolve: (state, hp, holder, info) => isDig(info.stack.cardId) } });
 SCRIPTS['BT25-028::서로의 턴'] = [F(async (ctx) => {
@@ -2065,7 +2086,7 @@ SCRIPTS['BT25-028::서로의 턴'] = [F(async (ctx) => {
 })];
 SCRIPTS['BT25-028::등장 시'] = [F(async (ctx) => {
   const { state } = ctx;
-  for (const s of digimonsOf(state, ctx.opp).filter((x) => x.sources.length <= 1)) if (!S.effectBlocked(state, ctx.opp, s, 'rest')) S.preventRest(state, ctx.opp, s.uid, untilOppEnd(ctx));
+  (state.s3RestLocks ||= []).push({ owner: ctx.opp, until: untilOppEnd(ctx), kind: 'maxSources', n: 1 }); // W9r2 official Q6294/6295: 「진화원 1장 이하인 상대의 디지몬 전부」 — dynamic: later arrivals are covered, a digimon that gains sources is released
   const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp).filter((s) => !s.suspended), '소멸시킬 액티브 상태의 상대 디지몬 선택', { kind: 'delete' });
   if (t) destroyIt(ctx, ctx.opp, t);
 })];
@@ -2078,9 +2099,9 @@ SCRIPTS['BT25-029::진화 시'] = [F(async (ctx) => {
   const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp).filter((s) => lv(s.cardId) <= 5), 'Lv.5 이하 상대 디지몬 선택 (취소=안 함)', { kind: 'bounce' });
   if (t) bounceIt(ctx, ctx.opp, t, 'hand');
   const tm = tamersOf(state, self).find((s) => S.fdCount(s) > 0); // 「뒷면 카드」 = face-down block at the bottom of the tamer's sources
-  if (!tm) return;
+  if (!tm) { if (!t) ctx._declined = true; return; } // W9r2 official Q6296: not activating at all keeps the [턴 1회]
   const l = LOWLV(state, ctx.opp);
-  if (!l.length || !(await confirm(ctx, '테이머 아래의 카드 1장을 파기하여 Lv.이 가장 낮은 상대 디지몬을 패에 추가할까요?'))) return;
+  if (!l.length || !(await confirm(ctx, '테이머 아래의 카드 1장을 파기하여 Lv.이 가장 낮은 상대 디지몬을 패에 추가할까요?'))) { if (!t) ctx._declined = true; return; }
   const c = await pickStack(ctx, ctx.opp, l, 'Lv.이 가장 낮은 상대 디지몬 선택', { kind: 'bounce', mandatory: true });
   if (!c) return;
   if (S.trashEvoSources(state, self, tm.uid, 1, 'bottom').length !== 1) return; // cost: sources of a tamer are trashed from the bottom (emits sourcesTrashed)

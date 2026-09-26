@@ -104,7 +104,7 @@ const nameIs = (id, ...ns) => S.cardNames(id).some(n => ns.includes(n));
 for (const id of ['BT11-008', 'BT11-010', 'BT11-014']) hk(id, { tag: '자신의 턴', src: 'inheritedKo', has: '어택의 대상이 변경', limit: 1, events: { redirect: (state, hp, h, i) => i.owner === hp && i.stack === h } });
 
 // BT10-056 로터스몬 【상대의 턴】 특징 「식물형」/「요정형」을 포함하는 자신의 다른 디지몬 전부는 「【소멸 시】 메모리+2, 트래시의 DP 3000 이하 디지몬 카드 1장을 패로」의 효과를 얻는다.
-hk('BT10-056', { tag: '상대의 턴', has: '소멸 시】 메모리+2', events: { delete: (state, hp, h, i) => i.owner === hp && !!i.stack && i.stack !== h && isDig(i.stack) && trIncl(i.stack.cardId, '식물형', '요정형') } });
+hk('BT10-056', { tag: '상대의 턴', has: '소멸 시】 메모리+2', simulGrant: true, events: { delete: (state, hp, h, i) => i.owner === hp && !!i.stack && i.stack !== h && isDig(i.stack) && trIncl(i.stack.cardId, '식물형', '요정형') } });
 sc('BT10-056::상대의 턴', async (ctx, R) => {
   S.grantMemory(ctx.state, ctx.self, 2, ctx.sourceCardId);
   await R.runOne({ op: 'returnFromTrash', who: 'self', filter: { category: 'digimon', dpMax: 3000 } }, ctx);

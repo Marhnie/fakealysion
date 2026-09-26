@@ -66,12 +66,14 @@ function bounceStack(ctx, p, st, dest = 'hand') {
   pl.trash.push(...st.sources, ...linkIds);
   if (dest === 'hand') pl.hand.push(st.cardId);
   else if (dest === 'deckBottom') pl.deck.push(st.cardId);
+  let secAdded = true; // QA-W6 Q3351-3353 (LM-020): a token / Digitama-type card (EX2-007) "placed on security" is redirected by rule (removed from the game / digitama deck bottom); the placement still counts as done but security does not really increase
+  if (dest.startsWith('security') && (C(st.cardId).isToken || C(st.cardId).category === 'digitama')) { secAdded = false; if (C(st.cardId).category === 'digitama') pl.digitamaDeck.push(st.cardId); }
   else if (dest === 'securityTop') pl.security.unshift(st.cardId);
   else if (dest === 'securityBottom') pl.security.push(st.cardId);
   S.log(ctx.state, `${p} ${C(st.cardId).nameKo} → ${dest} (진화원 ${st.sources.length}장 파기)`);
   S.applyOverflowBatch(ctx.state, p, [...st.sources, st.cardId]);
   S.hookLeaveTriggers(ctx.state, p, st, p === ctx.self ? 'ownEffect' : 'effect');
-  if (dest.startsWith('security')) S.emitGameEvent(ctx.state, 'securityIncrease', { owner: p, stack: null, cause: 'effect' });
+  if (dest.startsWith('security') && secAdded) S.emitGameEvent(ctx.state, 'securityIncrease', { owner: p, stack: null, cause: 'effect' });
   return true;
 }
 // tokens
@@ -737,7 +739,7 @@ sc('LM-018::등장 시', [fn(async (ctx) => {
 })]);
 // LM-020 진화 시
 sc('LM-020::진화 시', [fn(async (ctx) => {
-  const pk = await pickAnyDigimon(ctx, anyDigimon(ctx), '시큐리티 위에 놓을 디지몬 선택 (소유자의 시큐리티)');
+  const pk = await pickAnyDigimon(ctx, ['p1', 'p2'].flatMap(p => PL(ctx, p).battle.filter(s => isDig(s) || C(s.cardId).category === 'digitama').map(s => ({ p, s }))), '시큐리티 위에 놓을 디지몬 선택 (소유자의 시큐리티)'); // (QA-W6 Q3351: 「마더 디·리퍼」(EX2-007) in the battle area is a Digimon here)
   if (!pk || !bounceStack(ctx, pk.p, pk.s, 'securityTop')) return;
   const sec = PL(ctx, ctx.opp).security;
   if (!sec.length) return;
@@ -762,6 +764,7 @@ async function useOptionFree(ctx, pred, prompt) {
   pl.trash.push(id);
   S.log(ctx.state, `${ctx.self} ${C(id).nameKo} 코스트 없이 사용`);
   S.queueTriggersFor(ctx.state, ctx.self, id, 'use');
+  S.emitGameEvent(ctx.state, 'optionUsed', { owner: ctx.self, stack: null, cause: 'effect', cardId: id, useCost: 0 }); // W8 (Q5449-5518): free use still counts as 「사용」
 }
 // BT16-014 진화 시/어택 시
 sc('BT16-014::진화 시', [fn((ctx) => useOptionFree(ctx, (id) => C(id).nameKo === '갓 플레임' || traitAny(id, ['4대용']), '코스트 없이 사용할 「갓 플레임」/4대용 옵션 카드 선택'))]);
@@ -818,7 +821,7 @@ function topToSecurityTop(ctx, p, st) {
   return true;
 }
 sc('BT16-056::등장 시', [fn(async (ctx) => {
-  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && traitAny(s.cardId, ['백신종'])), '최상단 카드를 시큐리티 위에 놓을 백신종 디지몬 선택 (안 해도 됨)');
+  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && traitAny(s.cardId, ['백신종']) && s.sources.length > S.fdCount(s)), '최상단 카드를 시큐리티 위에 놓을 백신종 디지몬 선택 (안 해도 됨)');
   if (t) topToSecurityTop(ctx, ctx.opp, t);
 })]);
 hk('BT16-056', { tag: '서로의 턴', has: '시큐리티가 늘어났을 때', limit: 1, events: { securityIncrease: (state, hp, holder, info) => info.owner !== hp && state.players[info.owner].security.length >= 3 } });
@@ -839,6 +842,23 @@ sc('BT16-063::진화 시', [fn(async (ctx) => {
   const lim = Math.max(PL(ctx, ctx.self).security.length, PL(ctx, ctx.opp).security.length);
   const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && lvl(s.cardId) <= lim), `상대의 시큐리티 아래에 놓을 Lv.${lim} 이하 디지몬 선택`);
   if (t) bounceStack(ctx, ctx.opp, t, 'securityBottom');
+})]);
+// EX6-028 세라피몬ACE 서로의 턴 [턴에 1회] 자신의 시큐리티가 늘어났을 때, 「자신의 시큐리티 매수 이하의 Lv.」의 상대의 디지몬 1마리를 패로 되돌린다 (the generic compile dropped the Lv. cap
+// entirely and bounced any digimon). The cap reads the security count when the effect resolves; a Lv.-less digimon is never a legal target (Q3589).
+sc('EX6-028::서로의 턴', [fn(async (ctx) => {
+  const lim = PL(ctx, ctx.self).security.length;
+  const t = await pickStack(ctx, ctx.opp, PL(ctx, ctx.opp).battle.filter(s => isDig(s) && C(s.cardId).level != null && lvl(s.cardId) <= lim), `패로 되돌릴 Lv.${lim} 이하의 상대 디지몬 선택`);
+  if (t) bounceStack(ctx, ctx.opp, t, 'hand');
+})]);
+// EX5-060 드라고몬 서로의 턴 [턴에 1회] 상대의 디지몬이 효과로 등장했을 때, 자신의 트래시에서 「등장한 디지몬의 Lv. 이하」의 퍼플인 디지몬 카드 1장을 코스트 없이 등장시킬 수 있다 — the generic compile dropped
+// the Lv. cap. Official Q&A (Q3658/3659): the cap is the Lv. the played digimon had WHEN THE EFFECT TRIGGERED (evtSnap), even if it later changed Lv. or left the battle area.
+sc('EX5-060::서로의 턴', [fn(async (ctx) => {
+  const snap = ctx.trigger && ctx.trigger.evtSnap; const lim = snap ? snap.level : null;
+  if (lim == null) return; // a Lv.-less digimon: nothing is "Lv. 이하" of it
+  const pl = PL(ctx, ctx.self);
+  if (!pl.trash.some(id => C(id).category === 'digimon' && (C(id).colors || []).includes('purple') && C(id).level != null && lvl(id) <= lim)) return;
+  if (!(await confirm(ctx, `자신의 트래시에서 퍼플인 Lv.${lim} 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬까요?`))) return;
+  await playFreeWhere(ctx, ctx.self, 'trash', (id) => C(id).category === 'digimon' && (C(id).colors || []).includes('purple') && C(id).level != null && lvl(id) <= lim, `등장시킬 퍼플인 Lv.${lim} 이하의 디지몬 선택`);
 })]);
 // BT16-064 진화 시
 sc('BT16-064::진화 시', [{ op: 'condition', if: { test: (ctx) => hasSrc(me(ctx), srcTamerTrait('SoC')) }, then: [fn(async (ctx) => {

@@ -166,9 +166,11 @@ sc('RB1-032::자신의 턴', async (ctx) => {
 // RB1-035 은성일 【서로의 턴】 (tamer rested): the opp digimon that entered: Lv.4+ → memory +1; Lv.3 → draw 1
 sc('RB1-035::서로의 턴', async (ctx) => {
   const lv = ctx.trigger?.evtSnap?.level ?? (evtStack(ctx) ? C(evtStack(ctx).cardId).level : null);
-  if (lv == null) return;
-  if (lv >= 4) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
-  else if (lv === 3) S.drawCards(ctx.state, ctx.self, 1);
+  // QA-W6 Q3453/3454: simultaneous entrants (one instruction) share this single trigger: Lv.4+ anywhere -> memory +1 once, Lv.3 anywhere -> draw once, both if both kinds entered
+  const lvs = [lv, ...((ctx.trigger?.evtSnapsExtra || []).map((x) => x.level))].filter((x) => x != null);
+  if (!lvs.length) return;
+  if (lvs.some((x) => x >= 4)) S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
+  if (lvs.some((x) => x === 3)) S.drawCards(ctx.state, ctx.self, 1);
 });
 
 // ------------------------------------------------------------------ AD1-019 매튜&리키 【자신의 턴】 (tamer rested): play 1 「어드벤처」 card from hand, play cost -1 per 2 of own tamers' colors

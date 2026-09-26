@@ -483,6 +483,7 @@ OPS.s4_destroyAllOwn = async (instr, ctx) => {
 OPS.s4_moveToRaising = async (instr, ctx) => {
   const st = ctx.state, p = ctx.self, pl = st.players[p], me = thisStack(ctx);
   if (!me || pl.raising || !pl.battle.includes(me)) return;
+  if (S.isPlayRestricted(st, p, me.cardId)) { log(ctx, `${p} ${C(me.cardId).nameKo}: 효과로 이동시킬 수 없음 (DP 제한, EX7-014)`); return; } // official Q&A Q3835 (EX7-014): 「DP 6000 이하의 디지몬을 등장시킬 수 없으며, 이동시킬 수 없다」 also stops battle -> breeding moves by effect
   if (!(await confirm(ctx, p, `${C(me.cardId).nameKo}을(를) 육성 에어리어로 이동시킬까요?`))) return;
   S.cancelWaitingEffectsOf(st, me.uid); // 4-17-5
   pl.battle.splice(pl.battle.indexOf(me), 1);
@@ -764,7 +765,7 @@ OPS.s4_luceFallDown = async (instr, ctx) => {
   if (!me) return;
   const cands = digimonOf(st, p).filter(s => s !== me && lvOf(s.cardId) === 6);
   const ti = pl.trash.findIndex(id => isNamed(id, '루체몬: 폴다운 모드'));
-  if (!cands.length || ti < 0 || !canEvolveInto(st, p, me, pl.trash[ti], true).ok) return;
+  if (!cands.length || ti < 0 || !canEvolveInto(st, p, me, pl.trash[ti], false).ok) return; // 공식 Q&A (BT18-034/EX6-018/EX10-013): 진화 조건을 무시할 수 없다 (「루체몬: 폴다운 모드」에는 진화 조건이 없어 이 효과로는 진화 불가)
   if (!(await confirm(ctx, p, 'Lv.6 디지몬 1마리를 시큐리티 위에 놓고 루체몬: 폴다운 모드로 진화시킬까요?'))) return;
   const t = cands.length === 1 ? cands[0] : await pickStackOf(ctx, p, cands, '시큐리티 위에 놓을 Lv.6 디지몬 선택');
   if (!t) return;
@@ -910,7 +911,7 @@ const d61 = { tag: '서로의 턴', has: '리리스몬」/「X항체」가 있�
 } };
 H('EX7-061', d61);
 // Delay-option replacements (option stack placed in the battle area)
-H('BT17-097', { tag: '서로의 턴', has: '황제드라몬', preventLeave: (st, hp, h, target, tp, cause, mode) => {
+H('BT17-097', { tag: '서로의 턴', has: '황제드라몬', noGroup: true, preventLeave: (st, hp, h, target, tp, cause, mode) => {
   if (C(h.cardId).category !== 'option' || st.turnNumber <= h.placedTurn || mode !== 'delete' || cause === 'ownEffect') return false;
   if (C(target.cardId).category !== 'digimon' || !stackHasTrait(st, target, '프리')) return false;
   const pl = st.players[hp];
@@ -939,7 +940,7 @@ H('BT17-095', { tag: '서로의 턴', has: '오메가몬」을 포함하는 디�
   return false;
 } });
 // [트래시] replacement evolutions: 「X」 would be deleted → evolve it into this trash card instead
-const trashSave = (name, has) => ({ zone: 'trash', tag: '서로의 턴', has, preventLeave: (st, hp, h, target, tp, cause, mode, id) => {
+const trashSave = (name, has) => ({ zone: 'trash', tag: '서로의 턴', has, noGroup: true, preventLeave: (st, hp, h, target, tp, cause, mode, id) => {
   if (mode !== 'delete' || C(target.cardId).category !== 'digimon' || !isNamed(target.cardId, name)) return false;
   const pl = st.players[hp];
   const i = pl.trash.indexOf(id);
@@ -1022,7 +1023,8 @@ H('ST18-14', { tag: '자신의 턴', has: '어택의 대상을 다른 상대의 
 const d006 = { tag: '자신의 턴', src: 'inheritedKo', has: '지불하는 등장 코스트 -3', playDiscount: (st, hp, h, cardId) => {
   const pl = st.players[hp];
   if (pl.raising !== h || !isDigimonCard(cardId) || !hasTrait(cardId, '7대마왕')) return null;
-  if (S.turnUsesRemaining(h, S.onceLimitKey('EX6-006', ['자신의 턴']), 1) <= 0) return null;
+  const copies006 = Math.max(1, h.sources.filter(id => id === 'EX6-006').length); // official Q&A Q3697: several copies of this card in the sources each provide their own [턴에 1회] use (the discounts stack)
+  if (S.turnUsesRemaining(h, S.onceLimitKey('EX6-006', ['자신의 턴']), copies006) <= 0) return null;
   const distinct = new Set(h.sources.map(id => C(id).nameKo)).size;
   const amt = distinct >= 5 ? -4 : -3;
   return { label: `${C('EX6-006').nameKo}: ${C(cardId).nameKo} 등장 코스트 ${amt} 할까요?`, apply: () => { S.markTurnEffectUsed(h, S.onceLimitKey('EX6-006', ['자신의 턴'])); return amt; } };

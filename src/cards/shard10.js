@@ -654,6 +654,7 @@ sc('BT10-110::메인', async (ctx, R) => {
   await ops(ctx, R, [{ op: 'unsuspend', target: 'self', digimonOnly: true }]);
   const lp = ctx._lastPick && ctx._lastPick.player === ctx.self ? stackByUid(ctx, ctx._lastPick.uid) : null;
   if (!lp || !S.effectiveInfo(ctx.state, lp).nameIs('제스몬GX')) return;
+  if (S.evoTrigSuppressed(ctx.state, ctx.self, lp)) return; // idx1401: 상대 「베누스몬」 등이 【진화 시】 효과를 발휘하지 못하게 하고 있으면 이 효과로도 발휘할 수 없다
   const segs = S.parseEffectSegments(C(lp.cardId).effectKo || '').segments.filter(x => x.tags.some(t => t.includes('진화 시')));
   if (!segs.length) return;
   let seg = segs[0];

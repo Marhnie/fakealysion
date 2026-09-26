@@ -97,7 +97,9 @@ function moveStackUnder(state, p, mv, target) {
   pl.battle.splice(idx, 1);
   const linkIds = (mv.linkCards || []).map(l => l.cardId);
   pl.trash.push(...linkIds);
-  const cards = [...mv.sources, mv.cardId].filter(id => !C(id).isToken);
+  // 공식 Q&A (BT12-083 등): 진화원 아래에 놓이는 디지몬의 진화원은 동시에 파기된다 (함께 딸려가지 않고 카드 1장만 놓인다)
+  if (mv.sources.length) pl.trash.push(...mv.sources.filter(id => !C(id).isToken));
+  const cards = [mv.cardId].filter(id => !C(id).isToken);
   target.sources.unshift(...cards);
   S.recomputeStackGrants(target);
   S.log(state, `${p} ${C(mv.cardId).nameKo}을(를) ${C(target.cardId).nameKo}의 아래에 놓음`);
@@ -109,6 +111,8 @@ export function fixData(CARDS) {
   // BT11-016: a stray line break made "…이 디지몬의 / 【소멸 시】 효과 1개를…" look like a second 【소멸 시】 trigger.
   const c16 = CARDS['BT11-016'];
   if (c16 && c16.effectKo) c16.effectKo = c16.effectKo.replace('이 디지몬의\n【소멸 시】 효과 1개를', '이 디지몬의 【소멸 시】 효과 1개를');
+  // BT10-096 버닝 스타 크래셔: the 【시큐리티】 text names 「김태성」 but the card is printed 「강태성」 everywhere else (data typo) — the play step could never find it (idx1389-1391).
+  for (const id of ['BT10-096']) { const c = CARDS[id]; if (!c) continue; for (const k of ['effectKo', 'inheritedKo', 'securityKo']) if (c[k]) c[k] = c[k].replace(/김태성/g, '강태성'); }
   // pseudo "cards" used as effect sources / tokens
   const mk = (o) => { CARDS[o.id] = { cardId: o.id, level: null, cost: 0, evoNormal: null, inheritedKo: '', imgUrl: '', ...o }; };
   mk({ id: 'S2-GRANT', nameKo: '부여된 효과', category: 'effect', colors: [], types: [], effectKo: '' });
@@ -124,10 +128,12 @@ export function fullInherit(stack, srcId) {
   return !!names && names.includes(C(srcId).nameKo);
 }
 // BT13-007: while it sits in the breeding area on its owner's turn, no own Digimon may evolve
+export function yggBan(state, p) { const r = state.players[p].raising; return !!(r && r.cardId === 'BT13-007' && state.activePlayer === p); }
+// idx1615-1617: it stops DIGIMON from evolving (incl. jogress / burst) — a Tamer evolving through its own printed 「테이머에서 진화」 condition is not a digimon evolving, only the
+// 「테이머를 Lv.N의 디지몬으로서 취급하여 진화」 route (engine.evolutionMethods -> yggBan) is blocked.
 export function evolveBan(state, p, stack) {
   if (stack.s2NoEvolve) return true;
-  const r = state.players[p].raising;
-  return !!(r && r.cardId === 'BT13-007' && state.activePlayer === p);
+  return yggBan(state, p) && (C(stack.cardId).category !== 'tamer' || S.isAsDigimon(stack));
 }
 // BT14-018: evolving away destroys its tokens (+ 《리커버리 +1》)
 export function beforeDigivolve(state, p, stack, newCardId) {
@@ -178,7 +184,7 @@ export function queueGranted(state, p, stack, eventKind) {
   for (const g of stack.s2Granted) {
     if (g.trigger !== eventKind || state.turnNumber > g.until) continue;
     if (g.fxSrc && (() => { const prev = state._fxSrc; state._fxSrc = g.fxSrc; try { return S.effectBlocked(state, p, stack, 'other'); } finally { state._fxSrc = prev; } })()) continue; // r2 (Q5329)
-    state.pending.push({ uid: 's2g' + (pendSeq++), player: p, cardId: g.cardId || 'S2-GRANT', stackUid: stack.uid, tags: ['부여:' + g.label], text: g.label, resolved: false, watcher: true });
+    state.pending.push({ uid: 's2g' + (pendSeq++), player: p, cardId: g.cardId ? stack.cardId : 'S2-GRANT', stackUid: stack.uid, tags: ['부여:' + g.label], text: g.label, resolved: false, watcher: true }); // (QA-W6 Q4140/3483 BT3-109: 「이 카드」 = the digimon's CURRENT top card when the granted effect triggers, e.g. after it evolved)
   }
 }
 // BT12-112 / EX3-073: opponent 【시큐리티】 effects suppressed for this attacker's checks
@@ -268,10 +274,12 @@ function evoInfo(ctx, stack, cardId, instr) {
   const who = instr.who || ctx.self;
   const restr = S.evolveTargetRestriction(state, who, stack);
   if (restr && restr.cannotEvolve) return null;
-  const chk = ctx.E.canEvolveAny(stack.cardId, cardId, S.evoExtraArg(ctx.state, null, stack), restr);
+  const xa = S.evoExtraArg(ctx.state, null, stack); if (instr.ignoreLevel) xa.ignoreLevel = true; // W8 (Q6066 AD1-008 via BT12-089): "Lv.을 무시하고 진화" still uses the printed cost of the (cheapest) condition that is satisfied once only the Lv. is dropped (e.g. 「히어로」 Lv.5: 코스트 3), not always the normal-line cost
+  const chk = ctx.E.canEvolveAny(stack.cardId, cardId, xa, restr);
   const printed = chk.ok ? chk.cost : (tgt.evoNormal?.cost ?? 0);
   if (!chk.ok) {
     if (/진화 제한/.test(chk.reason || '')) return null; // "…으로만 진화할 수 있다" still applies
+    if (S.s1HookAny(state, 's1evoIgnoreLocked', {})) return null; // BT8-059 (Q1103): no ignoring of the evolution conditions, whole or partial (Lv.)
     if (!instr.ignoreCond) {
       if (!instr.ignoreLevel) return null;
       const cols = tgt.evoNormal?.colors || [];
@@ -348,6 +356,23 @@ OPS.s2_costSource = async (instr, ctx, helpers) => {
   if (!st) return;
   const idxs = st.sources.map((id, i) => i).filter(i => instr.pred(C(st.sources[i]), st.sources[i], st));
   const n = instr.n || 1;
+  if ((instr.dest || 'trash') === 'trash') { // idx1370 (BT10-084 택티몬): a "…진화원을 선택하여 파기하는 것으로" cost may be paid by the replacer's own sources instead (even when this digimon has none)
+    const alt = S.redirectSourceTrash(state, who, st);
+    if (alt && alt !== st) {
+      const ai = alt.sources.map((id, i) => i).filter(i => instr.pred(C(alt.sources[i]), alt.sources[i], alt));
+      if (ai.length >= n) {
+        const picked = ai.length > n ? await pickCards(ctx, who, alt.sources, { eligible: ai, min: n, max: n, prompt: `${C(alt.cardId).nameKo}: 대신 파기할 진화원 선택` }) : ai;
+        if (picked.length >= n && !(ai.length <= n && instr.optional && !(await confirmCtx(ctx, instr.confirm || '진화원을 지불하고 효과를 발휘할까요?')))) {
+          const ids = picked.slice().sort((a, b) => b - a).flatMap(i => alt.sources.splice(i, 1));
+          state.players[who].trash.push(...ids); S.recomputeStackGrants(alt);
+          S.log(state, `${who} ${C(alt.cardId).nameKo}의 진화원 ${ids.map(id => C(id).nameKo).join(', ')} → 트래시 (${C(st.cardId).nameKo} 대신)`);
+          scratch(ctx).costIds = ids;
+          await helpers.runScript(instr.then || [], ctx);
+          return;
+        }
+      }
+    }
+  }
   if (idxs.length < n) { S.log(state, `${who} 비용으로 지불할 진화원이 부족해 효과를 건너뜀`); return; }
   let chosen = idxs.slice(-n);
   if (idxs.length > n) {
@@ -416,7 +441,7 @@ OPS.s2_destroySumCost = async (instr, ctx) => {
     if (!st) break;
     chosen.push(st); left -= (C(st.cardId).cost || 0);
   }
-  for (const st of chosen) destroyStack(ctx, opp, st);
+  for (const u of S.orderSimulDelete(state, opp, chosen.map(x => x.uid))) { const st = chosen.find(x => x.uid === u); if (st) destroyStack(ctx, opp, st); } // idx1468/1341: one simultaneous group — protectors/granters (츠와몬, 로터스몬) go last
 };
 // BT12-108: destroy chosen own Machine/Cyborg + an opponent Digimon with DP ≤ its DP
 OPS.s2_destroyPair = async (instr, ctx) => {
@@ -503,6 +528,7 @@ OPS.s2_restPick = async (instr, ctx) => {
 };
 OPS.s2_restAllSkip = async (instr, ctx) => {
   const { state } = ctx;
+  if (instr.skip && instr.allCards) S.addLateUnsuspendSkip(state, ctx.opp, { kind: 'all' }); // idx1598: cards that arrive later are covered too
   for (const st of [...state.players[ctx.opp].battle]) {
     if (!['digimon', 'tamer'].includes(C(st.cardId).category) && !instr.allCards) continue;
     if (instr.rest !== false) S.restStack(state, ctx.opp, st.uid);
@@ -512,6 +538,7 @@ OPS.s2_restAllSkip = async (instr, ctx) => {
 // "상대의 턴 종료까지 상대의 디지몬과 테이머 전부는 액티브가 되지 않는다."
 OPS.s2_noActiveOpp = async (instr, ctx) => {
   const { state } = ctx;
+  S.addNoActiveAll(state, ctx.opp, untilOppTurnEnd(state, ctx.self), ['digimon', 'tamer']); // idx1974/1598: also reaches cards arriving later
   for (const st of state.players[ctx.opp].battle) if (['digimon', 'tamer'].includes(C(st.cardId).category)) st.s2NoActiveUntil = untilOppTurnEnd(state, ctx.self);
   S.log(state, `${ctx.opp} 디지몬/테이머 전부 상대의 턴 종료까지 액티브가 되지 않음`);
 };
@@ -544,14 +571,17 @@ OPS.s2_attackNoRest = async (instr, ctx) => {
 // the opponent must attack with a Digimon of theirs (EX3-024: opponent chooses; BT13-077: the effect owner chooses)
 OPS.s2_forceOppAttack = async (instr, ctx) => {
   const { state } = ctx; const opp = ctx.opp;
-  const opts = digimonStacks(state, opp).filter(s => canDeclare(state, opp, s));
-  if (!opts.length) { S.log(state, `${opp} 어택할 수 있는 디지몬이 없음`); return; }
+  // official Q&A (EX3-024 Q3397/3398, same wording as EX6-042 Q3765): ANY digimon of the opponent may be chosen — one that "cannot attack" is a legal pick and simply
+  // ends the effect without an attack; with no digimon at all the effect also just ends.
+  const opts = digimonStacks(state, opp);
+  if (!opts.length) { S.log(state, `${opp} 어택시킬 디지몬이 없음`); return; }
   let st;
   if (instr.selfChooses) {
     if (!(await confirmCtx(ctx, '상대의 디지몬 1마리를 선택해 어택시킬까요?'))) return;
     st = await pickStackOf(ctx, ctx.self, opts, '어택시킬 상대 디지몬 선택');
   } else st = await pickStackOf(ctx, opp, opts, `${opp}: 본인의 디지몬 1마리를 어택시킵니다`);
   if (!st) return;
+  if (!canDeclare(state, opp, st)) { S.log(state, `${opp} ${C(st.cardId).nameKo}은(는) 어택할 수 없어 어택하지 않음`); return; }
   if (ctx.startAttack) ctx.startAttack(opp, st.uid);
 };
 OPS.s2_attackThis = async (instr, ctx) => { // granted "이 디지몬으로 어택한다."
@@ -705,7 +735,8 @@ OPS.s2_moveUnder = async (instr, ctx) => { // BT11-088 / BT12-083
   const movable = digs.filter(s => (C(s.cardId).level || 0) <= maxLv);
   const mv = await pickStackOf(ctx, ctx.self, movable, instr.prompt || '아래에 놓을 상대 디지몬 선택');
   if (!mv) return;
-  const targets = [...digs.filter(s => s !== mv), ...(instr.allowTamer ? tamerStacks(state, opp) : [])];
+  // 공식 Q&A (BT11-088/BT11-109/BT12-083/EX10-056): 효과를 받지 않는 디지몬/테이머의 진화원·아래에는 놓을 수 없다
+  const targets = [...digs.filter(s => s !== mv), ...(instr.allowTamer ? tamerStacks(state, opp) : [])].filter(s => !S.effectBlocked(state, opp, s, 'other'));
   if (!targets.length) { S.log(state, `${opp} 아래에 놓을 대상이 없음`); return; }
   const cause = causeFor(ctx, opp);
   if (S.effectBlocked(state, opp, mv, 'bounce')) return;
@@ -741,6 +772,8 @@ OPS.s2_secRevealTrash = async (instr, ctx) => { // BT10-086
   for (let k = all.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [all[k], all[j]] = [all[j], all[k]]; }
   opl.security = all;
   S.log(state, `${ctx.opp} 시큐리티에서 ${C(gone).nameKo} 파기, 나머지는 뒷면으로 되돌려 셔플`);
+  // idx1372: an opened-then-trashed card is not "discarded from security", but the security count DID drop -> "시큐리티가 줄어들었을 때" watchers (BT4-097 신나리 …) fire
+  S.emitGameEvent(state, 'securityDecrease', { owner: ctx.opp, stack: null, cause: 'effect' });
 };
 OPS.s2_playFree = async (instr, ctx) => { // free-play with hooks (returns the new stack to `then`)
   const { state } = ctx; const who = ctx.self;
@@ -894,7 +927,7 @@ SCRIPTS['EX4-033::자신의 턴@연계'] = evoChain(chainCard);
 OPS.s2_runPlaced = async (instr, ctx, helpers) => { // BT10-112: activate a 【진화 시】 of the card just placed, as this digimon's effect
   const id = scratch(ctx).placedIds?.[0];
   if (!id) return;
-  await runCardSegments(ctx, helpers, id, '진화 시', { asCardId: ctx.sourceCardId, asStackUid: ctx.sourceStackUid });
+  await runCardSegments(ctx, helpers, id, instr.tag || '진화 시', { asCardId: ctx.sourceCardId, asStackUid: ctx.sourceStackUid });
 };
 OPS.s2_runTamerEffect = async (instr, ctx, helpers) => { // BT11-029: another of my cards' 【등장 시】
   const st = await pickStackOf(ctx, ctx.self, tamerStacks(ctx.state, ctx.self).filter(t => nameIs(C(t.cardId), instr.name)), `「${instr.name}」 선택`);
@@ -944,7 +977,14 @@ OPS.s2_shotDown = async (instr, ctx) => { // RB1-019: an opponent Digimon goes u
   if (st) bounceStack(ctx, ctx.opp, st, 'securityBottom');
 };
 OPS.s2_lv3ToSecurity = async (instr, ctx) => { // RB1-019 【진화 시】 not in shard but helper shared
-  for (const p of [ctx.self, ctx.opp]) for (const st of digimonStacks(ctx.state, p).filter(s => C(s.cardId).level === 3)) bounceStack(ctx, p, st, 'securityTop');
+  for (const p of [ctx.self, ctx.opp]) {
+    let list = digimonStacks(ctx.state, p).filter(s => C(s.cardId).level === 3);
+    if (list.length > 1) { // QA-W6 Q3438: several digimon going onto the same security stack at once -> the player who activated the effect decides their order (first in the list = topmost)
+      const ordIds = await S.orderPlacement(ctx.choose, ctx.self, list.map(s => s.cardId), `${p}의 시큐리티 위에 놓을 Lv.3 디지몬의 순서를 정하세요 (위쪽부터)`);
+      const pool = [...list]; list = ordIds.map(id => pool.splice(pool.findIndex(s => s.cardId === id), 1)[0]);
+    }
+    for (const st of [...list].reverse()) bounceStack(ctx, p, st, 'securityTop');
+  }
 };
 
 // batch 2: scripts
@@ -952,6 +992,30 @@ SCRIPTS['BT10-081::어택 시'] = [{ op: 's2_trashDeckUpTo', max: 3 }];
 SCRIPTS['BT10-086::진화 시@가장 Lv'] = [{ op: 's2_bounceHighestLv' }];
 SCRIPTS['BT10-086::진화 시@X항체'] = [{ op: 's2_costSource', dest: 'deckBottom', pred: (c) => isX(c) || c.level === 6, prompt: '덱 아래로 되돌릴 「X항체」 또는 Lv.6 진화원 선택', then: [{ op: 's2_secRevealTrash' }] }];
 SCRIPTS['BT10-111::등장 시'] = [{ op: 's2_returnFromTrash', pred: (c, id) => isXros(id), prompt: '패로 되돌릴 디지크로스 조건을 가진 카드 선택 (선택 안 함 = 안 함)' }, { op: 's2_xrosSub' }];
+// BT14-094 헤븐즈 너클 【메인】 이하의 효과에서 1개를 발휘한다. ·턴 종료까지 상대의 디지몬 1마리를 DP -6000. ·자신의 「엔젤몬」 1마리를 소멸시키는 것으로, 상대의 디지몬 1마리를 시큐리티 아래에 놓는다.
+// (the second branch's 'put under security' was a manual noop). idx1824: with no opponent digimon the own 「엔젤몬」 can still be deleted.
+OPS.s2_bt14094 = async (instr, ctx) => {
+  const { state } = ctx, me = ctx.self, o = ctx.opp;
+  const k = await ctx.choose('multipleChoice', { prompt: '발휘할 효과 선택', options: ['턴 종료까지 상대의 디지몬 1마리를 DP -6000', '자신의 「엔젤몬」 1마리를 소멸시키는 것으로, 상대의 디지몬 1마리를 시큐리티 아래에 놓는다'] });
+  if (k === 1) {
+    const own = await pickStackOf(ctx, me, digimonStacks(state, me).filter(s => nameIs(C(s.cardId), '엔젤몬')), '소멸시킬 자신의 「엔젤몬」 선택');
+    if (!own) return;
+    S.deleteStack(state, me, own.uid, 'trash', 'ownEffect');
+    if (state.players[me].battle.includes(own)) return; // survived: the cost was not paid
+    const mv = await pickStackOf(ctx, me, digimonStacks(state, o).filter(s => !S.effectBlocked(state, o, s, 'bounce')), '시큐리티 아래에 놓을 상대의 디지몬 선택');
+    if (!mv) return;
+    const doMove = () => { if (!state.players[o].battle.includes(mv)) return; if (S.leaveGate(state, o, mv, 'effect', 'bounce', doMove)) return; leaveArea(state, mv, o, 'securityBottom', 'effect'); };
+    doMove();
+    return;
+  }
+  const t = await pickStackOf(ctx, me, digimonStacks(state, o), 'DP -6000 받을 상대의 디지몬 선택');
+  if (t) S.modifyDP(state, o, t.uid, -6000, 'turn');
+};
+SCRIPTS['BT14-094::메인'] = [{ op: 's2_bt14094' }];
+// BT15-102 아포카리몬 【자신의 턴 종료 시】[턴에 1회] 트래시의 Lv.6 이하의 카드 1장을 이 디지몬의 진화원 아래에 놓는 것으로, 놓은 카드의 【등장 시】 효과 1개를 이 디지몬의 효과로써 발휘한다. 그 후, 진화원의 Lv.6 카드 1장마다 상대의 덱 위에서부터 2장 파기.
+// (was a generic manual noop). idx1952: when nothing was placed the whole remainder (incl. the 'per Lv.6 source' discard) is skipped.
+SCRIPTS['BT15-102::자신의 턴 종료 시'] = [{ op: 's2_placeUnder', zones: ['trash'], min: 0, pred: (c) => c.level != null && c.level <= 6, prompt: '이 디지몬의 진화원 아래에 놓을 트래시의 Lv.6 이하의 카드 (선택 안 함 = 안 함)' },
+  { op: 's2_if', test: (ctx) => (scratch(ctx).placed || 0) > 0, then: [{ op: 's2_runPlaced', tag: '등장 시' }, { op: 'trashDeckTop', who: 'opponent', n: 2, per: { kind: 'sources', filter: { level: 6 }, size: 1 } }] }];
 SCRIPTS['BT10-112::진화 시'] = [
   { op: 's2_placeUnder', zones: ['hand', 'trash'], pred: (c) => hasTrait(c, '로얄 나이츠') && (c.cost || 0) <= 13, prompt: '이 디지몬의 진화원 아래에 놓을 「로얄 나이츠」 카드' },
   { op: 's2_runPlaced' }, { op: 's2_progress' }];
@@ -1252,7 +1316,7 @@ for (const [id, tag, has] of EW_TRUSTED_S2) hk(id, tag, has, { ewTrusted: true }
 const anyTamer = (state) => ['p1', 'p2'].some(p => tamerStacks(state, p).length > 0);
 const lv5Sources = (h) => h.sources.map((id, i) => i).filter(i => C(h.sources[i]).level === 5);
 const jelly = (c) => (c.nameKo || '').includes('젤리몬');
-const hasSAtk = (st) => S.securityAttackBonus(st) !== 0 || S.hasKeyword(st, '시큐리티어택');
+const hasSAtk = (st, state, p) => S.securityAttackBonus(st) !== 0 || S.hasKeyword(st, '시큐리티어택') || (!!st.keywords && st.keywords['시큐리티어택'] !== undefined) || (!!st.inheritedKeywords && st.inheritedKeywords['시큐리티어택'] !== undefined) /* Q1328: +1 and -1 cancelling out is still "having 《S 어택》" */ || (!!state && !!p && S.hookSecurityAttackBonus(state, p, st) !== 0); // idx1401/1531: continuous 《S 어택 +N》 grants from hooks (e.g. 제스몬GX) count as "having" it
 const onceOk = (holder, key) => S.turnUsesRemaining(holder, S.onceLimitKey(key, ['s2']), 1) > 0;
 const onceMark = (holder, key) => S.markTurnEffectUsed(holder, S.onceLimitKey(key, ['s2']));
 const takeFromTrashToDeck = (state, p, pred, n) => { const tr = state.players[p].trash; for (let i = tr.length - 1; i >= 0 && n > 0; i--) if (pred(C(tr[i]))) { state.players[p].deck.push(...tr.splice(i, 1)); n--; } };
@@ -1312,8 +1376,8 @@ hk('EX3-033', '상대의 턴', '4대용의 시련', { grantKw: (s, hp, h, t) => 
 hki('EX3-033', '상대의 턴', '블로커', { grantKw: (s, hp, h, t) => (C(t.cardId).category === 'digimon' && hasTrait(C(t.cardId), '4대용') ? ['블로커'] : []) });
 hk('EX3-060', '서로의 턴', '어택과 블록', { noAttack: (s, hp, h) => h.sources.length === 0, noBlock: (s, hp, h, t) => t === h && h.sources.length === 0 });
 hk('BT10-042', '상대의 턴', '어택할 수 없고', {
-  atkTargetBlocked: (s, hp, h, ap, a, t) => t === h && hasSAtk(a),
-  suppressTrigger: (s, hp, h, tp, t, tag) => tp !== hp && (tag === '진화 시' || tag === '어택 시') && hasSAtk(t) });
+  atkTargetBlocked: (s, hp, h, ap, a, t) => t === h && hasSAtk(a, s, ap),
+  suppressTrigger: (s, hp, h, tp, t, tag) => tp !== hp && (tag === '진화 시' || tag === '어택 시') && hasSAtk(t, s, tp) });
 hk('EX4-042', '자신의 턴', '블록당하지', { s1blocked: (s, hp, h, i) => i.attackerP === hp && i.attacker && (i.attacker === h || (C(i.attacker.cardId).category === 'digimon' && (nameHas(C(i.attacker.cardId), '나이트몬') || nameHas(C(i.attacker.cardId), '나이츠몬')))) });
 hk('RB1-006', '자신의 턴', '액티브 상태인', { attackAnyActive: (s, hp) => tamerStacks(s, hp).some(t => hasColor(t, 'red')) });
 hk('BT12-057', '서로의 턴', '액티브가 되지', { noUnsuspendOthers: (s, hp, h, st) => st !== h && ['digimon', 'tamer'].includes(C(st.cardId).category) });

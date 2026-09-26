@@ -126,7 +126,7 @@ sc('EX13-002::자신의 턴', async (ctx) => {
 // EX13-020 매그너몬 【등장 시】【진화 시】【어택 시】[턴 1회] 상대의 턴 종료까지 트래시의 카드의 색 1색마다 이 디지몬을 DP +1000. 그 후, 상대의 턴 종료까지 상대의 디지몬 1마리를 이 디지몬의 DP 5000마다 DP -4000.
 sc('EX13-020::등장 시', async (ctx) => {
   const { state } = ctx; const st = me(ctx); if (!st) return;
-  const cols = new Set(); for (const id of PL(ctx, ctx.self).trash) for (const c of C(id).colors || []) cols.add(c);
+  const cols = new Set(); for (const id of [...PL(ctx, ctx.self).trash, ...PL(ctx, ctx.opp).trash]) for (const c of C(id).colors || []) cols.add(c); // 공식 Q&A idx6450: 「트래시의 카드의 색 1색마다」는 서로의 트래시를 참조한다
   if (cols.size) S.modifyDP(state, ctx.self, st.uid, 1000 * cols.size, 'opponentTurn');
   const times = Math.floor(S.effectiveDP(state, ctx.self, st) / 5000);
   if (!times) return;
@@ -455,12 +455,12 @@ sc('EX13-071::메인', async (ctx, R) => {
   const kuda = await pickStack(ctx, ctx.self, kudas, '진화시킬 「쿠다몬」 선택', { auto: true });
   const tam = await pickStack(ctx, ctx.self, tamers, '뒷면 카드를 파기할 테이머 선택', { auto: true });
   if (!kuda || !tam) { decline(ctx); return; }
+  { const fd0 = S.fdCount(tam); const gone0 = tam.sources.splice(0, 3); tam.s5fd = Math.max(0, fd0 - 3); pl.trash.push(...gone0); S.recomputeStackGrants(tam); } // 공식 Q&A idx6637: 먼저 테이머 아래의 뒷면 카드 3장을 파기하고, 그 파기한 카드도 「쿠다몬」의 진화원 아래에 놓을 카드로 고를 수 있다
   const i4 = await pickFromList(ctx, pl.trash.slice(), yl(4), '진화원 아래에 놓을 성수형 옐로인 Lv.4 디지몬 카드 선택');
   const i5 = i4 == null ? null : await pickFromList(ctx, pl.trash.slice(), yl(5), '진화원 아래에 놓을 성수형 옐로인 Lv.5 디지몬 카드 선택');
   if (i4 == null || i5 == null) { decline(ctx); return; }
   const ids = [pl.trash[i4], pl.trash[i5]];
   for (const i of [i4, i5].sort((a, b) => b - a)) pl.trash.splice(i, 1);
-  const fd = S.fdCount(tam); const gone = tam.sources.splice(0, 3); tam.s5fd = Math.max(0, fd - 3); pl.trash.push(...gone); S.recomputeStackGrants(tam);
   kuda.sources.splice(S.fdCount(kuda), 0, ...ids); S.recomputeStackGrants(kuda);
   log(ctx, `${ctx.self} ${C(tam.cardId).nameKo} 아래의 뒷면 카드 3장 파기, ${ids.map((i) => C(i).nameKo).join('/')}을(를) ${C(kuda.cardId).nameKo}의 진화원 아래에 놓음`);
   const save = ctx.sourceStackUid; ctx.sourceStackUid = kuda.uid;
@@ -587,7 +587,7 @@ sc('EX13-026::이동 시', async (ctx) => {
   const hi = await pickFromList(ctx, revealed.slice(), revealed.map((id, i) => i).filter((i) => hasTrait(C(revealed[i]), '성수형', '로얄 나이츠', '세이버즈')), '패에 추가할 카드 선택 (성수형/로얄 나이츠/세이버즈, 취소=하지 않음)');
   if (hi != null) { pl.hand.push(revealed[hi]); log(ctx, `${ctx.self} ${C(revealed[hi]).nameKo}을(를) 패에 추가`); revealed[hi] = null; }
   const tams = pl.battle.filter((t) => isTam(t) && hasTrait(C(t.cardId), '세이버즈'));
-  const remIdx = revealed.map((id, i) => i).filter((i) => revealed[i]);
+  const remIdx = revealed.map((id, i) => i).filter((i) => revealed[i] && hasTrait(C(revealed[i]), '성수형', '로얄 나이츠', '세이버즈')); // 공식 Q&A idx6474: 테이머 아래에 놓는 카드도 지정된 카드(성수형/로얄 나이츠/세이버즈)여야 한다
   if (tams.length && remIdx.length) {
     const fi = await pickFromList(ctx, revealed.slice(), remIdx, '「세이버즈」 테이머 아래에 뒷면으로 놓을 카드 선택 (취소=하지 않음)');
     if (fi != null) {

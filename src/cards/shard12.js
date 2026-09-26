@@ -267,7 +267,9 @@ sc('BT17-077::등장 시', async (ctx, R) => {
   const { state } = ctx;
   await run(ctx, R, '상대의 디지몬 전부의 진화원을 전부 파기한다.');
   let white7 = false;
-  for (const p of [ctx.self, opp(ctx.self)]) {
+  // 「자신/상대의 트래시」의 「/」= 택일 (공식 Q&A: 발휘한 플레이어가 자신 또는 상대의 트래시 중 하나를 골라 그 트래시 전부를 되돌린다)
+  const kTr = await ctx.choose('multipleChoice', { prompt: '덱 아래로 되돌릴 트래시를 선택하세요', options: ['자신의 트래시', '상대의 트래시'] });
+  for (const p of [kTr === 1 ? opp(ctx.self) : ctx.self]) {
     const pl = state.players[p];
     if (pl.trash.some(id => colorOf(id, 'white') && lvOf(id) === 7)) white7 = true;
     pl.deck.push(...pl.trash); pl.trash = [];
@@ -325,9 +327,9 @@ sc('EX7-044::등장 시', async (ctx) => {
   if (t) del(state, o, t, ctx.self);
 });
 alias('EX7-044::진화 시', 'EX7-044::등장 시');
-// ST19-11/15: 디지몬이 3마리 이상 있다면 이 DP 마이너스 효과의 수치를 추가로 낮춘다 (자신의 디지몬 수)
+// ST19-11/15: 디지몬이 3마리 이상 있다면 이 DP 마이너스 효과의 수치를 추가로 낮춘다 (Q&A ST19-11/15: 자신과 상대의 디지몬을 합쳐서 센다)
 const dpMinus = (base, ext) => async (ctx, R) => {
-  const amount = base - (digs(ctx.state, ctx.self).length >= 3 ? ext : 0);
+  const amount = base - (digs(ctx.state, ctx.self).length + digs(ctx.state, S.opponentOf(ctx.self)).length >= 3 ? ext : 0);
   await R.runOne({ op: 'modifyDP', target: 'opponent', amount, duration: 'turn' }, ctx);
 };
 sc('ST19-11::등장 시', dpMinus(-3000, 3000));
@@ -375,12 +377,12 @@ sc('BT18-096::메인', async (ctx) => {
   await evolveAny(ctx, { stacks: [...digs(state, ctx.self), ...tams(state, ctx.self)], zones: ['hand', 'trash'], pred: (c) => c.nameKo === '스사노오몬', cost: { mode: 'free' }, ignoreCond: true, prompt: '진화할 「스사노오몬」 선택' });
   const host = await pickStack(ctx, ctx.self, digs(state, ctx.self).filter(s => S.cardNameIs(s.cardId, '스사노오몬')), '테이머를 진화원 아래에 놓을 「스사노오몬」 선택');
   if (!host) return;
-  const used = new Set();
+  const usedLists = [];
   for (let i = 0; i < 4; i++) {
-    const cands = tams(state, ctx.self).filter(t => t !== host && S.stackColors(t).every(c => !used.has(c)));
+    const cands = tams(state, ctx.self).filter(t => t !== host && S.colorsAllDistinct([...usedLists, S.stackColors(t)])); // W9r2: multi-colored tamers may count as different colors
     const t = await pickStack(ctx, ctx.self, cands, '진화원 아래에 놓을 색이 서로 다른 테이머 선택 (안 해도 됨)');
     if (!t) break;
-    S.stackColors(t).forEach(c => used.add(c));
+    usedLists.push(S.stackColors(t));
     putStackUnder(state, ctx.self, t, host);
     S.grantMemory(state, ctx.self, 1, ctx.sourceCardId);
   }
@@ -490,7 +492,7 @@ alias('EX8-044::진화 시', 'EX8-044::등장 시');
 sc('BT20-018::등장 시', async (ctx, R) => {
   const { state } = ctx, r = state.players[ctx.self].raising;
   await run(ctx, R, '상대의 디지몬 1마리를 《퇴화 2》.');
-  if (!state.attackCtx || state.attackCtx.attacker !== ctx.self || !r || !isDig(r)) return;
+  if (!state.attackCtx || !r || !isDig(r)) return; // "어택 중이라면" = 어느 쪽의 어택이든 (공식 Q&A BT20-018: 상대의 어택 중에도 만족)
   await evolveInto(ctx, { stack: r, zones: ['hand', 'trash'], pred: (c, id) => trait(id, '크로니클') && c.level <= 6, cost: { mode: 'free' }, prompt: '육성 에어리어의 디지몬을 진화시킬 「크로니클」 카드 선택 (안 해도 됨)' });
 });
 alias('BT20-018::진화 시', 'BT20-018::등장 시');

@@ -167,7 +167,8 @@ D('EX2-064', '자신의 턴', 'Lv.6으로', { s1evoOption: (state, hp, holder, i
   if (info.p !== hp || state.activePlayer !== hp || !isDigimon(info.stack) || C(info.stack.cardId).level !== 5 || C(info.targetId).category !== 'digimon' || C(info.targetId).level !== 6) return null;
   const key = S.onceLimitKey('EX2-064', ['자신의 턴']);
   if (S.turnUsesRemaining(holder, key, 1) <= 0) return null;
-  const others = state.players[hp].battle.filter(s => isDigimon(s) && s !== info.stack);
+  // Q3350: 진화하려는 Lv.5 디지몬 자신도 소멸시킬 수 있다 — 그 경우 진화는 실패하고(패에서 내던 카드는 패에 남음, 진화 코스트 지불 없음)
+  const others = state.players[hp].battle.filter(s => isDigimon(s));
   if (!others.length) return null;
   return { label: '앨리스 맥코이 — 자신의 디지몬 1마리를 소멸시켜 진화 코스트 -3?', async apply(choose) {
     let uid = others[0].uid;
@@ -175,18 +176,25 @@ D('EX2-064', '자신의 턴', 'Lv.6으로', { s1evoOption: (state, hp, holder, i
     if (!uid) return 0;
     S.markTurnEffectUsed(holder, key);
     S.deleteStack(state, hp, uid, 'trash', 'ownEffect');
+    if (uid === info.stack.uid) { state._evoAbort = true; return 0; } // the evolving digimon itself was destroyed -> evolution cannot proceed (main.js checks _evoAbort)
     return -3;
   } };
 } });
 // EX2-055 리퍼 「이 디지몬이 등장할 때, 자신의 「마더 디·리퍼」 1마리의 진화원을 아래에서부터 7장 이상 파기하는 것으로, 지불하는 등장 코스트를 0으로 한다」 — hand-play option (was not implemented at all)
 D('EX2-055', '__handPlay', '', { handPlayOption: (state, p, cardId) => {
-  const moms = state.players[p].battle.filter(s => C(s.cardId).nameKo === '마더 디·리퍼' && s.sources.length >= 7);
+  // Q3347: 파기할 수 없는 진화원(BT9-109 X항체 등)은 제외하고 7장 이상 파기할 수 있어야 한다 (효과 파기이므로 보호 판정을 적용)
+  const freeSrc = (s) => s.sources.filter(id => !S.s1ProtectedSource(state, p, s, id)).length;
+  const moms = state.players[p].battle.filter(s => C(s.cardId).nameKo === '마더 디·리퍼' && freeSrc(s) >= 7);
   if (!moms.length) return null;
   return { label: `${C(cardId).nameKo}: 「마더 디·리퍼」의 진화원을 아래에서부터 7장 파기하여 등장 코스트를 0으로 할까요?`, async apply(choose) {
     let uid = moms[0].uid;
     if (moms.length > 1 && typeof choose === 'function') uid = await choose('pickStack', { player: p, uids: moms.map(s => s.uid), prompt: '진화원을 파기할 「마더 디·리퍼」 선택' });
     if (!uid) return 0;
-    if (S.trashEvoSources(state, p, uid, 7, 'bottom').length < 7) return 0;
+    const prevSrc = state._fxSrc; state._fxSrc = { player: p, category: 'digimon', cardId, alsoDigimon: true };
+    // Q1285 (BT9-109): declare as many bottom sources as needed so that 7 of them are discardable (the protected card is skipped, it does not count)
+    const mom = state.players[p].battle.find(s => s.uid === uid); let cnt = 0, freeCnt = 0; while (mom && cnt < mom.sources.length && freeCnt < 7) { if (!S.s1ProtectedSource(state, p, mom, mom.sources[cnt])) freeCnt++; cnt++; }
+    let n; try { n = S.trashEvoSources(state, p, uid, cnt, 'bottom').length; } finally { state._fxSrc = prevSrc; }
+    if (n < 7) return 0;
     return -(C(cardId).cost || 0);
   } };
 } });
@@ -258,17 +266,28 @@ sc('EX3-062::진화 시', async (ctx, R) => {
   if (st.players[ctx.opp].trash.length >= 5) await R.runOne({ op: 'playFree', who: 'self', zone: 'trash', filter: { exactAny: ['오유민'] }, rested: false, noTriggers: false, optional: true }, ctx);
 });
 // EX3-065 쿠리하라 히나 【자신의 턴】 자신의 디지몬이 「암룡형」/「지룡형」/「기룡형」/「천룡형」 특징의 디지몬으로 진화했을 때, 이 테이머를 레스트시키는 것으로 그 디지몬의 【등장 시】 효과 1개를 발휘시킨다 (was a manual noop)
+// Official Q&A (Q3430/3431): the rest is a COST ("것으로") paid when this trigger resolves, not when the digimon evolves — with two 「쿠리하라 히나」 the 2nd one is rested only if the digimon is still there after the 1st
+// one's 【등장 시】 (the digimon's effect is queued as a derived trigger, so it resolves before the 2nd tamer's trigger). The player also may decline to pay.
+const hina65Types = ['암룡형', '지룡형', '기룡형', '천룡형'];
 D('EX3-065', '자신의 턴', '암룡형', { events: { digivolve: (state, hp, holder, info) => {
   if (info.owner !== hp || !info.stack || !isDigimon(info.stack) || holder.suspended || C(holder.cardId).category !== 'tamer') return false;
-  if (!(C(info.stack.cardId).types || []).some(t => ['암룡형', '지룡형', '기룡형', '천룡형'].includes(t))) return false;
-  const seg = S.parseEffectSegments(C(info.stack.cardId).effectKo).segments.find(sg => sg.tags.includes('등장 시'));
-  if (!seg) return false;
-  S.restStack(state, hp, holder.uid);
-  if (!holder.suspended) return false;
-  S.queuePending(state, { player: hp, cardId: info.stack.cardId, stackUid: info.stack.uid, tags: ['등장 시'], text: seg.body, topId: info.stack.cardId, evt: { kind: 'digivolve' } });
-  S.log(state, `${hp} 쿠리하라 히나를 레스트시켜 ${C(info.stack.cardId).nameKo}의 【등장 시】 효과를 발휘시킴`);
-  return false;
-} }, skipTrigger: true });
+  if (!(C(info.stack.cardId).types || []).some(t => hina65Types.includes(t))) return false;
+  return S.parseEffectSegments(C(info.stack.cardId).effectKo).segments.some(sg => sg.tags.includes('등장 시'));
+} } });
+sc('EX3-065::자신의 턴', async (ctx) => {
+  const state = ctx.state, holder = me(ctx); const uid = ctx.trigger && ctx.trigger.evt && ctx.trigger.evt.stackUid;
+  const st = uid && findStack(state, ctx.self, uid);
+  if (!holder || holder.suspended || !st || !isDigimon(st) || !(C(st.cardId).types || []).some(t => hina65Types.includes(t))) return; // the digimon left / the tamer is already rested: nothing to pay or resolve
+  const segs = S.parseEffectSegments(C(st.cardId).effectKo).segments.filter(sg => sg.tags.includes('등장 시'));
+  if (!segs.length) return;
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `이 테이머를 레스트시켜 ${C(st.cardId).nameKo}의 【등장 시】 효과 1개를 발휘시킬까요?` }))) return;
+  let seg = segs[0];
+  if (segs.length > 1) { const k = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '발휘시킬 【등장 시】 효과 선택', options: segs.map(sg => sg.body.replace(/([^()]*)/g, '').slice(0, 60)) }); seg = segs[k || 0] || segs[0]; }
+  S.restStack(state, ctx.self, holder.uid);
+  if (!holder.suspended) return;
+  S.queuePending(state, { player: ctx.self, cardId: st.cardId, stackUid: st.uid, tags: ['등장 시'], text: seg.body, topId: st.cardId, evt: { kind: 'digivolve' } });
+  S.log(state, `${ctx.self} 쿠리하라 히나를 레스트시켜 ${C(st.cardId).nameKo}의 【등장 시】 효과를 발휘시킴`);
+});
 
 // ---- EX4 ----
 // EX4-011 카오스듀크몬 [트래시]【자신의 턴 종료 시】 진화원을 가진 「듀크몬」 포함 자신의 디지몬 1마리를 소멸시키는 것으로, 이 카드(트래시)를 코스트 없이 등장 (compiled as playing "a card from hand")
@@ -282,7 +301,10 @@ sc('EX4-011::자신의 턴 종료 시', async (ctx) => {
   if (!uid) return;
   S.deleteStack(state, ctx.self, uid, 'trash', 'ownEffect');
   const ix = pl.trash.indexOf('EX4-011');
-  if (ix >= 0) S.playFreeFromZone(state, ctx.self, 'trash', ix, {});
+  if (ix < 0) return;
+  // official Q&A (Q3448): "등장시킬 수 있다" — after paying the destroy cost the player may still decline to play this card
+  if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: '트래시의 카오스듀크몬을 코스트를 지불하지 않고 등장시킬까요?' }))) return;
+  S.playFreeFromZone(state, ctx.self, 'trash', ix, {});
 });
 // EX4-048 가이오몬 【자신의 턴 종료 시】 자신의 테이머가 있다면 이 디지몬을 패의 「가이오몬」 포함 등장 코스트 13 이상 카드 1장으로 진화 조건 무시·코스트 없이 진화 (the compiled script ALSO played a second card from hand)
 SCRIPTS['EX4-048::자신의 턴 종료 시'] = [{ op: 'condition', if: { hasTamer: true }, then: [{ op: 'evolveEffect', who: 'self', subject: { thisStack: true }, zone: 'hand', cardFilter: { nameAny: ['가이오몬'], costMin: 13, category: 'digimon' }, cost: { mode: 'free' }, ignoreCond: true, ignoreLevel: false }], else: [] }];
@@ -326,6 +348,7 @@ sc('EX4-023::상대의 턴', async (ctx) => {
   if (ix == null) return;
   const [id] = pl.hand.splice(ix, 1);
   S.log(ctx.state, `${ctx.self} 패의 ${C(id).nameKo}을(를) 오픈`);
+  if (S.s1SecIncreaseBlocked(ctx.state, ctx.self)) { pl.trash.push(id); S.log(ctx.state, `${ctx.self} 시큐리티를 늘릴 수 없어(효과 제한) 오픈한 ${C(id).nameKo}은(는) 룰에 의해 파기됨`); return; } // Q3464 (BT9-103 「금강」): the opened card cannot be placed, so it is discarded by rule
   S.addToSecurity(ctx.state, ctx.self, id, 'top');
 });
 // EX4-058 레이브몬 【어택 종료 시】 진화원에 「조」/「새」/「병아리」 특징의 카드가 있는 이 디지몬을 소멸시키는 것으로, 다음 상대의 턴 종료 시 트래시의 「레이브몬」 1장을 코스트 없이 등장 (compiled: paid nothing and played immediately)
@@ -362,8 +385,13 @@ sc('EX4-073::어택 시', async (ctx, R) => {
   if (removed.length >= 3) { await R.runOne({ op: 'removeSecurity', who: 'opponent', position: 'top' }, ctx); await R.runOne({ op: 'removeSecurity', who: 'opponent', position: 'top' }, ctx); }
 });
 // EX4-014 가오스몬 【자신의 턴】[턴에 1회] 「블루 플레어」 특징의 카드가 등장했을 때 《1 드로우》. 「트와일라잇」 특징의 카드가 등장했을 때 트래시의 디지크로스 조건 디지몬 1장을 패로 (two independent events were compiled into one script running both)
-D('EX4-014', '자신의 턴', '블루 플레어', { limit: 1, events: { play: (state, hp, holder, info) => info.owner === hp && !!info.stack && ((C(info.stack.cardId).types || []).includes('블루 플레어') || (C(info.stack.cardId).types || []).includes('트와일라잇')) } });
+// Q3454: [턴에 1회] is consumed when the effect is ACTIVATED (resolved), not when the trigger is queued — two triggers (Blue Flare / Twilight played by different effects) both queue, the later one resolves first,
+// and the once-per-turn use then voids the earlier one. So no descriptor `limit` (that would swallow the second trigger at queue time); the script checks/marks the use itself.
+D('EX4-014', '자신의 턴', '블루 플레어', { events: { play: (state, hp, holder, info) => info.owner === hp && !!info.stack && ((C(info.stack.cardId).types || []).includes('블루 플레어') || (C(info.stack.cardId).types || []).includes('트와일라잇')) } });
 sc('EX4-014::자신의 턴', async (ctx, R) => {
+  const holder = me(ctx); const onceKey = S.onceLimitKey('EX4-014', ['자신의 턴']);
+  if (!holder || S.turnUsesRemaining(holder, onceKey, 1) <= 0) return; // already activated this turn (by a trigger that resolved first)
+  S.markTurnEffectUsed(holder, onceKey);
   const uid = ctx.trigger && ctx.trigger.evt && ctx.trigger.evt.stackUid;
   const st = uid && ctx.state.players[ctx.self].battle.find(s => s.uid === uid);
   const types = st ? (C(st.cardId).types || []) : [];

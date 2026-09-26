@@ -255,6 +255,7 @@ async function useOptionFree(ctx, who, pred, prompt) {
   pl.trash.push(id);
   S.log(state, `${who} ${C(id).nameKo} 코스트 없이 사용`);
   S.queueTriggersFor(state, who, id, 'use');
+  S.emitGameEvent(state, 'optionUsed', { owner: who, stack: null, cause: 'effect', cardId: id, useCost: 0 }); // W8 (Q5449-5518): free use still counts as 「사용」
   return true;
 }
 // evolve one of who's digimon via an effect; returns the stack or null (callers need to know whether it happened)
@@ -689,11 +690,17 @@ SCRIPTS['BT7-051::어택 시'] = [fn(async (ctx) => {
 // ---- BT7-055 (상대의 턴): 상대 디지몬이 액티브가 될 때 패 1장 파기하지 않으면 액티브가 되지 않는다 (엔진: 언서스펜드 페이즈에서 대기 효과로 발생)
 SCRIPTS['BT7-055::상대의 턴'] = [fn(async (ctx) => {
   const me = ctx.self, st = srcStack(ctx), pl = plOf(ctx, me);
-  if (!st || !st.suspended || !pl.hand.length) return;
-  if (!(await confirm(ctx, me, `${C(st.cardId).nameKo}: 패를 1장 파기하고 액티브로 하시겠습니까? (하지 않으면 액티브가 되지 않음)`))) return;
-  const i = await pickZoneIdx(ctx, me, 'hand', pl.hand.map((_, k) => k), '파기할 패 선택');
-  if (i == null) return;
-  S.trashFromHand(ctx.state, me, i);
+  // official Q&A (Q1600, 2 copies): each 현무몬 gives the digimon its OWN "패를 1장 파기하지 않으면 액티브가 되지 않는다" -> N copies = N discards for one digimon (all-or-nothing)
+  const nGate = Math.max(1, ctx.state.players[S.opponentOf(me)].battle.filter(s => s.cardId === 'BT7-055').length);
+  if (!st || !st.suspended || pl.hand.length < nGate) return;
+  if (!(await confirm(ctx, me, `${C(st.cardId).nameKo}: 패를 ${nGate}장 파기하고 액티브로 하시겠습니까? (하지 않으면 액티브가 되지 않음)`))) return;
+  let paid = 0;
+  for (let k = 0; k < nGate; k++) {
+    const i = await pickZoneIdx(ctx, me, 'hand', pl.hand.map((_, q) => q), `파기할 패 선택 (${k + 1}/${nGate})`);
+    if (i == null) break;
+    S.trashFromHand(ctx.state, me, i); paid++;
+  }
+  if (paid < nGate) return; // cannot pay every copy's discard -> stays rested
   S.unsuspendStack(ctx.state, me, st.uid);
 })];
 
@@ -726,31 +733,33 @@ SCRIPTS['BT7-063::등장 시'] = [fn(async (ctx) => {
 // though the literal string is "소멸할 때" and not "벗어날 때" — the rule applies to the TENSE, not this exact phrase. OPTIONAL
 // ("…수 있다"), so preventLeaveOptions (passive, leave still happens); restricted to mode === 'delete' (bounce/return-to-deck is not
 // "소멸"). "A와 B 1장씩" = each named card is its own independent pick (card-text convention), so two hooks, one per name.
-function bt7063LeaveOption(name) {
+// Official Q&A (Q1623): "登場させる場合は可能な限り登場させる" — with BOTH named cards among the sources it is both or none (one combined option, not one per name);
+// with only one of them present that one may still be played.
+function bt7063LeaveOption(names) {
   return (state, hp, holder, target, tp, cause, mode) => {
     if (!holder || target !== holder || mode !== 'delete') return [];
-    let at = -1;
-    for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon' && S.cardNameIs(holder.sources[i], name)) { at = i; break; }
-    if (at < 0) return [];
-    const cardId = holder.sources[at];
+    const findAt = (name) => { for (let i = holder.sources.length - 1; i >= S.fdCount(holder); i--) if (C(holder.sources[i]).category === 'digimon' && S.cardNameIs(holder.sources[i], name)) return i; return -1; };
+    if (!names.some(n => findAt(n) >= 0)) return [];
     const pl = state.players[hp];
     return [{
       passive: true,
       apply() {
-        const cur = holder.sources.lastIndexOf(cardId);
-        if (cur < S.fdCount(holder)) return false;
-        holder.sources.splice(cur, 1);
-        S.recomputeStackGrants(holder);
-        pl.trash.push(cardId);
-        const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true, rested: true });
-        if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 소멸하기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 레스트 상태로 등장`);
-        return !!st;
+        let any = false;
+        for (const name of names) {
+          const at = findAt(name); if (at < 0) continue;
+          const cardId = holder.sources[at];
+          holder.sources.splice(at, 1);
+          S.recomputeStackGrants(holder);
+          pl.trash.push(cardId);
+          const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true, rested: true });
+          if (st) { any = true; S.log(state, `${hp} ${C(holder.cardId).nameKo} — 소멸하기 전, 진화원 ${C(cardId).nameKo}을(를) 코스트 없이 레스트 상태로 등장`); }
+        }
+        return any;
       },
     }];
   };
 }
-D('BT7-063', '서로의 턴', '진화원에서 「스컬나이트몬」', { preventLeaveOptions: bt7063LeaveOption('스컬나이트몬') });
-D('BT7-063', '서로의 턴', '「데들리액스몬」 1장씩', { preventLeaveOptions: bt7063LeaveOption('데들리액스몬') });
+D('BT7-063', '서로의 턴', '진화원에서 「스컬나이트몬」', { preventLeaveOptions: bt7063LeaveOption(['스컬나이트몬', '데들리액스몬']) });
 
 // ---- BT7-064 (진화 시): 패의 X항체 블랙 카드 1장을 진화원 가장 아래에 → 다음 상대의 턴 종료 시까지 효과로 소멸하지 않고 DP가 마이너스되지 않는다
 SCRIPTS['BT7-064::진화 시'] = [fn(async (ctx) => {
@@ -801,17 +810,19 @@ const tamerEvolve = (zone, color, targetName) => [fn(async (ctx) => {
   if (!st || !isTamer(st)) return;
   const pred = (id) => hasTrait(id, '하이브리드체'); // same-named cards are fine — only the evolve-into card itself is set aside below
   const tIdx = pl.hand.findIndex(id => C(id).nameKo === targetName);
-  if (tIdx < 0) return;
-  const target = pl.hand[tIdx];
+  const target = tIdx >= 0 ? pl.hand[tIdx] : null;
+  // official Q&A (BT7-085 Q1652/1653): the 5 cards are the cost ("…놓는 것으로"); the evolution itself is optional ("진화할 수 있다"), so the 5 may be placed without evolving (even with no target in hand); with only 4 the effect cannot be used
   if (pl[zone].filter((id, i) => pred(id) && !(zone === 'hand' && i === tIdx)).length < 5) return;
-  const base = evoCostAs(target, 5, [color]);
-  if (base == null) return;
-  if (!(await confirm(ctx, me, `${zone === 'trash' ? '트래시' : '패'}의 하이브리드체 카드 5장을 이 테이머 아래에 놓고 「${targetName}」(으)로 진화하시겠습니까?`))) return;
-  if (zone === 'hand') pl.hand.splice(tIdx, 1); // the card being evolved into can't also be one of the 5
+  const base = target ? evoCostAs(target, 5, [color]) : null;
+  const canEvo = target != null && base != null;
+  if (!(await confirm(ctx, me, canEvo ? `${zone === 'trash' ? '트래시' : '패'}의 하이브리드체 카드 5장을 이 테이머 아래에 놓고 「${targetName}」(으)로 진화하시겠습니까?` : `${zone === 'trash' ? '트래시' : '패'}의 하이브리드체 카드 5장을 이 테이머 아래에 놓으시겠습니까? (진화 불가/생략)`))) return;
+  if (zone === 'hand' && target) pl.hand.splice(tIdx, 1); // the card being evolved into can't also be one of the 5
   const taken = await pickNFrom(ctx, me, zone, 5, pred, '테이머 아래에 놓을 하이브리드체 카드 (놓는 순서)');
-  if (zone === 'hand') pl.hand.splice(tIdx, 0, target);
+  if (zone === 'hand' && target) pl.hand.splice(tIdx, 0, target);
   if (!taken) return;
   st.sources.push(...taken);
+  if (!canEvo) return;
+  if (!(await confirm(ctx, me, `「${targetName}」(으)로 진화하시겠습니까? (진화하지 않아도 됨)`))) return;
   const cost = Math.max(0, base + evoAutoDelta(ctx.state, me, st, target, 'hand') + S.hookEvoCostDiscount(ctx.state, me, st, target));
   S.digivolve(ctx.state, me, st.uid, target, cost, 'hand');
 })];

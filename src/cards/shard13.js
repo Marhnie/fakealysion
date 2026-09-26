@@ -302,6 +302,7 @@ sc('BT20-035::서로의 턴@테이머 카드가 놓였을 때', async (ctx, R) =
 sc('BT20-037::진화 시', async (ctx, R) => {
   await runText(ctx, R, '이 디지몬의 진화원의 Lv.6의 카드 1장마다 상대의 디지몬/테이머 1마리(명)를 레스트시키고, 메모리 +1.');
   const { state } = ctx, o = opp(ctx.self), until = oppTurnEnd(state, ctx.self);
+  (state.s6NoPlayTrigAll ||= {})[o] = Math.max((state.s6NoPlayTrigAll || {})[o] || 0, until); // QA-W6 Q3690: also covers digimon/tamers that arrive later in the window
   for (const st of [...digs(state, o), ...tams(state, o)]) { if (S.effectBlocked(state, o, st, 'other')) continue; st.s13NoTrig = { ...(st.s13NoTrig || {}), play: until }; st.s2NoActiveUntil = until; }
   log(ctx, `${o} 디지몬/테이머 전부: 상대의 턴 종료까지 【등장 시】 효과 발휘 불가, 액티브가 되지 않음`);
 });
@@ -311,10 +312,7 @@ async function raisingPlay(ctx) {
   if (pl.raising) { log(ctx, `${p} 육성 에어리어가 비어 있지 않음`); return false; }
   const idx = await pickOwnCard(ctx, 'hand', c => c.category === 'digimon' && ['도루몬', '류우다몬'].includes(c.nameKo), '비어 있는 육성 에어리어에 등장시킬 카드 선택');
   if (idx == null) return false;
-  const [id] = pl.hand.splice(idx, 1);
-  pl.raising = S._s4.makeStack(id, state.turnNumber); S.recomputeStackGrants(pl.raising);
-  log(ctx, `${p} ${C(id).nameKo}을(를) 육성 에어리어에 코스트 없이 등장`);
-  return true;
+  return !!S.playFreeToRaising(state, p, 'hand', idx, {}); // 등장 금지 락(BT9-033/BT9-047/BT14-009)을 존중
 }
 sc('BT20-015::등장 시', raisingPlay);
 sc('BT20-053::등장 시', async (ctx) => {
@@ -368,7 +366,7 @@ sc('P-165::등장 시', async (ctx, R) => {
   await runText(ctx, R, '「사역마」(디지몬·옐로·DP 3000·【소멸 시】 턴 종료까지 상대의 디지몬 1마리를 DP -3000.) 토큰 1마리를 등장시킨다.');
   const toks = pl.battle.filter(s => !before.has(s.uid)).map(s => s.uid);
   if (!toks.length) return;
-  (state.endOfTurnEffects ||= []).push({ turnNumber: oppTurnEnd(state, p), player: p, cardId: ctx.sourceCardId, label: '상대의 턴 종료 시 토큰 소멸', fn: () => { for (const u of toks) if (findStack(state, p, u)) S.deleteStack(state, p, u, 'trash', 'ownEffect'); } });
+  (state.endOfTurnEffects ||= []).push({ turnNumber: (state.turnEnding && state.activePlayer === opp(p) ? state.turnNumber + 2 : oppTurnEnd(state, p)), player: p, cardId: ctx.sourceCardId, label: '상대의 턴 종료 시 토큰 소멸', fn: () => { for (const u of toks) if (findStack(state, p, u)) S.deleteStack(state, p, u, 'trash', 'ownEffect'); } });
 });
 // P-166: 레스트 → 자신의 턴이라면 패의 「조」/「새」/「병아리」 디지몬으로 진화 (레스트 상태인 다른 디지몬 1마리마다 지불 코스트 -1)
 sc('P-166::등장 시', async (ctx, R) => {

@@ -85,7 +85,7 @@ export function buildOptions(cards, ix) {
     b.kw.forEach(k => kw[k] = (kw[k] || 0) + 1);
     b.tags.forEach(k => tg[k] = (tg[k] || 0) + 1);
     (c.types || []).forEach(t => tr[t] = (tr[t] || 0) + 1);
-    if (c.attribute) tr[c.attribute] = (tr[c.attribute] || 0) + 1;
+    if (c.attribute && /^[가-힣]/.test(c.attribute)) tr[c.attribute] = (tr[c.attribute] || 0) + 1;
     if (c.form && /^[가-힣]/.test(c.form)) tr[c.form] = (tr[c.form] || 0) + 1;
     sets.add(b.setKey); if (c.rarity) rar.add(c.rarity); (b.par || []).forEach(r => rar.add(r));
   }

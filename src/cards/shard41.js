@@ -42,6 +42,10 @@ D('EX8-045', '자신의 턴', '진화원의 색', { dp: (state, hp, h, target) =
 const noOppSrc = (state, hp, h) => hasTr(h.cardId, '빙설형') && !digs(state, opp(hp)).some(s => s.sources.length > 0);
 for (const id of ['EX7-021', 'EX8-023']) D(id, '자신의 턴', '진화원을 가진 상대의 디지몬이 없는 동안', { kw: (state, hp, h, name) => name === '관통' && noOppSrc(state, hp, h), kwNum: (state, hp, h) => (noOppSrc(state, hp, h) ? 1 : 0) }, 'inheritedKo');
 
+// EX6-062 얼티메이트카오스몬 【자신의 턴】 진화원에 Lv.6의 카드가 4장 이상 있는 이 디지몬은 《관통》과 《S 어택 +3》을 얻는다 (the compiler only produced one-shot grant ops, so the standing ability never applied)
+const lv6src62 = (h) => srcCards(h).filter(id => C(id).level === 6).length;
+D('EX6-062', '자신의 턴', '진화원에 Lv.6의 카드가', { kw: (state, hp, h, name) => name === '관통' && lv6src62(h) >= 4, kwNum: (state, hp, h) => (lv6src62(h) >= 4 ? 3 : 0) });
+
 // ---- helpers for the trigger fixes below ----
 const tokenOrTr = (st, ...ts) => S.isTokenId(st.cardId) || hasTr(st.cardId, ...ts);
 // run one of `stack`'s own <tag> effects as that Digimon's effect ("이 디지몬의 【진화 시】 효과 1개를 발휘할 수 있다")
@@ -213,6 +217,8 @@ for (const id of ['EX5-012', 'EX5-020']) {
     }
     if (picked.length < 2) return 0;
     for (const e of picked) S.restStack(state, e.player, e.uid);
+    // W9r2 official Q6721: if the two chosen digimon could not BOTH actually be rested (e.g. one is immune to effects), the "레스트시키는 것으로" cost is unpaid -> the printed cost applies
+    if (!picked.every(e => { const s = digs(state, e.player).find(x => x.uid === e.uid); return !!s && s.suspended; })) return 0;
     return -4;
   } };
 } });
@@ -261,7 +267,7 @@ sc('EX7-037::진화 시@색이 서로 다른', async (ctx) => {
   const { state, self } = ctx; const t = me(ctx); if (!t) return;
   const pl = state.players[self];
   const fused = !!t.viaFusion;
-  const ok = (id, chosen) => C(id).category === 'digimon' && hasTr(id, 'NSp') && (C(id).cost || 0) <= 7 && !chosen.some(c => (C(c).colors || []).some(col => (C(id).colors || []).includes(col)));
+  const ok = (id, chosen) => C(id).category === 'digimon' && hasTr(id, 'NSp') && (C(id).cost || 0) <= 7 && S.colorsAllDistinct([...chosen, id].map(c => C(c).colors || [])); // W9r2: multi-colored cards may count as different colors
   const chosen = [];
   for (let k = 0; k < (fused ? 2 : 1); k++) {
     const idxs = pl.hand.map((id, i) => i).filter(i => ok(pl.hand[i], chosen));

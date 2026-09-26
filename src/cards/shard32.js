@@ -88,6 +88,8 @@ DI('BT5-022', '자신의 턴', '진화원을 파기했을 때', { limit: 1, even
 SCRIPTS['BT5-022::자신의 턴'] = [{ op: 'gainMemory', who: 'self', n: 1 }];
 DI('BT6-002', '자신의 턴', '진화원을 파기했을 때', { limit: 1, events: oppSrcTrashed });
 SCRIPTS['BT6-002::자신의 턴'] = [{ op: 'draw', who: 'self', n: 1 }];
+// QA recheck2 (Q1430-1432): BT6-044 듀나스몬 【서로의 턴】[턴에 1회] 자신의 시큐리티가 줄어들었을 때, 자신의 시큐리티가 3장 이하라면 《리커버리 +1《덱》》 — the conditional text was filtered out of the generic event-watcher path (EW_UNSAFE) so it never fired; the printed condition is re-checked when it resolves (rc: 3장 이하), the compiler reads it as 「이하라면」 + recover.
+D('BT6-044', '서로의 턴', '줄어들었을', { ewTrusted: true });
 // BT5-056 라플레시몬 【자신의 턴】〔턴에 1회〕 자신의 디지몬이 《디지버스트》를 발휘했을 때, 다음 상대의 턴 종료 시까지 상대 디지몬 1마리는 어택과 블록을 할 수 없다
 // ('digiburst' is emitted by the trashEvoSources op when a 《디지버스트》 cost was paid)
 D('BT5-056', '자신의 턴', '디지버스트》를 발휘했을 때', { limit: 1, events: { digiburst: (state, hp, h, info) => info.owner === hp } });
@@ -172,3 +174,17 @@ SCRIPTS['BT4-093::메인'] = [{ op: 'condition', if: { test: (ctx) => ctx.state.
 // BT5-091 아이바 타쿠미 【서로의 턴】 Lv.3의 디지몬 전부에게 「【어택 시】 메모리를 -1 한다.」의 효과를 준다 (was not implemented): whenever a Lv.3 Digimon of either player attacks, its controller loses 1 memory
 D('BT5-091', '서로의 턴', 'Lv.3의 디지몬 전부', { events: { attack: (state, hp, h, info) => !!info.stack && isDig(info.stack) && C(info.stack.cardId).level === 3 } });
 sc('BT5-091::서로의 턴@Lv.3의 디지몬 전부', async (ctx) => { const who = ctx.trigger?.evt?.owner || ctx.self; S.grantMemory(ctx.state, who, -1, ctx.sourceCardId); });
+// QA recheck2 (Q1354 BT5-085 / BT8-043): "패의 이 카드를 등장시킬 때, 자신의 「X」 1마리를 소멸시키는 것으로, 지불하는 등장 코스트 -N" hand-play cost options were never wired up (the sacrifice is optional, a 「디아블로몬」 token counts).
+const sacrificeHandPlay = (id, pred, disc, what) => (HOOKS[id] ||= []).push({ tag: '__handPlay', handPlayOption: (state, p, cardId) => {
+  const cands = () => state.players[p].battle.filter(s => isDig(s) && pred(state, p, s));
+  if (!cands().length) return null;
+  return { label: `${C(cardId).nameKo}: ${what} 1마리를 소멸시켜 등장 코스트 ${disc}?`, async apply(choose) {
+    const cs = cands(); if (!cs.length) return 0;
+    const uid = cs.length === 1 ? cs[0].uid : await choose('pickStack', { player: p, uids: cs.map(s => s.uid), prompt: `소멸시킬 ${what} 선택` });
+    if (!uid) return 0;
+    const ok = S.deleteStack(state, p, uid, 'trash', 'ownEffect');
+    return ok || !state.players[p].battle.some(s => s.uid === uid) ? disc : 0;
+  } };
+} });
+sacrificeHandPlay('BT5-085', (state, p, s) => S.effectiveInfo(state, s, p).nameIs('디아블로몬'), -12, '자신의 「디아블로몬」');
+sacrificeHandPlay('BT8-043', (state, p, s) => S.effectiveInfo(state, s, p).nameIs('케루비몬') && S.stackColors(s).includes('purple'), -8, '퍼플인 자신의 「케루비몬」');

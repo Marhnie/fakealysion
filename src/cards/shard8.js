@@ -388,8 +388,8 @@ const COST = {
 // { costs:[{t,…}], then:[…], optional, prompt } — all costs must be payable, else the effect is skipped
 OPS.s8_costThen = async (i, ctx, run) => {
   const costs = i.costs || [];
-  if (!costs.every(c => COST[c.t].can(ctx, c))) { log(ctx, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); return; }
-  if (i.optional && !(await confirm(ctx, i.prompt || '비용을 지불하고 효과를 발동할까요?'))) return;
+  if (!costs.every(c => COST[c.t].can(ctx, c))) { log(ctx, `${ctx.self} 비용을 지불할 수 없어 효과를 건너뜀`); if (i.sole) { ctx._declined = true; ctx._costUnpaid = true; } return; } // W9r2 (15-7-1): an unpaid/declined sole cost = effect never activated -> no [턴 1회] use consumed
+  if (i.optional && !(await confirm(ctx, i.prompt || '비용을 지불하고 효과를 발동할까요?'))) { if (i.sole) { ctx._declined = true; ctx._costUnpaid = true; } return; }
   for (const c of costs) { if (!(await COST[c.t].pay(ctx, c))) { log(ctx, `${ctx.self} 비용 지불에 실패하여 효과를 중단`); return; } }
   await run.runScript(i.then || [], ctx);
 };
@@ -477,9 +477,12 @@ OPS.s8_playOrUse = async (i, ctx) => {
     const playLocked = S.isPlayCostLocked(state);
     const wantsFree = i.free && !playLocked; // g7 audit (official Q&A, EX12-013/027/041/043/050/EX13-045/BT26-054 등): 「지불하는 등장 코스트를 마이너스할 수 없다」도 "코스트를 지불하지 않고 등장" 자체를 막는다 — 발휘는 되지만 코스트는 원래대로 지불해야 함
     const selfDc = (!wantsFree && (z === 'hand' || z === 'trash') && ucat(id) !== 'option' && !playLocked) ? S.handSelfPlayDiscount(state, ctx.self, id) : 0; // slice6 G252 (official Q7002/7004/7077): the played card's OWN printed "이 카드가 등장할 때 … 코스트 -N" stacks with the effect's reduction (total -10 / -11)
-    const cost = wantsFree ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && playLocked ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
+    let cost = wantsFree ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && playLocked ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
+    // W9r2 official Q6098 (AD1-019 + ST21-13): a PAID effect-play of a digimon from the hand also gets the continuous play-cost reductions that a normal hand play gets (tamer "이 테이머를 레스트시키는 것으로 지불하는 코스트 -N", trait discounts)
+    if (cost > 0 && z === 'hand' && ucat(id) === 'digimon' && !playLocked) cost = Math.max(0, cost + S.tamerPlayCostDiscount(state, ctx.self, id) + S.traitPlayCostDiscount(state, ctx.self, id) + S.s1PlayDiscount(state, ctx.self, id));
+    const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k, cost > 0) : {}; // 7-2-2-13 (paid play: 《어셈블리》 too — P-205 Q4665)
+    if (cost > 0 && !playLocked) cost = Math.max(0, cost - ((xo.materials || []).length ? (S.parseDigiXros(id)?.per || 0) * xo.materials.length : 0) - (xo.asmDiscount || 0)); // 디지크로스/어셈블리는 등장 코스트를 더 내린다
     if (cost > 0) S.spendMemory(state, cost);
-    const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k) : {}; // 7-2-2-13
     const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
     if (st) { st.byEffect = { kind: 'play', effect: true, turn: state.turnNumber }; S8(ctx).played = true; }
     return;
@@ -525,7 +528,7 @@ OPS.s8_placeUnder = async (i, ctx) => {
   let host = null;
   if (i.target === 'this') host = stackOf(ctx);
   else if (i.target === 'lastHost') host = findStack(state, ctx.self, S8(ctx).host);
-  else { const uid = await pickOne(ctx, ctx.self, pl.battle.filter(s => isDigi(s.cardId)).map(s => s.uid), '카드를 놓을 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
+  else { const uid = await pickOne(ctx, ctx.self, pl.battle.filter(s => isDigi(s.cardId) && (!i.hostPred || i.hostPred(s))).map(s => s.uid), '카드를 놓을 디지몬 선택'); host = uid && findStack(state, ctx.self, uid); }
   if (!host) return;
   let placed = 0;
   for (let n = 0; n < (i.n || 1); n++) {
@@ -553,11 +556,14 @@ const TS3 = (id) => trait(id, 'TS') || mentions(id, '3총사');
 const oppCountersOwnStack = (ctx) => stackOf(ctx);
 
 SCRIPTS['BT25-057::진화 시'] = [{ op: 's8_battle' }];
-SCRIPTS['BT25-058::등장 시'] = [{ op: 's8_restPick', who: 'opponent', kinds: kindsDT, n: 1, lock: true }];
+SCRIPTS['BT25-058::등장 시'] = [{ op: 's8_restPick', who: 'opponent', kinds: kindsDT, n: 1 }, { op: 's8_lock', sel: 'pick', n: 1, kinds: kindsDT }]; // W9r2 official Q6345: the 「액티브되지 않는다」 target is a separate selection — it may differ from the one that was rested
 SCRIPTS['BT25-059::등장 시'] = [
   { op: 's8_restPick', who: 'either', kinds: ['digimon'], n: 2, prompt: '레스트할 디지몬 선택 (2마리까지)' },
   { op: 's8_shield', target: 'ownAllMatching', pred: (ctx, s) => s.suspended && trait(s.cardId, '식물형', 'TS'), fromCategory: 'digimon' },
 ];
+// W9r2: BT25-059 【서로의 턴】[턴 1회] 디지몬이 레스트했을 때, 레스트 상태인 디지몬의 수만큼(양쪽 합계) 상대의 디지몬 1마리를 상대의 턴 종료까지 DP -3000 — the watcher fired but the effect compiled to an empty script (no-op)
+SCRIPTS['BT25-059::서로의 턴'] = [{ op: 's8_dp', target: 'pickOpp', until: 'oppEnd', prompt: 'DP -3000(레스트 상태 디지몬 수만큼)할 상대의 디지몬 선택',
+  amount: (ctx) => -3000 * [...battleOf(ctx, 'self'), ...battleOf(ctx, 'opp')].filter((s) => isDigi(s.cardId) && s.suspended).length }];
 SCRIPTS['BT25-061::링크 시'] = [{ op: 's8_lock', kinds: ['digimon'], n: 1 }];
 SCRIPTS['BT25-069::등장 시'] = [{ op: 's8_link', from: ['trash'], pred: (id) => trait(id, 'TS'), target: 'pickOwn', free: true, allowOption: true }];
 SCRIPTS['BT25-070::메인'] = [{ op: 's8_link', from: ['trash', 'sources'], pred: (id) => isDigi(id) && trait(id, '소셜', '툴', '게임'), target: 'this', costDelta: -1 }];
@@ -902,8 +908,9 @@ SCRIPTS['BT26-094::자신의 턴'] = [{ op: 's8_costThen', costs: restTamerCost,
 SCRIPTS['BT26-090::자신의 턴 종료 시'] = [{ op: 's8_costThen', costs: restTamerCost, optional: true, then: [
   { op: 's8_playOrUse', zones: ['hand'], kinds: ['option'], pred: (id) => trait(id, 'TS'), delta: (ctx) => -memOf(ctx.state, ctx.opp) },
 ] }];
-SCRIPTS['BT26-029::등장 시'] = [{ op: 's8_costThen', costs: [{ t: 'trashSecTop', n: 1 }], then: [{ op: 's8_shield', target: 'pickOwn', kinds: ['dpDown', 'other', 'srcReturn'], prompt: '상대의 효과를 받지 않게 할 디지몬 선택' }] }]; // slice6 G326: only the stacked CARDS are protected from returning to hand/deck ('srcReturn'); the digimon itself can still be returned (official Q7195)
-SCRIPTS['BT26-085::등장 시'] = [{ op: 's8_shield', target: 'this', kinds: ['dpDown', 'other'] }];
+SCRIPTS['P-242::메인'] = [{ op: 's8_costThen', costs: restTamerCost, optional: true, then: [{ op: 's8_link', from: ['trash'], pred: (id) => isDigi(id) && trait(id, '시스템', '라이프', '변화'), target: 'pickOwn', costDelta: -1 }] }]; // P-242 권레이 【메인】 (공식 Q&A idx6131: 이 효과 2장으로 지불하는 코스트를 합산해 마이너스할 수 없음 — 각각 별개의 링크)
+SCRIPTS['BT26-029::등장 시'] = [{ op: 's8_costThen', costs: [{ t: 'trashSecTop', n: 1 }], then: [{ op: 's8_shield', target: 'pickOwn', kinds: ['dpDown', 'other', 'srcReturn', 'srcTrash'], prompt: '상대의 효과를 받지 않게 할 디지몬 선택' }] }]; // slice6 G326: only the stacked CARDS are protected from returning to hand/deck ('srcReturn'); the digimon itself can still be returned (official Q7195)
+SCRIPTS['BT26-085::등장 시'] = [{ op: 's8_shield', target: 'this', kinds: ['dpDown', 'other', 'srcTrash'] }];
 SCRIPTS['BT26-031::진화 시'] = [{ op: 's8_costThen', costs: fdCost, then: [{ op: 'recoverTop' }] }];
 SCRIPTS['BT26-025::이동 시'] = [{ op: 's8_costThen', costs: [{ t: 'secTopToTamer', pred: (t) => glow(t.cardId) }], then: [{ op: 'recoverTop' }] }];
 SCRIPTS['BT26-025::어택 시'] = [
@@ -978,7 +985,7 @@ OPS.s8_delaySelf = async (i, ctx, run) => {
 const lvOf = (id) => C(id).level || 0;
 SCRIPTS['BT26-097::메인'] = [{ op: 's8_placeThenEvolve', host: (ctx, s) => C(s.cardId).nameKo === '아이기오몬',
   reqs: [{ from: ['battleTamer'], pred: (id) => nameHas(id, '유우키 단', '유우키 카난') }], to: { zones: ['hand', 'trash'], pred: (id) => C(id).nameKo === '유피테르몬' },
-  then: [{ op: 's8_placeUnder', zones: ['trash'], pred: (id) => nameHas(id, '아이기오투스몬'), n: 1, target: 'lastHost', pos: 'top' }] }];
+  then: [{ op: 's8_placeUnder', zones: ['trash'], pred: (id) => nameHas(id, '아이기오투스몬'), n: 1, hostPred: (s) => C(s.cardId).nameKo === '유피테르몬', pos: 'top' }] }]; // 공식 Q&A idx6364: 「자신의 「유피테르몬」」은 진화한 그 디지몬에 한정되지 않는다 (진화한 카드와 다른 「유피테르몬」도 고를 수 있다)
 SCRIPTS['BT26-098::메인'] = [{ op: 's8_placeThenEvolve', host: (ctx, s) => C(s.cardId).nameKo === '라라몬',
   reqs: [{ pred: (id) => C(id).nameKo === '해바라기몬' }, { pred: (id) => C(id).nameKo === '라일라몬' }], to: { zones: ['hand'], pred: (id) => C(id).nameKo === '로제몬' } }];
 SCRIPTS['BT26-102::메인'] = [{ op: 's8_placeThenEvolve', host: (ctx, s) => trait(s.cardId, '세븐 코드'),
@@ -1348,6 +1355,15 @@ H('BT26-092', { tag: '상대의 턴', has: '어택의 대상을', redirectOption
 } });
 // ---- EX12-072: 특징 「ME」를 가진 자신의 디지몬 전부는 《수호》를 얻는다 (continuous, 서로의 턴)
 H('EX12-072', { tag: '서로의 턴', has: '《수호》를 얻는다', grantKw: (state, hp, h, target) => (!!target && isDigi(target.cardId) && trait(target.cardId, 'ME') && ownerOf(state, target) === hp) ? ['수호'] : [] });
+// W9r2 (official Q6117/Q6118, AD1-025 오메가몬): 【서로의 턴】[턴에 1회] 상대의 디지몬이 배틀 에어리어를 벗어났을 때 — no watcher was registered ("벗어났을" is not a generic pattern), so it never fired. Leaving = any move out of the battle area (destroy/bounce/deck/security/under a card); a PREVENTED leave never reaches the 'leaveBattle' event (Q6118).
+H('AD1-025', { tag: '서로의 턴', has: '벗어났을 때', limit: 1, events: { leaveBattle: (state, hp, h, info) => info.owner !== hp && !!info.cardId && isDigi(info.cardId) } });
+// W9r2 (official Q6370, BT25-075 불카누스몬): 【서로의 턴】 특징 「TS」를 가진 자신의 디지몬 전부는 《속공》과 《링크 +1》을 얻는다 — had no implementation (the link cap stayed 1). Dynamic: the moment 불카누스몬 leaves, the +1 is gone and the excess link cards are rule-check discarded (player's choice).
+const ownTsDigi = (state, hp, target) => !!target && isDigi(target.cardId) && trait(target.cardId, 'TS') && ownerOf(state, target) === hp;
+H('BT25-075', { tag: '서로의 턴', has: '《링크 +1》', grantKw: (state, hp, h, target) => (ownTsDigi(state, hp, target) ? ['속공'] : []), linkPlus: (state, hp, h, target) => (ownTsDigi(state, hp, target) ? 1 : 0) });
+// W9r2 (BT25-074 탱크드라몬, inherited): 【상대의 턴】 명칭에 「카오스몬」을 포함하거나 특징 「D-브리가드」/「엑셀」을 가진 디지몬은 《재기동》과 《블로커》를 얻는다 (no owner qualifier = digimon of both players) — had no implementation.
+H('BT25-074', { tag: '상대의 턴', src: 'inheritedKo', has: '《재기동》과 《블로커》를 얻는다', grantKwAny: true, grantKw: (state, hp, h, target) => (!!target && isDigi(target.cardId) && (nameHas(target.cardId, '카오스몬') || trait(target.cardId, 'D-브리가드', '엑셀'))) ? ['재기동', '블로커'] : [] });
+// W9r2 (AD1-021 최건우&아구몬 【자신의 턴】 이 테이머가 레스트했을 때, 《1 드로우》. 그 후, …진화할 수 있다): the generic rest-watcher skips multi-step ("그 후") texts unless the card is marked ewTrusted -> it never fired.
+H('AD1-021', { tag: '자신의 턴', has: '레스트했을 때', ewTrusted: true });
 // ---- EX12-004: 특징 「TB」를 가진 이 디지몬은 《에그제큐트》를 얻는다
 H('EX12-004', { tag: '자신의 턴', src: 'inheritedKo', has: '에그제큐트', grantKw: (state, hp, h, target) => (target === h && trait(h.cardId, 'TB')) ? ['에그제큐트'] : [] });
 // ---- EX12-003: ME digimon leaving (not by own effect) → optional jogress instead; declining lets it leave (deferred via a pending effect)
@@ -1379,3 +1395,4 @@ OPS.s8_jogressOrLeave = async (i, ctx) => {
   if (!done && findStack(state, ctx.self, a.uid)) { state._s8NoSurvive = true; try { S.deleteStack(state, ctx.self, a.uid, 'trash', ev0.cause || 'effect'); } finally { state._s8NoSurvive = false; } }
 };
 SCRIPTS['EX12-003::서로의 턴'] = [{ op: 's8_jogressOrLeave' }];
+for (const s of Object.values(SCRIPTS)) if (Array.isArray(s) && s.length === 1 && s[0] && s[0].op === 's8_costThen') s[0].sole = true; // W9r2: see s8_costThen
