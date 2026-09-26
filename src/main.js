@@ -1214,7 +1214,7 @@ function renderTopbar() {
   if (state.winner) {
     const why = (state.log.find(e => /승리|패배|투항|무승부/.test(String(e.msg))) || {}).msg || '';
     const head = state.winner === 'draw' ? '게임 종료 — 무승부 (영구 순환, 18-3-2)'
-      : cpuOn ? (state.winner === 'p1' ? '🎉 승리! 당신(P1)이 이겼습니다' : '💀 패배… CPU(P2)가 이겼습니다') : `게임 종료 — 승자: ${state.winner}`;
+      : cpuOn ? (state.winner === 'p1' ? '🎉 승리! 당신(P1)이 이겼습니다' : '💀 패배… CPU(P2)가 이겼습니다') : Net.NET.role ? (state.winner === Net.NET.mySeat ? '🎉 승리! 당신이 이겼습니다' : '💀 패배… 상대가 이겼습니다') : `게임 종료 — 승자: ${state.winner}`;
     return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row gameover' }, [
       h('b', {}, head),
       why ? h('span', { className: 'meta gameover-why' }, `사유: ${String(why).replace(/^🤖 CPU: /, '')}`) : null,
@@ -2598,9 +2598,9 @@ function renderGameOverModal() {
   if (wait > 0) { setTimeout(() => { if (state && state.winner) render(); }, wait + 30); return null; }
   const w = state.winner;
   const why = ((state.log.find(e => /승리|패배|투항|무승부/.test(String(e.msg))) || {}).msg || '').replace(/^🤖 CPU: /, '');
-  const mine = cpuOn ? (w === 'p1' ? 'win' : w === 'draw' ? 'draw' : 'lose') : (w === 'draw' ? 'draw' : 'win');
-  const title = w === 'draw' ? '🤝 무승부' : cpuOn ? (w === 'p1' ? '🎉 승리!' : '💀 패배…') : `🏆 ${w.toUpperCase()} 승리!`;
-  const sub = w === 'draw' ? '영구 순환 (18-3-2)' : cpuOn ? (w === 'p1' ? '당신(P1)이 이겼습니다' : 'CPU(P2)가 이겼습니다') : `승자: ${w}`;
+  const mine = cpuOn ? (w === 'p1' ? 'win' : w === 'draw' ? 'draw' : 'lose') : Net.NET.role ? (w === 'draw' ? 'draw' : w === Net.NET.mySeat ? 'win' : 'lose') : (w === 'draw' ? 'draw' : 'win');
+  const title = w === 'draw' ? '🤝 무승부' : cpuOn ? (w === 'p1' ? '🎉 승리!' : '💀 패배…') : Net.NET.role ? (w === Net.NET.mySeat ? '🎉 승리!' : '💀 패배…') : `🏆 ${w.toUpperCase()} 승리!`;
+  const sub = w === 'draw' ? '영구 순환 (18-3-2)' : cpuOn ? (w === 'p1' ? '당신(P1)이 이겼습니다' : 'CPU(P2)가 이겼습니다') : Net.NET.role ? (w === Net.NET.mySeat ? '당신이 이겼습니다' : '상대가 이겼습니다') : `승자: ${w}`;
   const close = () => { gameOverSeen = state; render(); };
   return h('div', { className: 'modal-backdrop go-backdrop', onClick: (e) => { if (e.target === e.currentTarget) close(); } }, [
     h('div', { className: `modal-panel go-panel go-${mine}`, role: 'dialog', 'aria-label': '게임 결과' }, [
