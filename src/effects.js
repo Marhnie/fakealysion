@@ -521,6 +521,8 @@ function wrapChoose(ctx) {
     // 'p1'으로 잘못 단정해서, 실제로는 상대(예: 게스트) 몫인 선택창이 그 상대 화면에서 "상대가 선택 중…"으로 숨어버리는
     // 사고가 났다. 이 효과를 실행하고 있는 주체(ctx.self)가 사실상 항상 맞는 기본값이므로 여기서 채워 넣는다.
     if (payload && payload.player === undefined) payload = { ...payload, player: ctx.self };
+    // 선택 대상이 상대 디지몬이면 payload.player는 "대상의 주인"이라 결정권자와 다르다 — 결정권자(효과를 실행 중인 쪽)를 따로 실어 둔다
+    if (payload && payload._self === undefined) payload = { ...payload, _self: ctx.self };
     // 1-3-6: when a rule/effect makes you choose cards, you must choose at least 1 — unless the effect text is an
     // optional one ("…할 수 있다" / "N장까지"). The UI hides its cancel button for required picks that have candidates.
     if (PICK_KINDS.has(kind) && payload && payload.required === undefined && ctx.trigger && typeof ctx.trigger.text === 'string') {
