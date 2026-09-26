@@ -148,10 +148,19 @@ function netApplyIntent(action, args) {
   // 원격으로 가로채 대신 눌러버리는 것을 막는다 — renderMulliganStage/renderModal의 화면단 가림과 짝을 이루는 서버측 검증).
   const guestSeat = S.opponentOf(Net.NET.mySeat);
   // 게스트가 보낸 의도 중 "어느 자리가 하는 행동인지"를 명시한 인자(첫 번째 또는 playFreshFromDrag의 두 번째)는 반드시 게스트 자리여야 한다
+  // ('answer'의 값이나 'closePending'의 대기 효과 id는 'p1'/'p2' 문자열일 수 있어 자리 인자가 아니다 — 자리 인자를 갖는 행동만 검사)
   const seatArg = action === 'playFreshFromDrag' ? args[1] : args[0];
-  if (typeof seatArg === 'string' && /^p[12]$/.test(seatArg) && seatArg !== guestSeat) { console.warn('netplay: rejected intent for the wrong seat', action, seatArg); return; }
+  const noSeat = action === 'answer' || action === 'closePending' || action.startsWith('pa.');
+  if (!noSeat && typeof seatArg === 'string' && /^p[12]$/.test(seatArg) && seatArg !== guestSeat) { console.warn('netplay: rejected intent for the wrong seat', action, seatArg); return; }
   try {
     if (action === 'mulligan') { const p = guestSeat; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'linkDrop') {
+      const [lp, stackUid, drag] = args;
+      const st = findStack({ player: lp, uid: stackUid });
+      const okDrag = drag && ((drag.kind === 'hand' && state.players[lp].hand[drag.idx] === drag.cardId) || (drag.kind === 'stack' && drag.zone === 'battle'));
+      if (st && okDrag) handleLinkDrop(lp, st, drag);
+      return;
+    }
     if (action === 'zoneMain') {
       const [zp, zone, zidx] = args;
       const abs = [...S.zoneMainAbilities(state, zp, 'hand').map(x => ({ ...x, zone: 'hand' })), ...S.zoneMainAbilities(state, zp, 'trash').map(x => ({ ...x, zone: 'trash' }))];
@@ -338,9 +347,11 @@ function cpuDeckByKey(key) {
 }
 function resolveDeckPick(key) {
   if (key.startsWith('cpu:')) return cpuDeckByKey(key);
+  if (key === 'net:guest') return Net.NET.guestDeck || null; // 온라인: 게스트가 고른 덱 (호스트 화면에서만 의미 있음)
   if (key.startsWith('saved:')) {
     const saved = DB.loadSavedDecks();
-    return saved[key.slice(6)];
+    const d = saved[key.slice(6)];
+    return d && !d.name ? { ...d, name: key.slice(6) } : d;
   }
   return key; // built-in key string, looked up inside state.newGame
 }
@@ -359,6 +370,40 @@ function setupDeckInfo(key) {
 
 // 🌐 온라인 대전: local-only UI state for the room-code input box (not persisted, not part of `state`/`sel`).
 let netJoinCode = '';
+// ---- 게스트가 자기 브라우저에 저장된 덱을 골라 호스트에 보낸다 (호스트는 P2 덱으로 사용) ----
+let netMyDeckKey = ''; // guest: 'saved:<name>' of the deck I picked
+let netDeckAck = null; // guest: host's verdict on the deck I sent ({ok, errors, name})
+let netDeckErr = ''; // host: why the guest's last deck was rejected
+function netCleanDeck(d) { // 호스트: 네트워크로 받은 덱은 믿지 않고 카드 번호/장수를 걸러낸다
+  if (!d || typeof d !== 'object') return null;
+  const clean = (mp) => {
+    const o = {};
+    for (const [k, v] of Object.entries(mp && typeof mp === 'object' ? mp : {})) {
+      let ok = false; try { const c = S.card(k); ok = !!(c && c.nameKo); } catch (e) { ok = false; }
+      const n = Math.floor(Number(v));
+      if (ok && n >= 1 && n <= 50) o[k] = n;
+    }
+    return o;
+  };
+  return { name: String(d.name || '게스트 덱').slice(0, 40), main: clean(d.main), digitama: clean(d.digitama) };
+}
+function netSendMyDeck() {
+  if (Net.NET.role !== 'guest') return;
+  const d = netMyDeckKey ? resolveDeckPick(netMyDeckKey) : null;
+  netDeckAck = null;
+  Net.sendDeck(d && typeof d === 'object' ? { name: d.name || netMyDeckKey.slice(6), main: d.main, digitama: d.digitama } : null);
+}
+Net.NET.onDeck = (deck) => { // host
+  if (Net.NET.role !== 'host') return;
+  const d = netCleanDeck(deck);
+  if (!d) { Net.NET.guestDeck = null; Net.sendDeckAck({ ok: false, errors: [], name: '' }); if (!state) render(); return; }
+  const v = S.deckLegality(d);
+  if (v.ok) { Net.NET.guestDeck = d; netDeckErr = ''; } else { Net.NET.guestDeck = null; netDeckErr = v.errors.join(' / '); }
+  Net.sendDeckAck({ ok: v.ok, errors: v.ok ? [] : v.errors, name: d.name });
+  if (!state) render();
+};
+Net.NET.onDeckAck = (ack) => { netDeckAck = ack; if (!state) render(); }; // guest
+Net.NET.onOpen = () => { netSendMyDeck(); };
 function netRoomCard() {
   const role = Net.NET.role;
   const rows = [h('div', { className: 'su-h' }, '🌐 온라인 대전 (베타)')];
@@ -390,13 +435,46 @@ function netRoomCard() {
 }
 // Guest, before the host has started a game: nothing to pick (host owns both deck choices — see docs/netplay-design.md)
 // — just the connection card, no deck grid / start button (which wouldn't do anything on a guest anyway).
+function guestDeckCardForHost() {
+  const g = Net.NET.guestDeck;
+  const i = g ? setupDeckInfo('net:guest') : null;
+  return h('div', { className: 'su-card su-p2' }, [
+    h('div', { className: 'su-h' }, 'P2 덱 (게스트) — 게스트가 고름'),
+    g ? h('div', { className: 'su-note' }, `✅ 「${g.name}」 — 메인 ${i.main}장 · 디지타마 ${i.egg}장`) : h('div', { className: 'su-note' }, netDeckErr ? `⚠ 게스트의 덱을 사용할 수 없습니다: ${netDeckErr}` : '⏳ 게스트가 덱을 고르는 중…'),
+  ]);
+}
 function renderNetGuestWaiting() {
   app.innerHTML = '';
   const hero = h('div', { className: 'su-hero' }, [
     h('div', { className: 'su-logo' }, '⟁'),
     h('div', {}, [h('div', { className: 'su-title' }, '디지몬 카드게임'), h('div', { className: 'su-sub' }, '시뮬레이터 · 🌐 온라인 대전 (게스트)')]),
   ]);
-  app.appendChild(h('div', { className: 'su-wrap' }, [hero, netRoomCard()]));
+  // 내 덱 고르기: 이 브라우저에 저장된 덱 중에서 — 고르는 즉시 호스트에 보내고, 호스트가 규칙 검사 결과를 돌려준다
+  const options = deckOptionsList();
+  const hadKey = netMyDeckKey;
+  if (!options.some(o => o.key === netMyDeckKey)) netMyDeckKey = options[0] ? options[0].key : '';
+  if (netMyDeckKey !== hadKey && Net.NET.connected) setTimeout(netSendMyDeck, 0);
+  const sel = h('select', { className: 'su-select' }, options.map(o => h('option', { value: o.key }, o.label)));
+  sel.value = netMyDeckKey;
+  const info = h('div', { className: 'su-deckinfo' });
+  const paint = () => {
+    const i = setupDeckInfo(netMyDeckKey);
+    info.replaceChildren(h('span', {}, `메인 ${i.main}장 · 디지타마 ${i.egg}장`), h('span', { className: 'su-dots' }, i.colors.map(c => h('i', { className: 'su-dot', title: (SETUP_COLORS[c] || [])[1] || c, style: `background:${(SETUP_COLORS[c] || ['#888'])[0]}` }))));
+  };
+  sel.addEventListener('change', (e) => { netMyDeckKey = e.target.value; paint(); netSendMyDeck(); renderNetGuestWaiting(); });
+  paint();
+  const status = !options.length ? '저장된 덱이 없습니다 — 아래 덱 빌더에서 먼저 덱을 만들어 저장하세요.'
+    : !Net.NET.connected ? '호스트와 연결되면 자동으로 보냅니다.'
+    : netDeckAck == null ? '⏳ 호스트에 보내는 중…'
+    : netDeckAck.ok ? `✅ 「${netDeckAck.name}」 덱이 확인되었습니다 — 호스트가 시작하기를 기다립니다.`
+    : `⚠ 이 덱은 사용할 수 없습니다: ${(netDeckAck.errors || []).join(' / ') || '덱을 고르세요'}`;
+  const deckCardG = h('div', { className: 'su-card su-p2' }, [
+    h('div', { className: 'su-h' }, '🃏 내 덱 (P2 · 게스트)'),
+    options.length ? sel : null, options.length ? info : null,
+    h('div', { className: 'su-note' }, status),
+    h('div', { className: 'actions-row' }, [h('button', { onClick: () => { openDeckBuilder(); } }, '🛠 덱 빌더')]),
+  ].filter(Boolean));
+  app.appendChild(h('div', { className: 'su-wrap' }, [hero, netRoomCard(), deckCardG]));
 }
 
 function renderSetup() {
@@ -466,9 +544,9 @@ function renderSetup() {
       cpu ? h('div', { className: 'su-note' }, '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다).') : null,
     ].filter(Boolean)),
     net ? netRoomCard() : null,
-    (!net || netReady) ? h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : (net ? 'P1 덱 (호스트=나)' : 'P1 덱')), deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : (net ? 'P2 덱 (게스트) — 내가 고름' : 'P2 덱'))]) : null,
+    (!net || netReady) ? h('div', { className: 'su-grid' }, [deckCard('p1', cpu ? '🧑 내 덱 (P1)' : (net ? 'P1 덱 (호스트=나)' : 'P1 덱')), net ? guestDeckCardForHost() : deckCard('p2', cpu ? '🤖 상대 덱 (P2 · CPU)' : 'P2 덱')]) : null,
     setupError ? h('div', { className: 'effect-box', style: 'color:var(--danger)' }, setupError) : null,
-    (!net || netReady) ? h('button', { className: 'primary su-start', onClick: startNewGame }, '⚔ 새 게임 시작') : null,
+    (!net || netReady) ? h('button', { className: 'primary su-start', disabled: net && !Net.NET.guestDeck, title: net && !Net.NET.guestDeck ? '게스트가 덱을 고를 때까지 기다려 주세요' : '', onClick: startNewGame }, net && !Net.NET.guestDeck ? '⏳ 게스트가 덱을 고르는 중…' : '⚔ 새 게임 시작') : null,
     net ? null : spectateSection({ resolveKey: (k) => { const d = resolveDeckPick(k); return d && typeof d === 'object' ? d : null; }, savedOptions: deckOptionsList, PR, CD, S, Cpu, rerender: renderSetup }), // 🍿 CPU끼리 구경하기 (src/spectate-ui.js) — irrelevant once a network room is open
     h('div', { className: 'su-more' }, [
       h('button', { onClick: openDeckBuilder }, '🛠 덱 빌더'),
@@ -953,6 +1031,7 @@ try { const v = JSON.parse(localStorage.getItem('digimon_last_pick_v1') || 'null
 function restartHand() { if (lastStartPick) setupPick = { ...lastStartPick }; if (!setupPick.p1 || !setupPick.p2) { state = null; render(); return; } startNewGame(); }
 function startNewGame() {
   cpuRandomDeck = null;
+  if (Net.NET.role === 'host') setupPick.p2 = 'net:guest'; // 온라인: P2 덱은 게스트가 보낸 것
   if (setupPick.p2 === 'cpu:__random') { try { cpuRandomDeck = CD.pickCpuDeck({ style: 'random' }); } catch (e) { /* ignore */ } if (!cpuRandomDeck) { setupError = 'CPU 덱 데이터를 불러오지 못했습니다.'; renderSetup(); return; } }
   // 1-4-1: refuse to start with an illegal deck (previously-saved decks may predate the save check).
   for (const p of ['p1', 'p2']) {
@@ -963,7 +1042,7 @@ function startNewGame() {
   }
   setupError = '';
   lastStartPick = { p1: setupPick.p1, p2: setupPick.p2 };
-  try { localStorage.setItem('digimon_last_pick_v1', JSON.stringify(lastStartPick)); } catch (e) { /* ignore */ }
+  if (Net.NET.role !== 'host') { try { localStorage.setItem('digimon_last_pick_v1', JSON.stringify(lastStartPick)); } catch (e) { /* ignore */ } }
   PR.newGameStarted();
   sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' };
   state = S.newGame(resolveDeckPick(setupPick.p1), resolveDeckPick(setupPick.p2));
@@ -1456,6 +1535,7 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
   evoModDelta += S.s1EvoAuto(state, p, stack, drag.cardId); // shard1
   for (const o of S.s1EvoOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
   for (const o of S.hookEvoCostOptions(state, p, stack, drag.cardId)) { if (await askYN(p, o.label)) evoModDelta += await o.apply(ctxChoose) || 0; }
+  if (state._evoAbort) { state._evoAbort = false; S.restoreEvoCostMods(evoSnap); S.log(state, `${p} 진화 실패: 진화하려던 디지몬이 효과로 소멸함 (진화 코스트 지불 없음)`); dragData = null; render(); return; } // EX2-064 (Q3350)
   const absorb = S.absorbEvolveOption(state, p, stack, drag.cardId);
   if (absorb && absorb.candidates.length && await askYN(p, `《흡수진화》 — 다른 액티브 디지몬 1마리를 레스트시켜 진화 코스트 ${absorb.delta}?`)) {
     // the player picks WHICH active Digimon is rested (8-x 《흡수진화》)
@@ -1496,6 +1576,7 @@ const doPlayFromHand = (p, handIdx) => { if (netIntercept('play', [p, handIdx]))
 
 // Shared by the 🔗 badge drop AND the badge tap (hand card or another battle stack → link onto `stack`).
 async function handleLinkDrop(p, stack, drag) {
+  if (netIntercept('linkDrop', [p, stack.uid, drag])) return; // 온라인 게스트: 링크(패/배틀 → 🔗 배지)는 호스트가 실행
   // 6-5-1-4-1: a Digimon standing in the battle area can be linked to another Digimon too (drag its stack onto the 🔗 badge).
   if (drag && drag.kind === 'stack' && drag.zone === 'battle' && drag.player === p && drag.uid !== stack.uid && p === state.activePlayer && state.phase === 'main') {
     if (blockIfBusy()) return;
