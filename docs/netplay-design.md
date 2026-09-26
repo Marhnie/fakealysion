@@ -258,3 +258,17 @@ played a few turns, and re-created from scratch after a fix, to confirm the fix 
 Not tested live: a redirect-with-cost (`opt.pay`) card actually being redirected over the network, a
 counter effect being activated by a network guest, a full game reaching a win condition over the network, and
 anything from the "explicitly out of scope" list above.
+
+## v1.1 추가/변경 사항 (게스트 화면 실사용 테스트 결과)
+
+- **게스트 덱 선택**: 게스트가 자기 브라우저에 저장된 덱을 골라 `{t:'deck'}`로 전송 → 호스트가 카드 번호/장수를 걸러 `S.deckLegality`로 검사하고
+  `{t:'deckAck', ok, errors, name}`로 회신. 통과 전에는 호스트 "새 게임 시작"이 잠긴다. P2 덱 키는 `net:guest`(재대전에도 유지).
+- **의도(intent) 자리 검증**: 호스트는 게스트 의도의 "자리 인자"가 게스트 자리인지 검사한다. `answer`(값), `closePending`(대기 효과 id), `pa.*`는 자리 인자가 아니므로 제외.
+- **호스트 로컬 UI 상태 중계**: 조그레스 재료 창(`jogressModal`)은 호스트가 `state`와 함께 게스트로 보내고, 게스트의 확정/취소는 `jogress`/`jogressCancel` 의도로 돌려받는다.
+- **전송 데이터 정리**: `pa.secCtl.state`처럼 엔진 전체 상태를 가리키는 참조는 전송 전에 제거(순환 오류 + 호스트 비공개 정보 유출 방지),
+  수비측이 게스트가 아니면 `pa.counters`(수비측 패의 카운터 후보)를 비운다. 상대 드로우 로그의 카드 이름은 가린다.
+- **효과 연출 동기화**: `fxHistory`/`_fxRec`/`log`를 전송(게스트는 rec/로그 객체를 재사용해 fx.js의 진행 기록이 유지되게 함),
+  드로우 플래시·소멸 토스트는 호스트가 지우기 전에 `netDrawFlash`/`netVanish`로 중계.
+- **결정권자 판정**: `ctxChoose`가 `by`를 항상 채운다(온라인). 상대 디지몬을 고르는 선택창은 `payload._self`(효과 실행 주체)를 힌트로 사용.
+- **차단**: 되돌리기/저장/리플레이/시작 핸드 다시/핸드 조작/범용 도구는 온라인 중 숨김. 투항은 내 자리만, 게스트는 `surrender` 의도.
+- **확인된 게스트 흐름**: 부화/등장/진화/조그레스/링크/디지크로스/어셈블리/디지버스트/딜레이/옵션/테이머/블라스트 진화/블록/카운터/시큐리티 효과/종료·재대전.
