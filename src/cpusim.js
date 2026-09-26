@@ -14,7 +14,7 @@ export function createSim(state, opts = {}) {
   const stats = opts.stats || { actions: 0, attacks: 0, blocks: 0, counters: 0 };
   const H = opts.hooks || {}; // optional observers (scripts/rule-oracle.mjs); every call is guarded, absent hooks change nothing
   const rid = () => Math.random().toString(36).slice(2);
-  const decider = (t, k, o) => Cpu.deciderFor(state, k, o, { pendingOwner: t.player });
+  const decider = (t, k, o) => { const w = Cpu.deciderFor(state, k, o, { pendingOwner: t.player }); if (H.decide) H.decide(t, k, o, w); return w; };
   const find = (p, uid) => { const pl = state.players[p]; return pl.raising && pl.raising.uid === uid ? pl.raising : pl.battle.find((s) => s.uid === uid); };
 
   async function drain() {
@@ -45,6 +45,26 @@ export function createSim(state, opts = {}) {
           if (seg) script = Fx.lookupCardSpecific(t.cardId, seg.tags, seg.body) || Fx.compileToScript(seg.body);
         }
         script = script || Fx.compileToScript(t.text);
+        { // open-d (3): 16-17 《딜레이》 event/turn bullet of a placed Option (mirrors main.js runPendingScript's delay branch): gate, optional discard, then the bullet script
+          const dPlan = specific ? null : Fx.delayBulletPlan(S, t.cardId, t.tags, t.text);
+          if (dPlan) {
+            const dctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
+            const dst = t.stackUid ? find(t.player, t.stackUid) : null;
+            const cn = S.card(t.cardId).nameKo;
+            if (!dst || S.card(dst.cardId).category !== 'option') S.log(state, `${t.player} ${cn} 《딜레이》 — 배틀 에어리어에 없어 발동하지 않음`);
+            else if (state.turnNumber <= dst.placedTurn) S.log(state, `${t.player} ${cn} 《딜레이》 — 놓인 턴에는 사용할 수 없어 발동하지 않음`);
+            else {
+              const gateFailed = !(await Fx.delayGateOk(dPlan, dctx));
+              if (await dctx.choose('confirmEffect', { player: t.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${gateFailed ? '(조건 불충족 — 파기만 하고 효과는 발휘되지 않음) ' : ''}${dPlan.text.slice(0, 90)}` })) {
+                S.discardForDelay(state, t.player, dst.uid);
+                dctx.sourceStackUid = null;
+                if (gateFailed) S.log(state, `${t.player} ${cn}: 《딜레이》 효과의 조건을 만족하지 않아 파기만 함`);
+                else if (dPlan.script.length) await Fx.runScript(dPlan.script, dctx);
+              } else S.log(state, `${t.player} ${cn} 《딜레이》를 발동하지 않음`);
+            }
+            S.resolvePending(state, t.uid); continue;
+          }
+        }
         // mirror src/main.js runPendingScript: 15-4-4-3 stale check + [턴에 N회] gate / mark (without it the CPU re-activated once-per-turn 【메인】 abilities forever)
         if (t.stackUid && t.topId && !(t.evt && t.evt.leaving) && !(t.tags || []).some((x) => x.includes('소멸 시'))) {
           const pl0 = state.players[t.player]; const stNow = pl0.raising && pl0.raising.uid === t.stackUid ? pl0.raising : pl0.battle.find((s) => s.uid === t.stackUid);
@@ -63,7 +83,7 @@ export function createSim(state, opts = {}) {
         }
         if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t }))) onceMark = null; } catch (e) { /* keep the mark */ } }
         if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) { effAtkQ.push({ p, uid, direct, o: o || {} }); const qs = state.players[p].battle.find((s) => s.uid === uid); if (qs) qs._effAtkQueued = true; /* W8: S.consumePierceCheck hold only for a queued attack of this digimon */ } }, attack: () => state.attackCtx, endAttack() {},
+        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, deferredAtk: true, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) { effAtkQ.push({ p, uid, direct, o: o || {} }); const qs = state.players[p].battle.find((s) => s.uid === uid); if (qs) qs._effAtkQueued = true; /* W8: S.consumePierceCheck hold only for a queued attack of this digimon */ } }, attack: () => state.attackCtx, endAttack() {},
           // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
           securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(state, p, uid)) return; await securityCheck(p, uid, op || S.opponentOf(p)); },
           choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
@@ -121,13 +141,13 @@ export function createSim(state, opts = {}) {
     else if (direct && tg.includes(direct)) target = direct;
     else if (hit) target = 'PLAYER';
     else if (tg.length) { const op = S.opponentOf(p), me = S.effectiveDP(state, p, st); const dp = (u) => { const d = find(op, u); return d ? S.effectiveDP(state, op, d) : 1e9; }; target = tg.slice().sort((a, b) => (dp(a) < me ? 0 : 1) - (dp(b) < me ? 0 : 1) || dp(b) - dp(a))[0]; }
-    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete st._pierceHeld; delete st._effAtkQueued; return; }
+    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete st._pierceHeld; delete st._effAtkQueued; if (o.onAborted) o.onAborted(); return; }
     await attack(p, uid, target, o);
   }
   async function attack(p, uid, target, dopts) {
     const op = S.opponentOf(p);
     const dec = S.declareAttack(state, p, uid, dopts || {});
-    if (!dec.ok) return false;
+    if (!dec.ok) { if (dopts && dopts.onAborted) dopts.onAborted(); return false; }
     stats.attacks++;
     const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
     pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; delete dec.stack._effAtkQueued; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)

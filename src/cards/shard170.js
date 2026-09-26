@@ -129,3 +129,15 @@ D('BT26-049', '서로의 턴', '또는 자신의 테이머 아래의 카드가 �
 const tamerGone = (state, hp, h, info) => info.owner === hp && isTam(info.stack) && state.turnNumber > h.placedTurn;
 D('BT17-099', '서로의 턴', '소멸했을 때 또는 패로 되돌아갔을 때', { events: { delete: tamerGone, leaveBattle: (state, hp, h, info) => info.stack?._leftTo === 'hand' && tamerGone(state, hp, h, info) } });
 SCRIPTS['BT17-099::서로의 턴'] = [{ op: 's8_delaySelf', then: [{ op: 's8_evolve', subject: 'pickOwn', zones: ['hand'], free: true, card: (id) => C(id).category === 'digimon' && C(id).nameKo.includes('샤인그레이몬') }] }];
+
+// ---- AD1-025 오메가몬 【서로의 턴】[턴에 1회] 상대의 디지몬이 배틀 에어리어를 벗어났을 때, 배틀 에어리어의 상대의 옵션 카드 1장을 파기하고, 상대의 시큐리티를 위에서부터 1장 파기한다.
+//   (open-d: the generic compiler read only the security half — "배틀 에어리어의 상대의 옵션 카드 1장을 파기" compiled to nothing, so the option was never destroyed; the hook itself is in shard8)
+OPS.s170_destroyOppOption = async (instr, ctx) => {
+  const { state } = ctx, opp = ctx.opp, pl = state.players[opp];
+  const opts = pl.battle.filter((s) => C(s.cardId).category === 'option');
+  if (!opts.length) return;
+  let pick = opts[0];
+  if (opts.length > 1) { const uid = await ctx.choose('pickStack', { player: ctx.self, uids: opts.map((s) => s.uid), prompt: '파기할 배틀 에어리어의 상대의 옵션 카드 선택', required: true }); pick = opts.find((s) => s.uid === uid) || opts[0]; }
+  S.deleteStack(state, opp, pick.uid, 'trash', 'effect');
+};
+SCRIPTS['AD1-025::서로의 턴'] = [{ op: 's170_destroyOppOption' }, { op: 'removeSecurity', who: 'opponent', position: 'top' }];

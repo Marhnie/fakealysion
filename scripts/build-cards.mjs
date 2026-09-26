@@ -90,5 +90,14 @@ try {
 } catch { /* no overrides file */ }
 if (koFilled) console.log(`ko-overrides applied: ${koFilled} fields`);
 
+// Typo corrections in the KOR export itself (data/ko-corrections.json: {cardNo: {field: [[from, to], ...]}}); applied unconditionally.
+try {
+  const fix = JSON.parse(readFileSync(new URL('../data/ko-corrections.json', import.meta.url), 'utf-8'));
+  for (const [no, fields] of Object.entries(fix)) {
+    const e = out[no]; if (!e || no[0] === '_') continue;
+    for (const [f, pairs] of Object.entries(fields)) for (const [from, to] of pairs) if (typeof e[f] === 'string' && e[f].includes(from)) e[f] = e[f].split(from).join(to); else console.warn(`ko-corrections: ${no}.${f} "${from}" not found`);
+  }
+} catch (err) { if (err.code !== 'ENOENT') throw err; }
+
 writeFileSync(OUT_PATH, JSON.stringify(out));
 console.log(`Wrote ${Object.keys(out).length} cards to ${OUT_PATH.pathname}`);

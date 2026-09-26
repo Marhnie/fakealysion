@@ -1,0 +1,9 @@
+{
+ "_doc": "Exact-string corrections of typos in the KOR export (applied by scripts/build-cards.mjs AFTER ko-overrides, unconditionally): {cardNo: {field: [[from, to], ...]}}",
+ "BT9-055": { "effectKo": [["「그랑쿠가몬」에서 1", "「그랜쿠가몬」에서 1"]] },
+ "BT10-026": { "effectKo": [["「블루플레어」", "「블루 플레어」"], ["떄", "때"]] },
+ "AD1-024": {
+  "nameKo": [["황제드라몬: 파이터모드", "황제드라몬: 파이터 모드"]],
+  "effectKo": [["「황제드라몬: 드래곤모드」", "「황제드라몬: 드래곤 모드」"], ["등장/진화했을때", "등장/진화했을 때"]]
+ }
+}

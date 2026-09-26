@@ -27,7 +27,7 @@ sc('EX9-021::진화 시', async (ctx) => {
   if (h.viaFusion) { S.grantShield(ctx.state, ctx.self, h.uid, { kinds: ['all'], until: ctx.state.turnNumber }); log(ctx, `${ctx.self} ${C(h.cardId).nameKo} 턴 종료까지 상대의 효과를 받지 않음`); }
   const opp = digs(ctx, ctx.opp); if (!opp.length) return;
   const top = Math.max(...opp.map(s => C(s.cardId).level ?? -1));
-  for (const s of opp.filter(x => (C(x.cardId).level ?? -1) === top)) S.deleteStack(ctx.state, ctx.opp, s.uid, 'trash', 'effect');
+  S.deleteSimul(ctx.state, ctx.opp, opp.filter(x => (C(x.cardId).level ?? -1) === top).map(s => s.uid), 'effect');
 });
 
 // BT17-102 【진화 시】 (Q4713): "이 디지몬의 명칭이 「코로몬」이라면, DP +3000. 그 후, 이 디지몬의 DP 이하의 상대의 디지몬 1마리를 소멸시킨다." — the 그 후 sentence is independent of the name condition.
@@ -47,7 +47,7 @@ const BT20_102 = [fn(async (ctx, R) => {
     const keepOpp = await pickOne(ctx, theirs, '남길 상대의 디지몬 1마리 선택 (나머지는 소멸)');
     const doomed = [];
     for (const [who, list, keep] of [[ctx.self, mine, keepMine], [ctx.opp, theirs, keepOpp]]) for (const s of list) if (s !== keep) doomed.push([who, s.uid]);
-    for (const [who, uid] of doomed) S.deleteStack(ctx.state, who, uid, 'trash', 'effect');
+    S.deleteSimul(ctx.state, doomed.map(([who, uid]) => ({ p: who, uid })), 'effect');
   } else log(ctx, `${ctx.self} ${C(h.cardId).nameKo}: 진화원에 「오메가몬」/「X항체」가 없어 첫 처리는 하지 않음 (그 후 처리는 진행)`);
   await R.runScript(R.compileToScript('상대의 디지몬 1마리를 덱 아래로 되돌린다.'), ctx);
 })];

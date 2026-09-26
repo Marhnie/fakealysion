@@ -281,7 +281,7 @@ OPS.s4_destroySum = async (instr, ctx) => {
     chosen.push(t.uid); left -= statOf(t);
   }
   let n = 0;
-  for (const uid of chosen) { const t = stackByUid(st, ctx.opp, uid); if (t) { S.deleteStack(st, ctx.opp, uid, 'trash', 'effect'); if (!st.players[ctx.opp].battle.includes(t)) n++; } }
+  n = S.deleteSimul(st, ctx.opp, chosen.filter(uid => stackByUid(st, ctx.opp, uid)), 'effect');
   V(ctx).destroyed = n;
 };
 
@@ -479,7 +479,7 @@ OPS.s4_digitamaUnder = async (instr, ctx) => {
 OPS.s4_destroyAllOwn = async (instr, ctx) => {
   const st = ctx.state, p = ctx.self;
   let n = 0;
-  for (const s of [...digimonOf(st, p)]) { S.deleteStack(st, p, s.uid, 'trash', 'ownEffect'); if (!st.players[p].battle.includes(s)) n++; }
+  n = S.deleteSimul(st, p, digimonOf(st, p).map(s => s.uid), 'ownEffect');
   V(ctx).destroyed = n;
 };
 OPS.s4_moveToRaising = async (instr, ctx) => {

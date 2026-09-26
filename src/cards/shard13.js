@@ -15,6 +15,7 @@ const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const digs = (state, p) => state.players[p].battle.filter(isDig);
+const digsR = (state, p) => { const r = state.players[p].raising; return [...(r && isDig(r) ? [r] : []), ...digs(state, p)]; }; // open-e: a raising-area Digimon's sources count as 「디지몬의 진화원」 too
 const tams = (state, p) => state.players[p].battle.filter(isTam);
 const findStack = (state, p, uid) => stacksOf(state, p).find(s => s.uid === uid) || null;
 const me = (ctx) => findStack(ctx.state, ctx.self, ctx.sourceStackUid);
@@ -479,7 +480,7 @@ sc('EX9-053::등장 시', (ctx, R) => R.runOne({ op: 'revealTop', who: 'self', n
 // EX9-054: 트래시와 디지몬의 진화원에 있는 「네가몬」 합계 2장마다 Lv. 상한 +1
 sc('EX9-054::소멸 시', (ctx, R) => {
   const { state } = ctx, p = ctx.self, pl = state.players[p];
-  const n = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digs(state, p).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo === '네가몬').length, 0);
+  const n = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digsR(state, p).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo === '네가몬').length, 0);
   return R.runOne({ op: 'playFree', who: 'self', zone: 'hand', filter: { category: 'digimon', mentionAny: ['네가몬'], levelMax: 4 + Math.floor(n / 2) }, rested: false, noTriggers: false, optional: true }, ctx);
 });
 // EX9-061: 덱 위 1장을 뒷면으로 → Lv.3 이하 상대 디지몬 소멸 (뒷면의 진화원 2장마다 Lv. 상한 +1)
@@ -538,7 +539,7 @@ sc('EX9-074::등장 시', async (ctx) => {
       return false;
     };
     for (const s of cand) tryAssign(s, new Set());
-    for (const t of new Set(matchOf.values())) if (digs(state, o).includes(t)) S.deleteStack(state, o, t.uid, 'trash', 'effect');
+    S.deleteSimul(state, o, [...new Set(matchOf.values())].filter(t => digs(state, o).includes(t)).map(t => t.uid), 'effect');
   } else {
     const list = opps().filter(s => S.stackColors(s).some(x => cols.has(x)));
     if (list.length) {

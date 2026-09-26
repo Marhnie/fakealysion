@@ -133,7 +133,10 @@ async function pickByGroups(ctx, who, cards, groups, kind, basePrompt, mkEligibl
     const cand = avail.filter(i => matchesFilter(S, cards[i], sl.filter));
     if (!cand.length) continue;
     const best = maxSlotMatching(S, cards, avail, slots.slice(si).map(x => x.filter));
-    const el = cand.filter(i => 1 + maxSlotMatching(S, cards, avail.filter(x => x !== i), rest) >= best);
+    const full = cand.filter(i => 1 + maxSlotMatching(S, cards, avail.filter(x => x !== i), rest) >= best);
+    // open-e (RB1-005 Q3420): a card that fits several criteria may also be taken AS the criterion of this slot even when that leaves another slot unfillable
+    // (the maximal outcome stays listed first so a default/CPU answer takes it)
+    const el = [...full, ...cand.filter(i => !full.includes(i) && rest.some(f => matchesFilter(S, cards[i], f)))];
     const lbl = sl.g.label ? `${sl.g.label} ${sl.g.max > 1 ? `${sl.k + 1}/${sl.g.max}` : '1'}장` : '';
     const prompt = `${basePrompt}${lbl ? ` — ${lbl}` : ''}`;
     const rq = mkEligible ? mkEligible(el, prompt) : { player: who, revealed: cards, eligible: el.map(i => ({ id: cards[i], i })), min: 0, max: 1, prompt, ...(required && el.length ? { required: true } : {}) };
@@ -431,6 +434,26 @@ export async function xrosOptsFor(ctx, who, zone, idx, paidPlay = false) {
   return plan ? { ...asmRes, materials: plan.materials, restTamers: plan.restTamers || [] } : asmRes;
 }
 
+// open-d (2): ONE shared prep for every bespoke effect-driven play (shard3 playPay/playFreeWhere, shard17 reveal-play, …): the paid part (tamer / trait / s1 hand-play discounts,
+// hook play-cost options such as EX6-006) and the 7-2-2-13 DigiXros / 《어셈블리》 offers, exactly like s8_playOrUse. `cost` = the play cost the effect already computed (0 = free play).
+// Returns { cost, idx, opts }: pay `cost` (S.spendMemory), then S.playFreeFromZone(state, who, zone, idx, {...ownOpts, ...opts}). The card may shift in the hand -> use the returned idx.
+export async function effectPlayPlan(ctx, who, zone, idx, cost = 0) {
+  const { S, state } = ctx, pl = state.players[who];
+  const id = pl[zone] && pl[zone][idx];
+  if (!id) return { cost, idx, opts: {} };
+  const dig = S.card(id).category === 'digimon';
+  const locked = S.isPlayCostLocked(state);
+  cost = Math.max(0, cost || 0);
+  if (cost > 0 && zone === 'hand' && dig && !locked) cost = Math.max(0, cost + S.tamerPlayCostDiscount(state, who, id) + S.traitPlayCostDiscount(state, who, id) + S.s1PlayDiscount(state, who, id));
+  if (cost > 0 && zone === 'hand' && dig && !locked) {
+    const hd = await S.effectPlayHookDiscount(state, who, id, (kd, pd) => ctx.choose(kd, pd)); if (hd) cost = Math.max(0, cost + hd);
+    if (pl.hand[idx] !== id) { const k = pl.hand.indexOf(id); if (k >= 0) idx = k; } // (a hook cost may have discarded/moved cards)
+  }
+  const xo = dig ? await xrosOptsFor(ctx, who, zone, idx, cost > 0) : {};
+  if (cost > 0 && !locked) cost = Math.max(0, cost - ((xo.materials || []).length ? (S.parseDigiXros(id)?.per || 0) * xo.materials.length : 0) - (xo.asmDiscount || 0));
+  return { cost, idx: pl[zone] && pl[zone][idx] === id ? idx : (pl[zone] || []).indexOf(id), opts: xo };
+}
+
 let DISTINCT_SEQ = 0;
 // several free plays compiled from ONE printed instruction ("A와 B 1장씩" / "N장") are simultaneous: they share a batchKey so a "…등장했을 때" watcher fires once (official Q&A 3664 EX5-062, 15-5-2)
 const withPlayBatch = (ops) => { if (ops.length > 1) { const k = 'pb' + (++DISTINCT_SEQ); for (const o of ops) o.batchKey = k; } return ops; };
@@ -547,6 +570,9 @@ function wrapChoose(ctx) {
     if (payload && payload.player === undefined) payload = { ...payload, player: ctx.self };
     // 선택 대상이 상대 디지몬이면 payload.player는 "대상의 주인"이라 결정권자와 다르다 — 결정권자(효과를 실행 중인 쪽)를 따로 실어 둔다
     if (payload && payload._self === undefined) payload = { ...payload, _self: ctx.self };
+    // 3-1-3-4: the player behind the effect orders cards it moves; and "상대 디지몬의 진화원을 선택해서 파기" is the effect user's pick even though the sources belong to the opponent
+    if ((kind === 'orderCards' || kind === 'pickSourcesMulti') && payload && payload.player && payload.player !== ctx.self && payload.decider === undefined) payload = { ...payload, decider: ctx.self };
+    if (ctx._deciderOverride && payload && payload.decider === undefined) payload = { ...payload, decider: ctx._deciderOverride }; // (revealTop of the opponent's deck: the effect's user decides - see case 'revealTop')
     // 1-3-6: when a rule/effect makes you choose cards, you must choose at least 1 — unless the effect text is an
     // optional one ("…할 수 있다" / "N장까지"). The UI hides its cancel button for required picks that have candidates.
     if (PICK_KINDS.has(kind) && payload && payload.required === undefined && ctx.trigger && typeof ctx.trigger.text === 'string') {
@@ -946,6 +972,9 @@ async function runOneCore(instr, ctx) {
         const wi = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '어느 쪽 덱을 오픈할까요?', options: ['자신의 덱', '상대의 덱'] });
         if (wi === 1) dWho = ctx.opp;
       }
+      // 3-1-3-4 / the effect's user decides every pick and ordering even when the OPPONENT's deck is revealed (the cards belong to `dWho`, the decisions to ctx.self) - wrapChoose stamps `decider` on each prompt below
+      if (dWho !== ctx.self) ctx._deciderOverride = ctx.self;
+      try {
       const revealed = S.revealTop(state, dWho, instr.n);
       if (revealed.length) S.log(state, `${dWho} 덱 위 ${revealed.length}장 오픈: ${revealed.map(id => S.card(id).nameKo).join(', ')}`);
       instr = { ...instr, n: revealed.length, pick: adaptRevealPick(ctx, dWho, instr.pick, revealed) }; // (a deck with fewer cards than N reveals what is left)
@@ -978,6 +1007,7 @@ async function runOneCore(instr, ctx) {
         const ordered = revealed.map((_, i) => i).filter(i => keepIdxs.includes(i));
         await routeRevealed(ctx, dWho, instr, rvRes.toHand, ordered.map(i => (chosenIdxs.includes(i) ? destOf(i) : 'hand')), ordered.map(i => instr.pick?.groups?.[chosenIdxs.gi?.[i]] || null));
       }
+      } finally { delete ctx._deciderOverride; }
       break;
     }
     case 'trashHand': {
@@ -1471,7 +1501,7 @@ async function runOneCore(instr, ctx) {
         if (!st) break;
         chosen.push(uid); left -= statOf(st);
       }
-      for (const uid of chosen) S.deleteStack(state, ctx.opp, uid, 'trash', 'effect');
+      S.deleteSimul(state, ctx.opp, chosen, 'effect');
       break;
     }
     case 'mindLink': { // 16-28
@@ -4308,17 +4338,26 @@ export const evalConditionPublic = (cond, ctx) => evalCondition(cond, ctx);
 // 15-7-1 / 15-14-1 (unresolved-b Q3): an effect whose only interaction was a CANCELLED pick/confirm and that changed nothing was never activated, so its 〔턴에 N회〕 use
 // must be given back. onceGuard(ctx) wraps ctx.choose and fingerprints the game state; guard.noop() is true when a choice was cancelled AND the state is unchanged.
 const _GUARD_SKIP = new Set(['log', 'fxHistory', 'fxQueue', 'pending', 'pendingVanishFlash', 'ownedIds', 'turnEffectUses', 'art', 'contTs', 'hookEvt', 'attackCtx']);
-function _stateFp(state) {
-  const seen = new WeakSet();
-  try { return JSON.stringify(state, (k, v) => { if (_GUARD_SKIP.has(k) || (typeof k === 'string' && k[0] === '_')) return undefined; if (v && typeof v === 'object') { if (seen.has(v)) return '~'; seen.add(v); } return v; }); } catch (e) { return null; }
+const _GUARD_SKIP_STRICT = new Set(['log', 'fxHistory', 'fxQueue', 'pending', 'pendingVanishFlash', 'ownedIds', 'turnEffectUses', 'art', 'contTs', 'hookEvt', 'attackCtx', '_contSig', '_prGrp', '_qaAns']);
+function _stateFp(state, strict) {
+  const seen = new WeakSet(); const skip = strict ? _GUARD_SKIP_STRICT : _GUARD_SKIP;
+  try { return JSON.stringify(state, function (k, v) { if (skip.has(k) || (typeof k === 'string' && k[0] === '_' && (!strict || this === state))) return undefined; if (v && typeof v === 'object') { if (seen.has(v)) return '~'; seen.add(v); } return v; }); } catch (e) { return null; }
 }
+// open-d (1): an effect that NEVER asked a question (no legal target / unmet condition / nothing to do) and left the state completely untouched (incl. private "_" flags,
+// no new pending note) was never activated either (15-7-1 / 15-14-1), so its 〔턴에 N회〕 use is given back as well.
 export function onceGuard(ctx) {
-  const orig = ctx.choose; let cancelled = false;
-  ctx.choose = async (k, o) => { const r = await orig(k, o); if (r == null || r === false || (Array.isArray(r) && !r.length)) cancelled = true; return r; };
-  const before = _stateFp(ctx.state);
-  return { noop: () => { return cancelled && before != null && _stateFp(ctx.state) === before; } };
+  const orig = ctx.choose; let cancelled = false, asked = 0;
+  ctx.choose = async (k, o) => { asked++; const r = await orig(k, o); if (r == null || r === false || (Array.isArray(r) && !r.length)) cancelled = true; return r; };
+  const before = _stateFp(ctx.state), beforeStrict = _stateFp(ctx.state, true), pend0 = (ctx.state.pending || []).length;
+  return { noop: () => {
+    if (before == null) return false;
+    if (cancelled) return _stateFp(ctx.state) === before;
+    if (asked || beforeStrict == null || ctx._manualNote || (ctx.state.pending || []).length !== pend0) return false;
+    const _a = _stateFp(ctx.state, true);
+    return _a === beforeStrict;
+  } };
 }
-export const FX_HELPERS = { compileSecurityLook, prepText, strictCardFilter, xrosOptsFor, parseConditionText, condTestFor, parseCardFilter, matchesFilter, compileToScript, perCount };
+export const FX_HELPERS = { compileSecurityLook, prepText, strictCardFilter, xrosOptsFor, effectPlayPlan, parseConditionText, condTestFor, parseCardFilter, matchesFilter, compileToScript, perCount };
 
 // verify-reveal-1: re-reads the whole "덱 위에서부터 N장 오픈한다. 그중 … " text of a compiled revealTop and fills in what the first pass can't:
 //   per-clause destinations (패에 추가 / 파기 / 코스트 없이 등장 / 이 디지몬(으로부터) 진화 / 코스트 없이 사용 / 진화원·테이머 아래 / 시큐리티 위), 「전부」, "상대 디지몬 1마리마다",

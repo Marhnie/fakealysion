@@ -650,7 +650,7 @@ OPS.s8_trashOppSources = async (i, ctx) => {
     for (const s of battleOf(ctx, 'opp')) if (isDigi(s.cardId)) s.sources.forEach((id, x) => entries.push({ uid: s.uid, x, id }));
     if (!entries.length) break;
     const ids = entries.map(e => e.id);
-    const r = await ctx.choose('pickFromRevealed', { player: ctx.opp, revealed: ids, eligible: ids.map((id, y) => ({ id, i: y })), min: 0, max: 1, prompt: `파기할 상대 디지몬의 진화원 선택 (${k + 1}/${n})` });
+    const r = await ctx.choose('pickFromRevealed', { player: ctx.opp, decider: ctx.self, revealed: ids, eligible: ids.map((id, y) => ({ id, i: y })), min: 0, max: 1, prompt: `파기할 상대 디지몬의 진화원 선택 (${k + 1}/${n})` });
     if (!r || !r.length) break;
     const e = entries[r[0]];
     S.trashEvoSources(state, ctx.opp, e.uid, 1, 'bottom', [e.x]);
@@ -1102,7 +1102,7 @@ OPS.s8_trashOppUnder = async (i, ctx) => {
     for (const s of battleOf(ctx, 'opp')) if (inKinds(s, kindsDT)) s.sources.forEach((id, x) => entries.push({ uid: s.uid, x, id }));
     if (!entries.length) break;
     const ids = entries.map(e => e.id);
-    const r = await ctx.choose('pickFromRevealed', { player: ctx.opp, revealed: ids, eligible: ids.map((id, y) => ({ id, i: y })), min: 1, max: 1, prompt: `파기할 상대의 디지몬/테이머 아래의 카드 선택 (${k + 1}/${i.n})` });
+    const r = await ctx.choose('pickFromRevealed', { player: ctx.opp, decider: ctx.self, revealed: ids, eligible: ids.map((id, y) => ({ id, i: y })), min: 1, max: 1, prompt: `파기할 상대의 디지몬/테이머 아래의 카드 선택 (${k + 1}/${i.n})` });
     const e = entries[(r && r.length) ? r[0] : 0];
     S.trashEvoSources(state, ctx.opp, e.uid, 1, 'bottom', [e.x]);
   }

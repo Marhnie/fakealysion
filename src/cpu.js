@@ -615,9 +615,10 @@ export function decideRedirect() { return null; }
 // Who decides a prompt?  Hints: { pendingOwner (owner of the effect that is resolving), override (a CPU-driven action in progress) }.
 export function deciderFor(state, kind, payload, hints = {}) {
   const pay = payload || {};
+  if (pay.decider) return pay.decider; // explicit: the effect's user decides although the cards belong to the opponent (opponent-deck reveals, effects.js revealTop)
   if (kind === 'pickStack' || kind === 'pickStackAnySide') {
     const own = hints.pendingOwner || hints.override || pay.player || 'p1';
-    if (pay.player && pay.player !== own && /자신의/.test(String(pay.prompt || '')) && !/상대/.test(String(pay.prompt || ''))) return pay.player; // "소멸시킬 자신의 디지몬 선택": the OWNER of the stacks decides
+    if (pay.player && pay.player !== own && /자신의(?!\s*(?:다음\s*)?턴)/.test(String(pay.prompt || '')) && !/상대/.test(String(pay.prompt || ''))) return pay.player; // "소멸시킬 자신의 디지몬 선택": the OWNER of the stacks decides
     return own;
   }
   return pay.player || hints.pendingOwner || hints.override || 'p1';
@@ -673,6 +674,7 @@ export function answerChoice(state, kind, payload, who, cfg) {
     switch (kind) {
       case 'confirmEffect': {
         if (/투항/.test(prompt)) return false;
+        if (/《딜레이》/.test(prompt) && /조건 불충족/.test(prompt)) return false; // open-d (3): discarding a delay Option whose bullet gate fails wastes the card
         if (pay.optionalCost) return optionalCostAnswer(state, who, pay, level); // 15-7-1 "~하는 것으로": never auto-yes when the cost hurts
         if (/대신\s*다음\s*효과를\s*사용할\s*수\s*있습니다/.test(prompt) && /(다른\s*[^,/]*디지몬[^,/]*소멸시키|자신의\s*디지몬[^,/]*소멸시키|시큐리티[^,/]*(?:파기|트래시))/.test(prompt.split('사용할 수 있습니다')[1] || '')) return false; // replacement whose optional cost sacrifices another own Digimon / security: not worth it blindly
         if (level === 'easy') return rnd() < 0.6;

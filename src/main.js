@@ -2535,7 +2535,7 @@ function renderUiChoice() {
   if (!uc) return null;
   const { kind, payload, resolve } = uc;
   const fxr = state._fxRec; // which card is asking (shown inline at the top of every choice modal)
-  const rows = [fxFieldOn() && fxr && fxr.src && fxr.src.kind === 'effect' ? h('div', { className: 'fxf-modal-src fxf-' + fxr.src.owner }, '📌 ' + fxSrcLabel(fxr)) : null, h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')].filter(Boolean);
+  const rows = [fxr && fxr.src && fxr.src.kind === 'effect' && (fxFieldOn() || cpuOn) ? h('div', { className: 'fxf-modal-src fxf-' + fxr.src.owner }, ['📌 ' + fxSrcLabel(fxr), fxWhyNote(fxr, true) ? h('div', { className: 'meta' }, fxWhyNote(fxr, true)) : null]) : null, h('div', { className: 'effect-box' }, payload.prompt || '선택하세요')].filter(Boolean);
 
   if (kind === 'pickPendingOrder') {
     payload.items.forEach((it, i) => rows.push(h('div', { className: 'actions-row' }, [
@@ -3021,7 +3021,13 @@ async function scriptedSecurityCheck(attackerP, attackerUid, defenderP) {
       render();
       await drainNestedPending();
     }
-    if (state.winner || S.settleSecurityLoss(ctl) !== 'survived') break; // BT8-095 (Q4705)
+    if (state.winner) break;
+    let lossR = S.settleSecurityLoss(ctl);
+    if (lossR === 'deferred') { // interactive replacement prompt parked (pumpReplacementPrompt): wait for S.resumeReplacement to report the outcome (open-e 1)
+      lossR = await new Promise((res) => { ctl.onLossResolved = res; });
+      render();
+    }
+    if (lossR !== 'survived') break; // BT8-095 (Q4705)
   }
   state._scriptedPierce = null;
   render();
@@ -3503,7 +3509,18 @@ function renderLog() {
 const FX_DELAYS = { auto: -1, '2': 2000, '5': 5000, '10': 10000, manual: 0 };
 const fxUI = { seen: 0, stateRef: null, queue: [], idx: 0, open: false, timer: null, tab: 'log', info: null, expanded: new Set(), ghosts: [], markRec: null, markUntil: 0, markTimer: null, hits: { p1: new Set(), p2: new Set() }, cfg: 'auto' };
 try { const v = localStorage.getItem('digimon_fx_delay'); if (v && v in FX_DELAYS) fxUI.cfg = v; } catch (e) { /* ignore */ }
-const pNm = (p) => String(p || '').toUpperCase();
+const pNm = (p) => (cpuOn && p === CPU_P ? 'CPU(P2)' : String(p || '').toUpperCase()); // vs-CPU: name the CPU so a card it plays / an effect it fires is never mistaken for one of the human's own
+// Why did this effect fire on its own? (a player who never played the card sees it appear / asks a question) — short rule-based reason, '' when the owner simply used it
+function fxWhyNote(rec, byHuman) {
+  if (!rec || !rec.src || rec.src.kind !== 'effect') return '';
+  const tag = String(rec.src.tag || ''), so = rec.src.owner, out = [];
+  if (/시큐리티/.test(tag)) out.push('🛡 시큐리티 체크로 공개돼 룰에 따라 자동 발동 (카드를 낸 것이 아님)');
+  else if (/(턴|페이즈)\s*개시\s*시/.test(tag + (rec.text || ''))) out.push('⏰ 턴 시작 시 자동 발동');
+  else if (/턴\s*종료\s*시/.test(tag)) out.push('⏰ 턴 종료 시 자동 발동');
+  else if (/(소멸\s*시|파기\s*시)/.test(tag)) out.push('💀 소멸 시 자동 발동');
+  if (cpuOn && so === CPU_P && byHuman) out.push('🤖 CPU 카드의 효과가 당신에게 선택을 요구합니다 ("상대는 …" 효과)');
+  return out.join(' · ');
+}
 const fxOwnerOf = (m) => { const x = /^(p1|p2)\s/.exec(m); return x ? x[1] : null; };
 const fxTrivial = (r) => !r.entries.length && !r.vanished.length && r.mem0 === r.mem1;
 function fxForeign(rec) { // did the effect touch the OTHER player's cards / lines?
@@ -3623,6 +3640,7 @@ function fxRecView(rec, full) {
         ? [h('span', { className: `fx-owner fx-${so}` }, pNm(so)), ' ', fxCardLink(rec.src.cardId, `「${c.nameKo}」`), rec.src.tag ? h('span', { className: 'fx-tag' }, `【${rec.src.tag}】`) : null, rec.src.inherited && rec.src.tag !== '시큐리티' ? h('span', { className: 'fx-tag' }, ' 진화원 효과') : null]
         : `⚙ ${rec.src.label}`),
       h('div', { className: 'meta' }, `턴 ${rec.turn}`),
+      fxWhyNote(rec, false) ? h('div', { className: 'meta fx-why' }, fxWhyNote(rec, false)) : null,
     ]),
   ]));
   const res = fxResults(rec), shown = full ? res.slice(0, 14) : res;

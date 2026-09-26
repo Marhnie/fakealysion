@@ -109,7 +109,7 @@ OPS.r17_reveal = async (instr, ctx) => {
       const c = C(id);
       const cost = Math.max(0, (c.cost || 0) + (step.delta || 0));
       if (c.category === 'option') { pl.hand.push(id); const ix = pl.hand.length - 1; if (!S.useOptionCard(state, who, ix, { costDelta: step.delta || 0 })) { pl.hand.pop(); back.push(id); } }
-      else { pl.hand.push(id); const ix = pl.hand.length - 1; if (step.delta && cost > 0) S.spendMemory(state, cost); const st = step.delta ? S.playDigimonFresh(state, who, ix) : S.playFreeFromZone(state, who, 'hand', ix, { rested: !!step.rested, noTriggers: !!step.noTriggers }); if (!st) { const k = pl.hand.lastIndexOf(id); if (k >= 0 && pl.hand.length - 1 === k) pl.hand.pop(); back.push(id); } else if (step.delta) st.playedByEffect = true; }
+      else { pl.hand.push(id); const ix0 = pl.hand.length - 1; const plan = await (await import('../effects.js')).FX_HELPERS.effectPlayPlan(ctx, who, 'hand', ix0, step.delta ? cost : 0); /* open-d (2): shared play-cost options + DigiXros/Assembly */ const ix = plan.idx; if (plan.cost > 0) S.spendMemory(state, plan.cost); const st = ix < 0 ? null : step.delta ? S.playDigimonFresh(state, who, ix, plan.opts) : S.playFreeFromZone(state, who, 'hand', ix, { rested: !!step.rested, noTriggers: !!step.noTriggers, ...plan.opts }); if (!st) { const k = pl.hand.lastIndexOf(id); if (k >= 0 && pl.hand.length - 1 === k) pl.hand.pop(); back.push(id); } else if (step.delta) st.playedByEffect = true; }
     } else { // under a stack
       const ds = destStacks(ctx, step) || [];
       let target = ds[0];
