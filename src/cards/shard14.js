@@ -22,7 +22,7 @@ const log = (ctx, msg) => S.log(ctx.state, msg);
 const P = (ctx, who = 'self') => ctx.state.players[who === 'opp' ? ctx.opp : ctx.self];
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; };
 const meS = (ctx) => findStack(ctx.state, ctx.self, ctx.sourceStackUid);
-const digs = (ctx, who = 'self') => P(ctx, who).battle.filter(s => isDig(s.cardId));
+const digs = (ctx, who = 'self') => P(ctx, who).battle.filter(s => S.isDigimonLike(s));
 const oppEnd = (ctx) => (ctx.state.activePlayer === ctx.self ? ctx.state.turnNumber + 1 : ctx.state.turnNumber);
 const ask = async (ctx, prompt, who) => !!(await ctx.choose('confirmEffect', { player: who || ctx.self, prompt }));
 async function pickS(ctx, who, stacks, prompt) {
@@ -65,7 +65,7 @@ OPS.n5_link = async (i, ctx, run) => {
 OPS.n5_jogressPair = async (i, ctx) => {
   const { state, self: p } = ctx;
   const pl = state.players[p];
-  const digis = pl.battle.filter(s => isDig(s.cardId));
+  const digis = pl.battle.filter(s => S.isDigimonLike(s));
   const pairs = [];
   pl.hand.forEach((id, k) => {
     if (!isDig(id) || !S.parseJogress(id) || (i.cardName && !S.cardNameIs(C(id), i.cardName)) || (i.pred && !i.pred(id))) return;
@@ -218,7 +218,7 @@ SCRIPTS['BT24-040::등장 시'] = [
     for (const t of await pickMany(ctx, ctx.opp, all, 2, '레스트/【진화 시】 봉인할 상대의 디지몬/테이머 선택')) {
       if (S.effectBlocked(ctx.state, ctx.opp, t, 'other')) continue;
       S.preventRest(ctx.state, ctx.opp, t.uid, oppEnd(ctx));
-      if (isDig(t.cardId)) t.noEvoTrigUntil = oppEnd(ctx);
+      if (S.isDigimonLike(t)) t.noEvoTrigUntil = oppEnd(ctx);
     }
   }),
 ];
@@ -322,7 +322,7 @@ SCRIPTS['EX11-053::소멸 시'] = [IF((ctx) => P(ctx).security.length <= 1, [X(a
   const { state, self } = ctx; const pl = P(ctx);
   const opts = [];
   pl.hand.forEach((id, k) => { if (isDig(id) && S.cardNameIs(C(id), '오메가몬 X항체')) opts.push({ z: 'hand', k, id }); });
-  for (const s of pl.battle) if (isDig(s.cardId) && S.cardNameIs(C(s.cardId), '위그드라실_7D6')) s.sources.forEach((id, k) => { if (isDig(id) && S.cardNameIs(C(id), '오메가몬 X항체')) opts.push({ z: 'src', k, id, from: s }); });
+  for (const s of pl.battle) if (S.isDigimonLike(s) && S.cardNameIs(C(s.cardId), '위그드라실_7D6')) s.sources.forEach((id, k) => { if (isDig(id) && S.cardNameIs(C(id), '오메가몬 X항체')) opts.push({ z: 'src', k, id, from: s }); });
   if (!opts.length) return;
   const ids = opts.map(o => o.id);
   const r = await ctx.choose('pickFromRevealed', { player: self, revealed: ids, eligible: ids.map((id, i) => ({ id, i })), min: 0, max: 1, prompt: '코스트 없이 등장시킬 「오메가몬 X항체」 선택 (취소=등장 안 함)' });
@@ -338,7 +338,7 @@ SCRIPTS['EX11-053::소멸 시'] = [IF((ctx) => P(ctx).security.length <= 1, [X(a
 SCRIPTS['EX11-074::진화 시'] = [X(async (ctx) => { // 디지몬 1마리를 레스트시킬 수 있다. 이 효과로 자신의 디지몬이 레스트 했다면, 상대의 턴 종료까지, 이 디지몬은 상대의 디지몬의 효과를 받지 않고 DP+6000
   const { state, self } = ctx;
   const entries = [];
-  for (const pp of [self, ctx.opp]) for (const s of state.players[pp].battle) if (isDig(s.cardId) && !s.suspended) entries.push({ player: pp, uid: s.uid });
+  for (const pp of [self, ctx.opp]) for (const s of state.players[pp].battle) if (S.isDigimonLike(s) && !s.suspended) entries.push({ player: pp, uid: s.uid });
   if (!entries.length) return;
   const r = await ctx.choose('pickStackAnySide', { entries, prompt: '레스트시킬 디지몬 선택 (자신/상대 무관, 취소=안 함)' });
   if (!r) return;
@@ -613,7 +613,7 @@ SCRIPTS['BT26-055::등장 시'] = [
     const mine = await pickS(ctx, ctx.self, mineC, '소멸시킬 「Ver.3」 자신의 디지몬 선택');
     if (mine) S.deleteStack(ctx.state, ctx.self, mine.uid, 'trash', 'ownEffect');
     const m = oppD.length ? Math.min(...oppD.map(s => C(s.cardId).cost || 0)) : null;
-    for (const s of oppD.filter(x => (C(x.cardId).cost || 0) === m)) S.deleteStack(ctx.state, ctx.opp, s.uid, 'trash', 'effect');
+    S.deleteSimul(ctx.state, ctx.opp, oppD.filter(x => (C(x.cardId).cost || 0) === m).map(s => s.uid), 'effect');
   }),
 ];
 SCRIPTS['BT26-055::진화 시'] = SCRIPTS['BT26-055::등장 시'];
@@ -634,7 +634,7 @@ SCRIPTS['BT26-083::진화 시'] = SCRIPTS['BT26-083::등장 시'];
 SCRIPTS['BT26-080::메인'] = [
   X(async (ctx) => { // 디지몬 1마리를 액티브로 할 수 있다 (자신/상대 무관)
     const entries = [];
-    for (const pp of [ctx.self, ctx.opp]) for (const s of ctx.state.players[pp].battle) if (isDig(s.cardId) && s.suspended) entries.push({ player: pp, uid: s.uid });
+    for (const pp of [ctx.self, ctx.opp]) for (const s of ctx.state.players[pp].battle) if (S.isDigimonLike(s) && s.suspended) entries.push({ player: pp, uid: s.uid });
     if (!entries.length) return;
     const r = await ctx.choose('pickStackAnySide', { entries, prompt: '액티브로 할 디지몬 선택 (자신/상대 무관, 취소=안 함)' });
     if (r) S.unsuspendStack(ctx.state, r.player, r.uid);
@@ -658,7 +658,7 @@ SCRIPTS['BT25-102::메인'] = [
     pred: (id) => trait(id, 'TS') && (C(id).colors || []).some(c => c === 'black' || c === 'red') },
 ];
 // BT25-095 (서로의 턴): 레드/그린인 특징 「TS」 디지몬 전부 DP +2000 (the 《속공》 half is parsed by the static-grant reader)
-HOOKS['BT25-095'] = [{ tag: '서로의 턴', has: '레드/그린', dp: (state, hp, holder, target, tp) => (tp === hp && isDig(target.cardId) && trait(target.cardId, 'TS') && (C(target.cardId).colors || []).some(c => c === 'red' || c === 'green') ? 2000 : 0) }];
+HOOKS['BT25-095'] = [{ tag: '서로의 턴', has: '레드/그린', dp: (state, hp, holder, target, tp) => (tp === hp && S.isDigimonLike(target) && trait(target.cardId, 'TS') && (C(target.cardId).colors || []).some(c => c === 'red' || c === 'green') ? 2000 : 0) }];
 
 // ================================================================== BT20-102 오메가몬 X항체 (docs/verify-norest-attack.md)
 // 【등장 시】【진화 시】 진화원에 「오메가몬」/「X항체」가 있다면(= 명칭이 「오메가몬」 또는 「X항체」인 카드, 〈룰〉 명칭 포함), 서로의 디지몬 1마리씩을 선택하고 선택한 디지몬 이외의 디지몬 전부를 소멸시킨다. 그 후, 상대의 디지몬 1마리를 덱 아래로 되돌린다.
@@ -671,7 +671,7 @@ const BT20_102_ON = [X(async (ctx, run) => {
   const keepOpp = theirs.length ? await pickS(ctx, ctx.self, theirs, '남길 상대의 디지몬 1마리 선택 (나머지는 소멸)') : null;
   const doomed = [];
   for (const [who, list, keep] of [[ctx.self, mine, keepMine], [ctx.opp, theirs, keepOpp]]) for (const s of list) if (s !== keep) doomed.push([who, s.uid]);
-  for (const [who, uid] of doomed) S.deleteStack(ctx.state, who, uid, 'trash', 'effect');
+  S.deleteSimul(ctx.state, doomed.map(([who, uid]) => ({ p: who, uid })), 'effect');
   await run.runScript(compileToScript('상대의 디지몬 1마리를 덱 아래로 되돌린다.'), ctx);
 })];
 SCRIPTS['BT20-102::등장 시'] = BT20_102_ON;

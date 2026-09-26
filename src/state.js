@@ -437,6 +437,16 @@ function trackLeaves(state) {
   }
   return state;
 }
+// where a stack that a card script spliced out of the battle area ended up (its top card is now in hand / deck / security); heuristic, only used by the flushLeaves safety net
+function inferLeftTo(state, p, stack) {
+  const pl = state.players[p], id = stack.cardId;
+  if (pl.hand.slice(-4).includes(id)) return 'hand';
+  if (pl.deck.length && pl.deck[pl.deck.length - 1] === id) return 'deckBottom';
+  if (pl.deck.length && pl.deck[0] === id) return 'deckTop';
+  if (pl.security.length && pl.security[0] === id) return 'securityTop';
+  if (pl.security.length && pl.security[pl.security.length - 1] === id) return 'securityBottom';
+  return 'other';
+}
 export function flushLeaves(state) {
   let guard = 0;
   while (state._leavePending && state._leavePending.length && guard++ < 20) {
@@ -444,6 +454,7 @@ export function flushLeaves(state) {
     for (const { p, stack } of list) {
       if (stack._leaveFired) { stack._leaveFired = false; continue; }
       if (state.players[p].battle.includes(stack) || state.players[p].raising === stack) continue; // put back / moved within the area
+      if (stack._leftTo === undefined) stack._leftTo = inferLeftTo(state, p, stack); // open-d (4): bespoke bounce code (splices pl.battle itself) -> BT14-030 / BT17-099 still see where it went
       hookLeaveTriggers(state, p, stack, 'other'); stack._leaveFired = false;
     }
   }
@@ -2162,9 +2173,12 @@ function evolveTargetRestrictionBase(state, p, stack) {
   return null;
 }
 
+// Official Q&A 1446 (BT11-043): an 「원래 DP를 N으로 변경」 override only changes a DP the card HAS — when a devolve leaves a Tamer/Digi-Egg (no printed DP) on top it stays DP-less.
+// A Tamer that is currently treated as a Digimon (s2AsDigimon, BT12-092 family) still gets its 「DP N으로 취급」 value, which is stored in the same baseOv list.
+function dpOverrideOf(stack) { const ov = stack.dpBaseOverride; return ov && (card(stack.cardId).dp != null || stack.s2AsDigimon) ? ov : undefined; }
 export function effectiveDP(state, p, stack) {
   if (stack.deferred || stack.applied) settleDeferred(state, stack, p); // 15-15-5-2: recorded grants apply once the immunity is gone
-  const ov = stack.dpBaseOverride; // "원래 DP를 N으로 변경" (until: last turn number it applies)
+  const ov = dpOverrideOf(stack); // "원래 DP를 N으로 변경" (until: last turn number it applies)
   const ca = contAsDigimon(state, stack); // a continuous 「DP N의 디지몬으로도 취급」 overrides a triggered one (Q6503)
   const base = ca && ca.dp != null ? ca.dp : ov && state.turnNumber <= ov.until ? ov.value : (card(stack.cardId).dp || 0);
   return s7DpFloor(state, p, stack, base + (stack.tempDP || 0) + (stack.inheritedDP || 0) + turnConditionalDP(state, p, stack) + hookDP(state, p, stack) + s7DpSum(state, stack) + lateDpAllSum(state, p, stack) + allGrantsFor(state, p, stack).dp);
@@ -2586,7 +2600,7 @@ function applyDeferred(state, p, stack, e) {
 
 // 2-5-3: a card that has no DP can't have DP added to or subtracted from it (unless an effect gave it an original DP).
 export function stackHasDP(state, stack) {
-  const ov = stack.dpBaseOverride;
+  const ov = dpOverrideOf(stack);
   if (card(stack.cardId).dp != null || !!(ov && state.turnNumber <= ov.until)) return true;
   { const ca = contAsDigimon(state, stack); if (ca && ca.dp != null) return true; }
   // slice-4 QA (BT22-007 마더 이터): "[육성] 배틀 에어리어의 자신의 「X」 전부는 DP N으로 취급한다" — the raising-area holder gives a DP-less 「X」 in the battle area a DP (so 17-1-3-2-1 does not discard it)
@@ -2628,8 +2642,10 @@ export function flushRuleChecks(state) {
   const seen = new Set();
   const known = new Set(state.pending.map(x => x.uid));
   const prevDelBatch = state._delBatch; state._delBatch = new Set(); // simultaneous rule-check deletions (see emitGameEvent 'delete' dedupe)
-  for (const { p, uid } of list || []) {
-    if (seen.has(p + uid)) continue; seen.add(p + uid);
+  const uniq = []; for (const it of list || []) { if (seen.has(it.p + it.uid)) continue; seen.add(it.p + it.uid); uniq.push(it); }
+  const ordered = []; // open-d (4) LM-019: simultaneous rule-check deletions keep a group-survive holder (보코몬) / simulGrant granter last, like orderSimulDelete does for effect wipes
+  for (const q of [...new Set(uniq.map(x => x.p))]) for (const u of orderSimulDelete(state, q, uniq.filter(x => x.p === q).map(x => x.uid))) ordered.push({ p: q, uid: u });
+  for (const { p, uid } of ordered) {
     const pl = state.players[p];
     const st = pl.battle.find(s => s.uid === uid);
     if (st) ruleCheckDP(state, p, st);
@@ -2645,9 +2661,13 @@ export function flushRuleChecks(state) {
 }
 // 17-1-3-1 for every OTHER digimon: a stack that arrives (play / move / digivolve) can carry continuous DP penalties that drop opposing or friendly digimon to DP<=0, which no modifyDP call announced.
 export function ruleSweepDP(state, except = null) {
-  for (const q of ['p1', 'p2']) for (const st of [...state.players[q].battle]) {
-    if (st === except || (card(st.cardId).category !== 'digimon' && !isAsDigimon(st)) || !stackHasDP(state, st)) continue;
-    if (effectiveDP(state, q, st) <= 0) ruleCheckDP(state, q, st);
+  for (const q of ['p1', 'p2']) {
+    const zero = [];
+    for (const st of [...state.players[q].battle]) {
+      if (st === except || (card(st.cardId).category !== 'digimon' && !isAsDigimon(st)) || !stackHasDP(state, st)) continue;
+      if (effectiveDP(state, q, st) <= 0) zero.push(st.uid);
+    }
+    for (const u of orderSimulDelete(state, q, zero)) { const st = state.players[q].battle.find(x => x.uid === u); if (st) ruleCheckDP(state, q, st); } // open-d (4) LM-019: holder last
   }
 }
 function ruleCheckDP(state, p, stack) {
@@ -4992,6 +5012,7 @@ function deleteStackCore(state, p, uid, toZone, cause) {
   applyOverflowBatch(state, p, [...stack.sources, stack.cardId]);
   // last-known info for 【소멸 시】 scripts ("…이 있었다면" / "효과로 소멸하고 있었다면"): the stack is already gone by then.
   (state.deletedInfo ||= {})[stack.uid] = { cardId: stack.cardId, sources: stack.sources.slice(), cause, player: p, viaFusion: !!stack.viaFusion, byOverclock: !!state._overclockDelete };
+  if (stack._leftTo === undefined) stack._leftTo = 'trash';
   hookLeaveTriggers(state, p, stack, cause);
   stack.s7DelCause = cause; // s7
   if (linkIds.length && (cause === 'effect' || cause === 'ownEffect')) emitGameEvent(state, 's7LinkTrashed', { owner: p, stack: null, cause: 'effect', ids: linkIds }); // s7
@@ -5441,6 +5462,7 @@ export function declareAttack(state, attackerP, stackUid, opts = {}) {
     const maxDP = own.length ? Math.max(...own.map(s => effectiveDP(state, attackerP, s))) : -Infinity;
     (stack.s1 ||= {}).wasHighestDPAtDeclare = effectiveDP(state, attackerP, stack) >= maxDP; }
   log(state, `${attackerP} ${card(stack.cardId).nameKo}(DP${card(stack.cardId).dp ?? '-'}) 공격 선언${opts.noRest ? ' (레스트하지 않음)' : ''}`);
+  if (typeof opts.onDeclared === 'function') { try { opts.onDeclared(stack); } catch (e) { /* never block the attack */ } } // open-e (BT22-092 Q4252): 「이 효과로 발휘했다면」 follow-up runs AFTER the attack declaration
   return { ok: true, stack };
 }
 
@@ -5667,6 +5689,17 @@ export function orderSimulDelete(state, p, uids) {
   const pl = state.players[p];
   const isGranter = (uid) => { const s = pl.battle.find(x => x.uid === uid); return !!s && (holderHookList(s, false).some(({ d }) => d.simulGrant || d.preventLeave) || holdsGroupSurvive(s)); };
   return [...uids.filter(u => !isGranter(u)), ...uids.filter(isGranter)];
+}
+// open-d (4): delete several stacks TOGETHER (one instruction), each owner's group processed through orderSimulDelete (LM-019 holder / simulGrant granter last).
+// entries: [{ p, uid }] (or a single owner: deleteSimul(state, p, uids, cause)). Returns the number of stacks that actually left the battle area.
+export function deleteSimul(state, pOrEntries, uidsOrCause, cause) {
+  const entries = Array.isArray(pOrEntries) ? pOrEntries : uidsOrCause.map(uid => ({ p: pOrEntries, uid }));
+  cause = Array.isArray(pOrEntries) ? uidsOrCause : cause;
+  let n = 0;
+  for (const q of [...new Set(entries.map(e => e.p))]) for (const uid of orderSimulDelete(state, q, entries.filter(e => e.p === q).map(e => e.uid))) {
+    const st = state.players[q].battle.find(x => x.uid === uid); deleteStack(state, q, uid, 'trash', cause); if (st && !state.players[q].battle.includes(st)) n++;
+  }
+  return n;
 }
 // The static part of activeHooks for one stack (which descriptors of its contributing cards can ever apply: zone / own-vs-inherited / raising-area rule),
 // memoized per stackContributors() result (a new array whenever the stack changes, so the WeakMap entry can never go stale).

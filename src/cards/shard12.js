@@ -357,7 +357,9 @@ async function playFreeHandTrash(ctx, who, pred, prompt, zones = ['hand', 'trash
   if (zs.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: '카드를 등장시킬 위치', options: zs.map(x => (x === 'hand' ? '패' : '트래시')) }); if (k == null) return null; z = zs[k] || zs[0]; }
   const idx = await ctx.choose('pickFromZoneIndex', { player: who, zone: z, eligibleIdxs: ok(z), prompt });
   if (idx == null) return null;
-  return S.playFreeFromZone(ctx.state, who, z, idx, {});
+  const plan = await (await import('../effects.js')).FX_HELPERS.effectPlayPlan(ctx, who, z, idx, 0); // open-d (2): 7-2-2-13 DigiXros for a free effect play
+  if (plan.idx < 0) return null;
+  return S.playFreeFromZone(ctx.state, who, z, plan.idx, plan.opts);
 }
 // play one of `stack`'s face-up evolution cards for free (moved through the owner's trash)
 function playFromStackSource(ctx, who, stack, srcIdx) {

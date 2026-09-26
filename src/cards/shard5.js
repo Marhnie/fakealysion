@@ -15,6 +15,7 @@ const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const digs = (state, p) => state.players[p].battle.filter(isDig);
+const digsR = (state, p) => { const r = state.players[p].raising; return [...(r && isDig(r) ? [r] : []), ...digs(state, p)]; }; // open-e: a raising-area Digimon's sources count as 「디지몬의 진화원」 too
 const tams = (state, p) => state.players[p].battle.filter(isTam);
 const findStack = (state, p, uid) => stacksOf(state, p).find(s => s.uid === uid) || null;
 const me = (ctx) => findStack(ctx.state, ctx.self, ctx.sourceStackUid);
@@ -1291,7 +1292,7 @@ hk('EX9-003', { tag: '자신의 턴', src: 'inheritedKo', evoDiscount: (state, h
 } });
 sc('EX9-005::메인', async (ctx) => {
   const { state } = ctx, st = me(ctx), pl = state.players[ctx.self]; if (!st) return;
-  const cnt = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo === '네가몬').length, 0); // 뒷면의 진화원은 카드 정보를 갖지 않는다
+  const cnt = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digsR(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo === '네가몬').length, 0); // 뒷면의 진화원은 카드 정보를 갖지 않는다
   const played = await playDiscounted(ctx, c => c.category === 'digimon' && mention(c, '네가몬'), Math.max(0, 2 - cnt), '등장시킬 「네가몬」 디지몬 선택');
   if (played && findStack(state, ctx.self, st.uid)) putStackUnder(state, ctx.self, st, played);
 });
@@ -1356,7 +1357,7 @@ sc('EX9-031::서로의 턴', async (ctx) => {
 });
 sc('EX9-055::등장 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
-  const n = pl.trash.filter(id => C(id).nameKo.includes('네가몬')).length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo.includes('네가몬')).length, 0);
+  const n = pl.trash.filter(id => C(id).nameKo.includes('네가몬')).length + digsR(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo.includes('네가몬')).length, 0);
   if (n < 4 || pl.raising) return;
   const zones = ['hand', 'trash'].filter(z => pl[z].some(id => C(id).nameKo === '아바도몬 코어'));
   if (!zones.length || !(await ask(ctx, '「아바도몬 코어」를 육성 에어리어에 등장시킬까요?'))) return;

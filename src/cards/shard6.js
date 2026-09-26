@@ -8,7 +8,7 @@
 //
 // The file imports state.js / effects.js (import cycle: only touched inside functions, never at load time).
 import * as S from '../state.js';
-import { compileToScript, lookupCardSpecific } from '../effects.js';
+import { compileToScript, lookupCardSpecific, FX_HELPERS } from '../effects.js';
 
 export const SCRIPTS = {};
 export const OPS = {};
@@ -250,7 +250,9 @@ async function playFreeChoose(ctx, o) {
   }
   const idx = await pickZoneCard(ctx, me, zone, ok, o.prompt || '코스트를 지불하지 않고 등장시킬 카드 선택');
   if (idx == null) return null;
-  return S.playFreeFromZone(state, me, zone, idx, { rested: !!o.rested });
+  const plan = await FX_HELPERS.effectPlayPlan(ctx, me, zone, idx, 0); // open-d (2): 7-2-2-13 DigiXros for a free effect play
+  if (plan.idx < 0) return null;
+  return S.playFreeFromZone(state, me, zone, plan.idx, { rested: !!o.rested, ...plan.opts });
 }
 // Optional confirm at the start of an effect that opens with a cost the player might not want to pay.
 const optional = (ctx, who, text) => confirmFx(ctx, who || ctx.self, `${text} — 발동할까요?`);
@@ -600,7 +602,7 @@ SC('BT22-076', '진화 시', '이 디지몬의 DP 이하의 디지몬 1마리를
   S.trashEvoSources(state, me, st.uid, 1, 'bottom');
   const dp = S.effectiveDP(state, me, st);
   const entries = [];
-  for (const p of ['p1', 'p2']) for (const s of digimonsOf(state, p)) if (s !== st && S.effectiveDP(state, p, s) <= dp) entries.push({ player: p, uid: s.uid });
+  for (const p of ['p1', 'p2']) for (const s of digimonsOf(state, p)) if (S.effectiveDP(state, p, s) <= dp) entries.push({ player: p, uid: s.uid });
   const pick = await pickAnySide(ctx, entries, '시큐리티 위에 놓을 디지몬 선택');
   if (!pick) return;
   const t = findSt(state, pick.player, pick.uid);
@@ -1525,9 +1527,12 @@ SC('BT22-092', '자신의 턴', '그 디지몬의 【메인】 효과 1개를 �
   let cand = cands[0];
   if (cands.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: `${C(t.cardId).nameKo} 발휘할 【메인】 효과 1개 선택`, options: cands.map(c => `${c.inherited ? "[진화원] " : ""}${c.sg.body.replace(/s+/g, " ").slice(0, 60)}`) }); if (k == null) return; cand = cands[k] || cands[0]; }
   if (cand.once) S.markTurnEffectUsed(t, cand.key);
-  const sub = { ...ctx, sourceStackUid: t.uid, sourceCardId: cand.id };
+  // Q4252: 「이 효과로 발휘했다면」 follow-up (memory +1) is processed after the borrowed effect is fully resolved; when it attacked, after the attack declaration (state.declareAttack opts.onDeclared)
+  let atkStarted = false, declared = false, memDone = false;
+  const giveMem = () => { if (memDone) return; memDone = true; S.grantMemory(state, me, 1, ctx.sourceCardId); };
+  const sub = { ...ctx, sourceStackUid: t.uid, sourceCardId: cand.id, startAttack: (p, uid, direct, o) => { atkStarted = true; return ctx.startAttack(p, uid, direct, { ...(o || {}), onDeclared: () => { declared = true; giveMem(); }, onAborted: giveMem }); } };
   await R.runScript(lookupCardSpecific(cand.id, cand.sg.tags, cand.sg.body, cand.inherited) || compileToScript(cand.sg.body), sub);
-  S.grantMemory(state, me, 1, ctx.sourceCardId);
+  if (!atkStarted || declared || !ctx.deferredAtk) giveMem(); // (a driver that defers the declaration — the CPU sim — calls onDeclared/onAborted itself)
 }));
 
 // ---- #35 BT22-094 / #102 P-199 (play cost) / #103 P-200 / #104 P-202 (evolution cost)

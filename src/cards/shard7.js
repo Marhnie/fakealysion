@@ -81,12 +81,12 @@ async function pickIdx(ctx, who, zone, pred, prompt) {
   return i == null ? null : i;
 }
 // pick from an arbitrary list of card ids (shown through a temporary virtual zone)
-async function pickFromList(ctx, who, ids, prompt) {
+async function pickFromList(ctx, who, ids, prompt, decider) { // `decider`: the effect's user when the cards belong to the opponent (evolution sources of an opposing Digimon ...)
   if (!ids.length) return null;
   const pl = ctx.state.players[who];
   pl._s7vz = ids.slice();
   try {
-    const i = await ctx.choose('pickFromZoneIndex', { player: who, zone: '_s7vz', eligibleIdxs: ids.map((x, k) => k), prompt });
+    const i = await ctx.choose('pickFromZoneIndex', { player: who, zone: '_s7vz', eligibleIdxs: ids.map((x, k) => k), prompt, ...(decider ? { decider } : {}) });
     return i == null ? null : i;
   } finally { delete pl._s7vz; }
 }
@@ -587,7 +587,7 @@ async function trashSourcesPicked(ctx, who, st, n) {
   for (let k = 0; k < n; k++) {
     const rest = st.sources.map((id, i) => ({ id, i })).filter((x) => !idxs.includes(x.i));
     if (!rest.length) break;
-    const pick = await pickFromList(ctx, who, rest.map((x) => x.id), `${C(st.cardId).nameKo}의 진화원에서 파기할 카드 선택 (${k + 1}/${n})`);
+    const pick = await pickFromList(ctx, who, rest.map((x) => x.id), `${C(st.cardId).nameKo}의 진화원에서 파기할 카드 선택 (${k + 1}/${n})`, who !== ctx.self ? ctx.self : undefined);
     if (pick == null) break;
     idxs.push(rest[pick].i);
   }
@@ -600,8 +600,8 @@ H('BT24-040', {
   tag: '서로의 턴', has: '벗어날 때', limit: 1,
   // every eligible source-less Digimon is its own candidate, so the player chooses which one goes under security (S.hookPreventLeave)
   preventLeaveOptions: (state, hp, holder, target, tp, cause, mode, id) => {
-    if (cause === 'ownEffect' || !isDig(target.cardId) || !hasType(target.cardId, 'TS')) return [];
-    return state.players[hp].battle.filter((s) => s !== holder && s !== target && isDig(s.cardId) && s.sources.length === 0).map((pay) => ({ apply() {
+    if (cause === 'ownEffect' || !S.isDigimonLike(target) || !hasType(target.cardId, 'TS')) return [];
+    return state.players[hp].battle.filter((s) => s !== holder && s !== target && S.isDigimonLike(s) && s.sources.length === 0).map((pay) => ({ apply() {
       if (!once(holder, id, 'BT24-040-leave')) return false;
       moveOut(state, hp, pay, 'secBottom');
       S.log(state, `${hp} ${C(pay.cardId).nameKo}을(를) 시큐리티 아래에 놓아 ${C(target.cardId).nameKo}는 벗어나지 않음`);
@@ -755,8 +755,8 @@ SCRIPTS['BT24-084::서로의 턴'] = [F(async (ctx) => {
   if (st) await evolveStack(ctx, self, st, 'hand', (id) => nameIncl(id, '아이기오투스몬'), { free: true });
 })];
 H('BT24-086', { tag: '서로의 턴', has: '마인드 링크', events: {
-  play: (state, hp, holder, info) => info.owner === hp && C(holder.cardId).category === 'tamer' && isDig(info.stack.cardId),
-  digivolve: (state, hp, holder, info) => info.owner === hp && C(holder.cardId).category === 'tamer' && isDig(info.stack.cardId) } });
+  play: (state, hp, holder, info) => info.owner === hp && C(holder.cardId).category === 'tamer' && S.isDigimonLike(info.stack),
+  digivolve: (state, hp, holder, info) => info.owner === hp && C(holder.cardId).category === 'tamer' && S.isDigimonLike(info.stack) } });
 H('BT24-086', { tag: '서로의 턴', has: '얻는다', src: 'inheritedKo', kw: (state, hp, holder, name) => (name === '연계' || name === '재기동') && hasType(holder.cardId, 'X항체', '디지대', '시커즈') });
 SCRIPTS['BT24-086::서로의 턴@마인드 링크'] = [F(async (ctx) => {
   const { state, self } = ctx;
@@ -1126,8 +1126,8 @@ SCRIPTS['EX11-026::이동 시'] = [F(async (ctx) => {
   if (d) S.s7AddDpMod(state, self, d.uid, 3000, untilOppEnd(ctx));
 })];
 const MINERAL_EVT = { tag: '서로의 턴', has: '진화원 아래에 놓을', events: {
-  play: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && MIN(info.stack.cardId) && !holder.suspended && C(holder.cardId).category === 'tamer',
-  digivolve: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && MIN(info.stack.cardId) && !holder.suspended && C(holder.cardId).category === 'tamer' } };
+  play: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && MIN(info.stack.cardId) && !holder.suspended && C(holder.cardId).category === 'tamer',
+  digivolve: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && MIN(info.stack.cardId) && !holder.suspended && C(holder.cardId).category === 'tamer' } };
 H('EX11-065', { ...MINERAL_EVT });
 SCRIPTS['EX11-065::서로의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
@@ -1183,8 +1183,8 @@ SCRIPTS['EX11-044::서로의 턴'] = [F(async (ctx) => {
   }
 })];
 const VEMMON = { tag: '서로의 턴', has: '벰몬', events: {
-  play: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && mentions(info.stack.cardId, '벰몬') && !holder.suspended && C(holder.cardId).category === 'tamer',
-  digivolve: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && mentions(info.stack.cardId, '벰몬') && !holder.suspended && C(holder.cardId).category === 'tamer' } };
+  play: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && mentions(info.stack.cardId, '벰몬') && !holder.suspended && C(holder.cardId).category === 'tamer',
+  digivolve: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && mentions(info.stack.cardId, '벰몬') && !holder.suspended && C(holder.cardId).category === 'tamer' } };
 H('EX11-066', { ...VEMMON });
 SCRIPTS['EX11-066::서로의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
@@ -1302,7 +1302,7 @@ H('EX11-052', {
   },
 });
 H('EX11-017', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: {
-  play: (state, hp, holder, info) => info.stack !== holder && isDig(info.stack.cardId), digivolve: (state, hp, holder, info) => info.stack !== holder && isDig(info.stack.cardId) } });
+  play: (state, hp, holder, info) => info.stack !== holder && S.isDigimonLike(info.stack), digivolve: (state, hp, holder, info) => info.stack !== holder && S.isDigimonLike(info.stack) } });
 SCRIPTS['EX11-017::서로의 턴'] = [F(async (ctx) => {
   const { state } = ctx;
   const t = await pickStack(ctx, ctx.opp, digimonsOf(state, ctx.opp).filter((s) => s.sources.length), '진화원을 파기할 상대 디지몬 선택', { kind: 'srcTrash' });
@@ -1326,7 +1326,7 @@ SCRIPTS['EX11-031::등장 시'] = [F(async (ctx) => {
 H('EX11-031', {
   tag: '서로의 턴', src: 'inheritedKo', has: '앞면인 시큐리티', limit: 1,
   preventLeave: (state, hp, holder, target, tp, cause, mode, id) => {
-    if (cause === 'ownEffect' || !hasType(target.cardId, '로얄 베이스') || !isDig(target.cardId)) return false;
+    if (cause === 'ownEffect' || !hasType(target.cardId, '로얄 베이스') || !S.isDigimonLike(target)) return false;
     const pl = state.players[hp];
     const upId = pl.security.find((sid) => (pl.secUp && pl.secUp[sid]) > 0);
     if (!upId || !once(holder, id, 'EX11-031-leave')) return false;
@@ -1668,7 +1668,7 @@ SCRIPTS['EX11-066::자신의 메인 페이즈 개시 시'] = [F(async (ctx) => {
   S.grantMemory(state, self, 1, ctx.sourceCardId);
 })];
 // EX11-067 【자신의 턴】 own digimon evolved into a 「루체몬」-named digimon -> rest this tamer: memory +1
-H('EX11-067', { tag: '자신의 턴', has: '루체몬', events: { digivolve: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && nameIncl(info.stack.cardId, '루체몬') && !holder.suspended && C(holder.cardId).category === 'tamer' } });
+H('EX11-067', { tag: '자신의 턴', has: '루체몬', events: { digivolve: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && nameIncl(info.stack.cardId, '루체몬') && !holder.suspended && C(holder.cardId).category === 'tamer' } });
 SCRIPTS['EX11-067::자신의 턴'] = [F(async (ctx) => {
   const t = holderOf(ctx);
   if (!t || t.suspended) return;
@@ -1676,7 +1676,7 @@ SCRIPTS['EX11-067::자신의 턴'] = [F(async (ctx) => {
   S.grantMemory(ctx.state, ctx.self, 1, ctx.sourceCardId);
 })];
 // EX11-069 【자신의 턴】[턴에 1회] own digimon attacked, hand <= 4 -> evolve it from trash (마룡형/사룡형), cost -1
-H('EX11-069', { tag: '자신의 턴', has: '어택했을 때', limit: 1, events: { attack: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && state.players[hp].hand.length <= 4 } });
+H('EX11-069', { tag: '자신의 턴', has: '어택했을 때', limit: 1, events: { attack: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && state.players[hp].hand.length <= 4 } });
 SCRIPTS['EX11-069::자신의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const e = evtOf(ctx);
@@ -1687,7 +1687,7 @@ SCRIPTS['EX11-069::자신의 턴'] = [F(async (ctx) => {
   await evolveStack(ctx, self, st, 'trash', (id) => hasType(id, '마룡형', '사룡형'), { discount: 1 });
 })];
 // EX11-064 【자신의 턴】 own 사이보그형/머신형 digimon attacked -> rest this tamer: evolve it from hand (사이보그형/머신형), cost -1 per opp face-up security
-H('EX11-064', { tag: '자신의 턴', has: '어택했을 때', events: { attack: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && hasType(info.stack.cardId, '사이보그형', '머신형') && !holder.suspended && C(holder.cardId).category === 'tamer' } });
+H('EX11-064', { tag: '자신의 턴', has: '어택했을 때', events: { attack: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && hasType(info.stack.cardId, '사이보그형', '머신형') && !holder.suspended && C(holder.cardId).category === 'tamer' } });
 SCRIPTS['EX11-064::자신의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const t = holderOf(ctx);
@@ -1712,7 +1712,7 @@ H('EX11-026', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 이
 H('EX11-032', { tag: '자신의 턴', src: 'inheritedKo', has: '배틀에서 승리', limit: 1, events: { battleWin: (state, hp, holder, info) => info.stack === holder && hasType(holder.cardId, '볼텍스 워리어') } });
 // BT24-045: 【패에서 파기】 (untagged preamble, acts from the trash) + inherited 【자신의 턴】 evolve on own hand discard
 // (W8: the 【패에서 파기】 draw preamble is handled by state.queueOwnDiscardTriggers like BT24-013/026 — a second hardcoded hook here made it draw TWICE per discard; removed)
-H('BT24-045', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { discard: (state, hp, holder, info) => info.owner === hp && isDig(holder.cardId) && hasType(holder.cardId, '귀인형', '타이탄족') } });
+H('BT24-045', { tag: '자신의 턴', src: 'inheritedKo', limit: 1, events: { discard: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(holder) && hasType(holder.cardId, '귀인형', '타이탄족') } });
 SCRIPTS['BT24-045::자신의 턴'] = [F(async (ctx) => {
   const st = holderOf(ctx);
   if (!st || !(await confirm(ctx, '트래시의 타이타몬/타이탄족 디지몬으로 진화 코스트 -1 진화할까요?'))) return;
@@ -1930,12 +1930,12 @@ SCRIPTS['AD1-015::진화 시'] = [F(async (ctx) => {
 // "이 카드가 등장할 때, <조건>이라면, 등장 코스트 -5" — printed on the card in hand (state.handSelfPlayDiscount)
 H('AD1-018', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (digimonsOf(state, hp).some((s) => nameIncl(s.cardId, '나이트몬', '루체몬')) ? -5 : 0) });
 const mentionsName = (id, ...l) => l.some((x) => C(id).nameKo.includes(x) || `${C(id).effectKo || ''}\n${C(id).inheritedKo || ''}`.replace(/〈룰〉[^\n]*/g, '').includes(`「${x}」`));
-H('AD1-018', { tag: '서로의 턴', has: '기술이 있는', limit: 1, events: { play: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && mentionsName(info.stack.cardId, '나이트몬', '루체몬') } });
+H('AD1-018', { tag: '서로의 턴', has: '기술이 있는', limit: 1, events: { play: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && mentionsName(info.stack.cardId, '나이트몬', '루체몬') } });
 SCRIPTS['AD1-018::등장 시'] = [F(async (ctx) => {
   const t = await pickStack(ctx, ctx.self, digimonsOf(ctx.state, ctx.self), '상대 디지몬의 효과를 받지 않을 디지몬 선택', { mandatory: true });
   if (t) S.grantShield(ctx.state, ctx.self, t.uid, { kinds: ['all'], fromCategory: 'digimon', until: untilOppEnd(ctx) });
 })];
-H('AD1-024', { tag: '서로의 턴', has: '등장/진화했을때', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack.cardId) && evtByFx(state, info), digivolve: (state, hp, holder, info) => isDig(info.stack.cardId) && evtByFx(state, info) } });
+H('AD1-024', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: { play: (state, hp, holder, info) => S.isDigimonLike(info.stack) && evtByFx(state, info), digivolve: (state, hp, holder, info) => S.isDigimonLike(info.stack) && evtByFx(state, info) } });
 SCRIPTS['AD1-024::서로의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
   const e = evtOf(ctx);
@@ -1997,8 +1997,8 @@ SCRIPTS['BT25-013::등장 시'] = [F(async (ctx) => {
   if (i != null) pl.hand.push(pl.trash.splice(i, 1)[0]);
 })];
 const OWN_EVO_EVT = (colorTest) => ({ events: {
-  play: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && colorTest(colorsOfStack(info.stack)),
-  digivolve: (state, hp, holder, info) => info.owner === hp && isDig(info.stack.cardId) && colorTest(colorsOfStack(info.stack)) } });
+  play: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && colorTest(colorsOfStack(info.stack)),
+  digivolve: (state, hp, holder, info) => info.owner === hp && S.isDigimonLike(info.stack) && colorTest(colorsOfStack(info.stack)) } });
 const isBlue = (cs) => cs.includes('blue'), isRed = (cs) => cs.includes('red');
 H('BT25-013', { tag: '자신의 턴', has: '플레어몬', ...OWN_EVO_EVT(isBlue) });
 SCRIPTS['BT25-013::자신의 턴@플레어몬'] = [F(async (ctx) => {
@@ -2069,12 +2069,12 @@ H('BT25-020', { tag: '서로의 턴', has: '배틀에서 승리', limit: 1, even
 SCRIPTS['BT25-020::서로의 턴'] = [F(async (ctx) => { S.trashTopSecurityByEffect(ctx.state, ctx.opp); })];
 // W9r2 (official Q6346/6347, BT25-058 칼리스몬): 「효과로 디지몬이 등장하거나 진화했을 때」 (either side, incl. itself) had NO watcher registered (the "등장하거나 진화했을" wording is not a generic pattern) -> the script never fired.
 const byFxEvt = (state, info) => !!state._fxSrc || info.cause === 'effect' || info.cause === 'ownEffect';
-H('BT25-058', { tag: '서로의 턴', has: '등장하거나 진화했을', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack.cardId) && byFxEvt(state, info), digivolve: (state, hp, holder, info) => isDig(info.stack.cardId) && byFxEvt(state, info) } });
+H('BT25-058', { tag: '서로의 턴', has: '등장하거나 진화했을', limit: 1, events: { play: (state, hp, holder, info) => S.isDigimonLike(info.stack) && byFxEvt(state, info), digivolve: (state, hp, holder, info) => S.isDigimonLike(info.stack) && byFxEvt(state, info) } });
 // W9r2 (BT25-060 리부트몬): 「이 디지몬이 링크되거나 액티브되었을 때」 — same gap (no watcher registered)
 const selfLinkedOrActive = (state, hp, holder, info) => info.stack === holder && info.owner === hp;
 H('BT25-060', { tag: '서로의 턴', has: '링크되거나 액티브', limit: 1, events: { linked: selfLinkedOrActive, active: selfLinkedOrActive, unsuspend: selfLinkedOrActive } });
 H('BT25-028', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (digimonsOf(state, opp(hp)).some((x) => lv(x.cardId) >= 6) ? -5 : 0) });
-H('BT25-028', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: { play: (state, hp, holder, info) => isDig(info.stack.cardId), digivolve: (state, hp, holder, info) => isDig(info.stack.cardId) } });
+H('BT25-028', { tag: '서로의 턴', has: '등장/진화했을 때', limit: 1, events: { play: (state, hp, holder, info) => S.isDigimonLike(info.stack), digivolve: (state, hp, holder, info) => S.isDigimonLike(info.stack) } });
 SCRIPTS['BT25-028::서로의 턴'] = [F(async (ctx) => {
   const { state, self } = ctx;
   for (let k = 0; k < 4; k++) {

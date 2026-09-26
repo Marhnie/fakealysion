@@ -89,20 +89,25 @@ function spawnToken(ctx, p, def, rested = false) {
   pl.hand.push(id);
   return S.playFreeFromZone(ctx.state, p, 'hand', pl.hand.length - 1, { rested });
 }
+const effectPlayPlan = async (ctx, who, zone, idx, cost) => (await import('../effects.js')).FX_HELPERS.effectPlayPlan(ctx, who, zone, idx, cost); // (shards must not import effects.js statically)
 // play a card from hand/trash choosing among pred matches, paying (cost - reduction) memory
 async function playPay(ctx, who, zone, pred, reduction, prompt, opts = {}) {
   const idx = await pickIdx(ctx, who, pred, prompt, zone);
   if (idx < 0) return null;
   const id = PL(ctx, who)[zone][idx];
   const locked = S.isPlayCostLocked(ctx.state);
-  const cost = Math.max(0, (C(id).cost || 0) - (locked ? 0 : reduction));
-  if (cost > 0) S.spendMemory(ctx.state, cost);
-  return S.playFreeFromZone(ctx.state, who, zone, idx, opts);
+  const cost0 = Math.max(0, (C(id).cost || 0) - (locked ? 0 : reduction));
+  const plan = await effectPlayPlan(ctx, who, zone, idx, cost0); // open-d (2): tamer/trait/hook play-cost options + DigiXros/Assembly for the paid effect play
+  if (plan.idx < 0) return null;
+  if (plan.cost > 0) S.spendMemory(ctx.state, plan.cost);
+  return S.playFreeFromZone(ctx.state, who, zone, plan.idx, { ...opts, ...plan.opts });
 }
 async function playFreeWhere(ctx, who, zone, pred, prompt, opts = {}) {
   const idx = await pickIdx(ctx, who, pred, prompt, zone);
   if (idx < 0) return null;
-  return S.playFreeFromZone(ctx.state, who, zone, idx, opts);
+  const plan = await effectPlayPlan(ctx, who, zone, idx, 0); // open-d (2): 7-2-2-13 DigiXros for a free effect play
+  if (plan.idx < 0) return null;
+  return S.playFreeFromZone(ctx.state, who, zone, plan.idx, { ...opts, ...plan.opts });
 }
 // evolve: subject 'this' or (stack)=>bool over own digimon; cardPred(id) over `zone`; cost {mode:'free'|'fixed'|'discount'|'normal', n}
 async function evolveGeneric(ctx, o) {

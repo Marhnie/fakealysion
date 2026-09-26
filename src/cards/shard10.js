@@ -101,7 +101,7 @@ sc('BT1-084::진화 시', async (ctx) => {
   if (!pick) return;
   const nm = S.effectiveInfo(ctx.state, pick).names;
   const same = digsOf(ctx, opp).filter(s => s === pick || S.effectiveInfo(ctx.state, s).names.some(n => nm.includes(n)));
-  for (const s of same) S.deleteStack(ctx.state, opp, s.uid, 'trash', 'effect');
+  S.deleteSimul(ctx.state, opp, same.map(s => s.uid), 'effect'); // open-d: one simultaneous wipe (LM-019 order)
 });
 
 // P-024 【메인】 자신의 「신태일」이 있을 때, 자신의 「아구몬」 1마리를 덱 아래로 되돌리는 것으로, 《3드로우》. 그 디지몬의 진화원은 파기한다.

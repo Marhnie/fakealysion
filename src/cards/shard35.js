@@ -200,7 +200,7 @@ sc('BT13-092::어택 시', async (ctx) => {
   pl.deck.push(id);
   S.log(state, `${o} 트래시의 ${C(id).nameKo}을(를) 덱 아래로 되돌림`);
   const retNames = S.cardNames(id); // idx1693/1694: "같은 명칭" — every name of the returned card (〈룰〉 aliases included) vs every name of the opp digimon; a plain same-name card only matches the exact name
-  for (const s of pl.battle.filter(x => isDig(x) && retNames.some(n => S.effectiveInfo(state, x, o).nameIs(n)))) S.deleteStack(state, o, s.uid, 'trash', 'effect');
+  S.deleteSimul(state, o, pl.battle.filter(x => isDig(x) && retNames.some(n => S.effectiveInfo(state, x, o).nameIs(n))).map(s => s.uid), 'effect');
 });
 // BT13-094 최민지 【등장 시】 상대의 턴 종료까지 자신의 디지몬 1마리는 「【소멸 시】 자신의 패/트래시에서 「피요몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.」의 효과를 얻는다. (generic compiled a bogus "패에서 아무 카드 등장" + truncated label at the nested 「」)
 SCRIPTS['BT13-094::등장 시'] = [{ op: 'grantText', trigger: 'delete', label: '자신의 패/트래시에서 「피요몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.', until: 'opponentTurn', side: 'self', all: false, n: 1 }];
@@ -246,7 +246,7 @@ sc('BT13-108::메인', async (ctx) => {
 SCRIPTS[`BT13-108::부여:${BT13108_LABEL}`] = [fn(async (ctx) => {
   const { state } = ctx, st = findStack(state, ctx.self, ctx.sourceStackUid); if (!st) return;
   const cost = C(st.cardId).cost ?? 0, o = opp(ctx.self);
-  for (const s of [...state.players[o].battle]) if (isDig(s) && (C(s.cardId).cost ?? 99) <= cost) S.deleteStack(state, o, s.uid, 'trash', 'effect');
+  S.deleteSimul(state, o, state.players[o].battle.filter(s => isDig(s) && (C(s.cardId).cost ?? 99) <= cost).map(s => s.uid), 'effect');
 })];
 // BT12-088 (진화원) 【자신의 턴】 이 디지몬을 DP +2000. DP 10000 이상의 이 디지몬은 「【자신의 턴】[턴에 1회] 이 디지몬이 상대의 시큐리티를 체크했을 때, 메모리 +2.」의 효과를 얻는다.
 // (was a manual noop for the granted memory+2). idx1576-1578: DP >= 10000 is judged when the effect resolves (after the checked card's 【시큐리티】 effect, before the security battle).

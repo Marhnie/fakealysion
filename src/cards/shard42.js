@@ -17,6 +17,7 @@ const hasT = (c, ...ts) => ts.some(t => (c.types || []).includes(t));
 const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const digs = (state, p) => state.players[p].battle.filter(isDig);
+const digsR = (state, p) => { const r = state.players[p].raising; return [...(r && isDig(r) ? [r] : []), ...digs(state, p)]; }; // open-e: a raising-area Digimon's sources count as 「디지몬의 진화원」 too
 const tams = (state, p) => state.players[p].battle.filter(isTam);
 const mention = (id, n) => S.cardMentions(id, n);
 const hasSave = (id) => `${C(id).effectKo || ''}`.includes('《세이브》');
@@ -251,7 +252,7 @@ sc('EX9-057::상대의 턴', async (ctx) => {
   if (!h || pl.raising !== h) return;
   const ents = [];
   pl.trash.forEach((id) => { if (C(id).nameKo === '네가몬') ents.push({ id, z: 'trash' }); });
-  for (const st of pl.battle.filter(isDig)) st.sources.forEach((id, i) => { if (i >= S.fdCount(st) && C(id).nameKo === '네가몬') ents.push({ id, z: 'src', st, i }); });
+  for (const st of digsR(state, p)) st.sources.forEach((id, i) => { if (i >= S.fdCount(st) && C(id).nameKo === '네가몬') ents.push({ id, z: 'src', st, i }); });
   if (ents.length < 4) { S.log(state, 'EX9-057: 「네가몬」이 합계 4장 없음'); return; }
   if (!(await ask(ctx, '트래시/진화원의 「네가몬」 4장을 디지타마 덱 아래로 되돌려 이 디지몬을 배틀 에어리어로 이동시킬까요?'))) return;
   const picked = [];
