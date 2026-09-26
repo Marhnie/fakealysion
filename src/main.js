@@ -181,8 +181,21 @@ function netApplyIntent(action, args) {
   } catch (e) { console.warn('netplay: intent failed', action, args, e); }
 }
 Net.NET.onIntent = netApplyIntent;
+// 게스트는 상태가 올 때마다 새 객체를 받는다 — 효과 연출(fx.js)은 rec/로그 "객체 동일성"으로 진행 여부를 기억하므로,
+// 같은 id(rec)·같은 줄(로그)은 이전 객체를 재사용해서 매 수신마다 연출이 처음부터 다시 재생되지 않게 한다.
+const netRecCache = new Map();
+function netCanonicalize(st, prev) {
+  const canon = (r) => { if (!r) return r; const c = netRecCache.get(r.id); if (c && c.t === r.t) { Object.assign(c, r); return c; } netRecCache.set(r.id, r); return r; };
+  st.fxHistory = (st.fxHistory || []).map(canon);
+  st._fxRec = canon(st._fxRec);
+  const live = new Set((st.fxHistory || []).map(r => r.id)); if (st._fxRec) live.add(st._fxRec.id);
+  for (const id of [...netRecCache.keys()]) if (!live.has(id)) netRecCache.delete(id);
+  const old = new Map(); for (const e of (prev && prev.log) || []) old.set(e.t + '|' + e.msg, e);
+  st.log = (st.log || []).map(e => old.get(e.t + '|' + e.msg) || e);
+}
 function netOnState(msg) {
   const rev = Net.reviveIncoming(msg);
+  netCanonicalize(rev.state, state);
   state = rev.state;
   if (rev.mulliganDecided) mulliganDecided = rev.mulliganDecided;
   sel.pendingAttack = rev.pa;
@@ -193,7 +206,13 @@ Net.NET.onState = netOnState;
 // Host: broadcast after anything that changes what the guest should see. Safe/cheap to call when not hosting
 // (no-op — see netplay.broadcastState) or when `sel.pendingAttack` doesn't exist yet (null is a valid "no
 // attack in progress" value on the wire too).
-function netBroadcast() { if (Net.NET.role === 'host' && state) Net.broadcastState(state, sel.pendingAttack, { mulliganDecided: { ...mulliganDecided } }); }
+function netBroadcast() {
+  if (Net.NET.role !== 'host' || !state) return;
+  Net.broadcastState(state, sel.pendingAttack, { mulliganDecided: { ...mulliganDecided } });
+  // 패 추가/소멸 표시는 "한 번 보이고 지워지는" 플래그라 호스트 렌더가 이미 지웠다 — 그 값을 netXxx에 모아 두었다가 한 번 보낸 뒤 비운다
+  for (const q of ['p1', 'p2']) if (state.players[q]) state.players[q].netDrawFlash = 0;
+  state.netVanish = null;
+}
 // A network GUEST's own click that would otherwise mutate shared engine state: send it to the host instead and
 // bail out of the local handler. Host / CPU / local-2p: always false (Net.NET.role is null there), so this is
 // fully inert outside online play — those modes' behavior is unchanged byte-for-byte.
@@ -1161,8 +1180,10 @@ function renderInner() {
 // here. Consumed once so it only shows for the render right after it
 // happened, similar to pl.pendingDrawFlash.
 function renderVanishToast() {
-  const names = state.pendingVanishFlash || [];
-  const srcs = [...new Set(state.pendingVanishSrc || [])];
+  let names = state.pendingVanishFlash || [];
+  let srcs = [...new Set(state.pendingVanishSrc || [])];
+  if (Net.NET.role === 'guest') { const nv = state.netVanish; names = nv ? nv.names : []; srcs = nv ? nv.srcs : []; state.netVanish = null; }
+  else if (Net.NET.role === 'host' && names.length) state.netVanish = { names: [...names], srcs: [...srcs] };
   state.pendingVanishFlash = []; state.pendingVanishSrc = [];
   if (!names.length) return null;
   return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}` + (srcs.length ? `\n원인: ${srcs.join(', ')}` : ''));
@@ -1936,8 +1957,11 @@ function renderPlayerPanel(p) {
   // the evolution, one drawn back), which silently hid it from a length-
   // diff detector. Consumed (reset to 0) right after reading so it only
   // flashes once, on the render right after the draw happened.
-  const justDrawnCount = pl.pendingDrawFlash || 0;
+  const guestView = Net.NET.role === 'guest';
+  const justDrawnCount = guestView ? (pl.netDrawFlash || 0) : (pl.pendingDrawFlash || 0);
   pl.pendingDrawFlash = 0;
+  if (guestView) pl.netDrawFlash = 0;
+  else if (Net.NET.role === 'host' && justDrawnCount) pl.netDrawFlash = (pl.netDrawFlash || 0) + justDrawnCount;
   const handZone = h('div', { className: 'zone hand-zone', style: 'flex:1' }, [
     zonePill((isCpuSide(p) && !CPU_CFG.reveal && !state.winner) ? `🤖 CPU 핸드 (${pl.hand.length}장, 비공개)` : netHideHand(p) ? `🌐 상대 핸드 (${pl.hand.length}장, 비공개)` : [`핸드 (${pl.hand.length}장, 연습용 전체 공개)`, h('span', { className: 'desk' }, ' — 배틀 에어리어로 드래그=등장, 내 스택 위로 드래그=진화, 상대 이름 위로 스택 드래그=공격'), h('span', { className: 'touch-only' }, ' — 카드를 탭해서 선택'), (p === state.activePlayer && state.phase === 'main' && !isCpuSide(p)) ? h('span', { className: 'hint-legend' }, [' ', h('i', { className: 'lg-free' }, '■'), '지금 가능 ', h('i', { className: 'lg-evo' }, '■'), '진화 가능 ', h('i', { className: 'lg-costly' }, '■'), '메모리 초과(턴 넘어감) ', h('i', { className: 'lg-none' }, '■'), '불가']) : null]),
     ...(() => {
@@ -3413,6 +3437,9 @@ const fxHeld = () => !!state && (!!state.uiChoice || fxBusyMs() > 0);
 function fxSync() {
   if (!state) return;
   const hist = state.fxHistory || [];
+  // 게스트는 상태 객체가 매번 바뀌므로 "새 게임일 때만"(기록 id가 되감김) 초기화한다 — 아니면 새 효과가 전부 '이미 본 것'으로 처리돼 안 보인다
+  const guestSame = Net.NET.role === 'guest' && fxUI.stateRef && (hist[0]?.id || 0) >= fxUI.seen;
+  if (fxUI.stateRef !== state && guestSame) fxUI.stateRef = state;
   if (fxUI.stateRef !== state) { fxUI.stateRef = state; fxUI.seen = hist[0]?.id || 0; fxUI.fieldBase = fxUI.seen; fxUI.queue = []; fxUI.ghosts = []; fxUI.open = false; fxUI.markRec = null; }
   for (const r of hist.filter(r => r.id > fxUI.seen).reverse()) fxEmit('effect', { rec: r, state }); // VFX bus (fx.js dedupes per rec via progress counters)
   if (state._fxRec && state._fxRec.src.kind === 'effect') fxEmit('effect', { rec: state._fxRec, state }); // still resolving (e.g. parked on a choice): banner + burst now, results as they appear
