@@ -50,7 +50,7 @@ async function init() {
   try { await CD.loadCpuDecks('./data/cpu-decks.json'); } catch (e) { /* optional data file: no CPU decks offered */ }
   S.REPL.interactive = true; // optional survive/replacement effects ask the player (state.deleteStack → pendingReplacements)
   S.REPL.onPending = () => { if (state) render(); };
-  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', declineAllRemaining: null }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()) }), restartHand: () => restartHand() });
+  PR.init({ getState: () => state, setState: (s2) => { state = s2; cpuSyncFromState(); }, render: () => render(), resetSel: () => { sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1', declineAllRemaining: null }; }, uiFlags: () => ({ pendingAttack: sel.pendingAttack, atkQueued: sel.atkQueued, cpuOn, cpuBusy: cpuOn && (cpuActing || cpuHumanLocked()), netLocked: !!Net.NET.role }), restartHand: () => restartHand() });
   mbInit(app, () => { if (state) render(); });
   renderSetup();
 }
@@ -149,6 +149,7 @@ function netApplyIntent(action, args) {
   const guestSeat = S.opponentOf(Net.NET.mySeat);
   try {
     if (action === 'mulligan') { const p = guestSeat; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'surrender') { E.surrender(state, guestSeat); render(); return; }
     if (action === 'keepHand') { const p = guestSeat; mulliganDecided[p] = true; afterMulliganCheck(); return; }
     if (action === 'answer') {
       const uc = state.uiChoice;
@@ -1204,8 +1205,8 @@ function renderTopbar() {
     return h('div', { className: 'topbar' }, [h('div', { className: 'topbar-row gameover' }, [
       h('b', {}, head),
       why ? h('span', { className: 'meta gameover-why' }, `사유: ${String(why).replace(/^🤖 CPU: /, '')}`) : null,
-      (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', title: '같은 덱으로 바로 다시 시작 (CPU 강도도 그대로)', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
-      h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+      (Net.NET.role === 'guest') ? null : (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', title: '같은 덱으로 바로 다시 시작 (CPU 강도도 그대로)', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
+      (Net.NET.role === 'guest') ? null : h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
       PR.topbarButtons(),
     ])]);
   }
@@ -1223,7 +1224,13 @@ function renderTopbar() {
     }, ['패스', passArmed() ? h('span', { className: 'pass-warn' }, ` ⚠ 지금 낼 수 있는 카드 ${passFreeCount()}장 — 한 번 더 누르면 패스`) : h('span', { className: 'lbl-long' }, ' (메모리 상대측 3으로 고정하고 턴종료)')]),
     h('div', { className: 'mb-drawer' }, [
       PR.topbarButtons(),
-      ...['p1', 'p2'].filter(pp => !isCpuSide(pp)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => { if (await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' })) { E.surrender(state, pp); render(); } } }, `🏳 ${pp.toUpperCase()} 투항`)),
+      ...['p1', 'p2'].filter(pp => !isCpuSide(pp) && (!Net.NET.role || pp === Net.NET.mySeat)).map(pp => h('button', { title: '투항: 즉시 패배 (룰 1-2-4, 효과는 유발하지 않음)', onClick: async () => {
+        // 온라인 대전: 내 자리만 투항할 수 있고, 게스트는 호스트에게 의도만 보낸다 (확인창은 게스트 화면이 상태 수신으로 덮어써질 수 있어 브라우저 confirm 사용)
+        const ok = Net.NET.role ? window.confirm(`${pp.toUpperCase()} 투항하시겠습니까?`) : await ctxChoose('confirmEffect', { player: pp, prompt: `${pp.toUpperCase()} 투항하시겠습니까?`, yesLabel: '투항한다', noLabel: '취소' });
+        if (!ok) return;
+        if (netIntercept('surrender', [])) return;
+        E.surrender(state, pp); render();
+      } }, `🏳 ${pp.toUpperCase()} 투항`)),
       h('label', { className: 'mb-only' }, [
         h('input', { type: 'checkbox', checked: BREED.auto, onchange: (e) => { BREED.auto = !!e.target.checked; try { localStorage.setItem('digimon_breed_auto', BREED.auto ? '1' : '0'); } catch (err) { /* ignore */ } render(); } }),
         ' 육성 페이즈 자동 넘김',
@@ -2585,8 +2592,8 @@ function renderGameOverModal() {
       h('div', { className: 'go-sub' }, sub),
       why ? h('div', { className: 'go-why' }, `사유: ${why}`) : null,
       h('div', { className: 'go-btns' }, [
-        (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
-        h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
+        (Net.NET.role === 'guest') ? null : (lastStartPick && lastStartPick.p1 && lastStartPick.p2) ? h('button', { className: 'primary', onClick: () => { restartHand(); } }, '🔁 같은 덱으로 재대전') : null,
+        (Net.NET.role === 'guest') ? null : h('button', { className: lastStartPick ? '' : 'primary', onClick: () => { state = null; sel = { hand: null, stack: null, stack2: null, armFusion: false, player: 'p1' }; render(); } }, '새 게임 (덱 선택으로)'),
         h('button', { title: '이 대전의 모든 스텝을 파일로 저장 — 시작 화면의 "리플레이 불러오기"로 처음부터 다시 볼 수 있습니다', onClick: () => { PR.saveReplayFile(); } }, '🎞 리플레이 저장'),
         h('button', { onClick: close }, '필드 확인 (닫기)'),
       ]),

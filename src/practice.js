@@ -56,7 +56,7 @@ function toast(msg) {
 
 // ---------- undo / redo ----------
 export function doUndo() {
-  const s = ST(); if (!s || P.replay) return;
+  const s = ST(); if (!s || P.replay || api.uiFlags().netLocked) return;
   const why = reason(); if (why) { toast('되돌리기 불가: ' + why); return; }
   SN.sync(s, '');
   const r = SN.undo(s, cpuAccept());
@@ -64,7 +64,7 @@ export function doUndo() {
   api.resetSel(); api.render();
 }
 export function doRedo() {
-  const s = ST(); if (!s || P.replay) return;
+  const s = ST(); if (!s || P.replay || api.uiFlags().netLocked) return;
   const why = reason(); if (why) { toast('다시 실행 불가: ' + why); return; }
   const r = SN.redo(s, cpuAccept());
   if (!r.ok) { toast(r.why); return; }
@@ -104,7 +104,8 @@ export function topbarButtons() {
   const rep = h('button', { className: 'pr-btn', title: '지금까지의 대전을 한 스텝씩 되돌아보기', onClick: replayEnter }, ['▶', h('span', { className: 'pr-lbl' }, ' 리플레이')]);
   const rehand = h('button', { className: 'pr-btn', title: '같은 덱으로 새로 셔플해 시작 핸드부터 다시 (혼자 연습용)', onClick: () => openModal('restart') }, ['🎲', h('span', { className: 'pr-lbl' }, ' 시작 핸드 다시')]);
   const ch = h('button', { className: 'pr-btn' + (P.cheatOpen ? ' on' : ''), title: '연습용 치트: 카드 이동 / 메모리 설정 (기본 접힘)', onClick: () => { P.cheatOpen = !P.cheatOpen; api.render(); } }, ['🛠', h('span', { className: 'pr-lbl' }, ' 핸드 조작')]);
-  const wrap = h('span', { className: 'pr-group' }, [undo, redo, save, rep, rehand, ch]);
+  // 온라인 대전: 되돌리기/저장/리플레이/시작 핸드 다시/핸드 조작은 한쪽 화면의 상태만 바꾸거나 상대 게임을 망가뜨리므로 숨긴다
+  const wrap = h('span', { className: 'pr-group' }, api.uiFlags().netLocked ? [] : [undo, redo, save, rep, rehand, ch]);
   setTimeout(updateButtons, 0);
   return wrap;
 }
