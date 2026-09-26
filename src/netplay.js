@@ -28,6 +28,10 @@ export const NET = {
   onState: null,   // (payload) => void   -- guest: called on every {t:'state'} message
   onIntent: null,  // (action, args) => void -- host: called on every {t:'intent'} message
   onStatus: null,  // (text) => void      -- both: connection lifecycle text for the UI
+  onDeck: null,    // (deck) => void      -- host: guest picked / changed their own deck
+  onDeckAck: null, // (ack) => void       -- guest: host's verdict on the deck it sent ({ok, errors, name})
+  onOpen: null,    // () => void          -- both: the data channel just opened (guest re-sends its deck here)
+  guestDeck: null, // host only: the validated deck the guest chose for P2 ({name, main, digitama})
 };
 
 export function isActive() { return NET.role === 'host' || NET.role === 'guest'; }
@@ -53,11 +57,14 @@ function wireConn(conn, resolve, reject) {
       if (!msg || typeof msg !== 'object') return;
       if (msg.t === 'state' && NET.onState) NET.onState(msg);
       else if (msg.t === 'intent' && NET.onIntent) NET.onIntent(msg.action, msg.args || []);
+      else if (msg.t === 'deck' && NET.onDeck) NET.onDeck(msg.deck);
+      else if (msg.t === 'deckAck' && NET.onDeckAck) NET.onDeckAck(msg);
       else if (msg.t === 'hello') say('상대와 연결되었습니다');
     });
-    conn.on('close', () => { NET.connected = false; say('연결이 끊어졌습니다'); });
+    conn.on('close', () => { NET.connected = false; NET.guestDeck = null; say('연결이 끊어졌습니다'); });
     conn.on('error', (e) => { say('연결 오류: ' + (e && e.message || e)); });
     send({ t: 'hello', v: 1 });
+    if (NET.onOpen) { try { NET.onOpen(); } catch (e) { console.warn('netplay onOpen', e); } }
     resolve(conn);
   });
   conn.on('error', (e) => { if (!settled) reject(e); else say('연결 오류: ' + (e && e.message || e)); });
@@ -97,7 +104,7 @@ export function joinRoom(code) {
 export function reset() {
   try { NET.conn && NET.conn.close(); } catch (e) { /* ignore */ }
   try { NET.peer && NET.peer.destroy(); } catch (e) { /* ignore */ }
-  NET.role = null; NET.mySeat = null; NET.peer = null; NET.conn = null; NET.connected = false; NET.roomCode = null; NET.peerError = null;
+  NET.guestDeck = null; NET.role = null; NET.mySeat = null; NET.peer = null; NET.conn = null; NET.connected = false; NET.roomCode = null; NET.peerError = null;
 }
 
 // Belt-and-suspenders fallback for `obj` shapes buildSnapshot/buildPa didn't anticipate (state.js's engine
@@ -127,6 +134,9 @@ function send(obj) {
 }
 
 export function sendIntent(action, args) { return send({ t: 'intent', action, args: args || [] }); }
+// 게스트가 고른 자기 덱을 호스트에 알린다 (deck=null이면 선택 해제). 호스트가 규칙 검사 후 deckAck로 결과를 돌려준다.
+export function sendDeck(deck) { return send({ t: 'deck', deck: deck || null }); }
+export function sendDeckAck(ack) { return send({ t: 'deckAck', ...ack }); }
 
 // ---------- redaction ----------
 
