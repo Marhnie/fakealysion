@@ -374,18 +374,18 @@ const HYBRID_UNDER = async (ctx) => { // 자신의 패/트래시에서, 특징 �
   const { state, self } = ctx; const pl = P(ctx); const tam = meS(ctx);
   if (!tam) return 0;
   const colorsOf = (id) => C(id).colors || [];
-  const used = new Set();
+  const usedLists = []; // W9r2 (official Q6099/6113): "색이 다른" — a multi-colored card may be referenced by one of its colors (S.colorsAllDistinct)
   let placed = 0;
   for (let k = 0; k < 2; k++) {
     const opts = [];
-    for (const z of ['hand', 'trash']) pl[z].forEach((id, i) => { if (trait(id, '하이브리드체') && colorsOf(id).every(c => !used.has(c)) && colorsOf(id).length) opts.push({ z, i, id }); });
+    for (const z of ['hand', 'trash']) pl[z].forEach((id, i) => { if (trait(id, '하이브리드체') && colorsOf(id).length && S.colorsAllDistinct([...usedLists, colorsOf(id)])) opts.push({ z, i, id }); });
     if (!opts.length) break;
     const ids = opts.map(o => o.id);
     const r = await ctx.choose('pickFromRevealed', { player: self, revealed: ids, eligible: ids.map((id, i) => ({ id, i })), min: 0, max: 1, prompt: `테이머 아래에 놓을 「하이브리드체」 카드 선택 (${k + 1}/2, 색이 서로 달라야 함)` });
     if (!r || !r.length) break;
     const o = opts[r[0]];
     pl[o.z].splice(o.i, 1);
-    tam.sources.unshift(o.id); colorsOf(o.id).forEach(c => used.add(c)); placed++;
+    tam.sources.unshift(o.id); usedLists.push(colorsOf(o.id)); placed++;
     log(ctx, `${self} ${C(o.id).nameKo}을(를) ${C(tam.cardId).nameKo} 아래에 놓음`);
   }
   if (placed) S.recomputeStackGrants(tam);
@@ -586,7 +586,7 @@ SCRIPTS['BT26-054::등장 시'] = [{ op: 's8_playOrUse', zones: ['hand'], kinds:
 SCRIPTS['BT26-054::진화 시'] = SCRIPTS['BT26-054::등장 시'];
 SCRIPTS['BT26-086::서로의 턴'] = [
   T('상대의 디지몬 1마리를 소멸시킬 수 있다.'),
-  IF((ctx) => (meS(ctx)?.linkCards || []).length === 7, [X(async (ctx) => { // 그 후, 이 디지몬의 링크 카드가 7장이라면, 상대의 시큐리티를 위에서부터 1장 덱 아래로 되돌린다
+  IF((ctx) => (meS(ctx)?.linkCards || []).length >= 7, [X(async (ctx) => { // 공식 Q&A idx6325: 8장 이상이어도 「7장이라면」 조건을 만족한다 / 그 후, 이 디지몬의 링크 카드가 7장이라면, 상대의 시큐리티를 위에서부터 1장 덱 아래로 되돌린다
     const o = P(ctx, 'opp'); const id = o.security.shift();
     if (!id) return;
     o.deck.push(id);

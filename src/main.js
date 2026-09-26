@@ -525,7 +525,7 @@ function renderSetup() {
   };
   const cpu = CPU_CFG.mode === 'cpu';
   const seg = (items, cur, onPick) => h('div', { className: 'su-seg', role: 'group' }, items.map(([v, l, tip]) => h('button', { className: 'su-segbtn' + (v === cur ? ' on' : ''), title: tip || '', onClick: () => onPick(v) }, l)));
-  const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작'], ['net', '🌐 온라인 대전', 'WebRTC로 다른 브라우저와 온라인 대전 (베타)']], CPU_CFG.mode, (v) => { CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
+  const modeSeg = seg([['cpu', '🤖 CPU 대전', '당신은 P1, P2는 CPU가 조작합니다 (CPU의 패는 가려집니다)'], ['2p', '👥 2인 (한 화면)', '한 화면에서 번갈아 조작'], ['net', '🌐 온라인 대전', 'WebRTC로 다른 브라우저와 온라인 대전 (베타)']], CPU_CFG.mode, (v) => { if (v !== 'net' && Net.NET.role) { Net.reset(); netStatus = ''; } CPU_CFG.mode = v; saveCpuCfg(); renderSetup(); });
   const net = CPU_CFG.mode === 'net';
   const lvSeg = cpu ? seg(Object.entries(Cpu.LEVEL_LABEL).map(([v, l]) => [v, l, { easy: '실수가 잦은 연습 상대', normal: '기본 판단', hard: '4수 앞을 내다보는 상대', expert: '자가대전으로 조정한 파라미터 + 더 깊은 수 읽기' }[v]]), CPU_CFG.level, (v) => { CPU_CFG.level = v; saveCpuCfg(); renderSetup(); }) : null;
 
@@ -1001,7 +1001,7 @@ function dbRefreshPreview() {
       line(c.category === 'option' ? '사용 코스트' : '등장 코스트', c.cost != null ? String(c.cost) : null),
       line('DP', c.dp != null ? String(c.dp) : null),
       line('색', (c.colors || []).map(k => COL_KO[k] || k).join(' / ')),
-      line('특징', [...(c.types || []), c.attribute, c.form && /^[가-힣]/.test(c.form) ? c.form : null].filter(Boolean).join(' / ')),
+      line('특징', [...(c.types || []), c.attribute && /^[가-힣]/.test(c.attribute) ? c.attribute : null, c.form && /^[가-힣]/.test(c.form) ? c.form : null].filter(Boolean).join(' / ')),
       line('진화', evo),
       textBox('효과', c.effectKo),
       textBox('진화원 효과', (c.inheritedKo || '').split('\n').filter(l => !/^\s*【시큐리티】/.test(l)).join('\n')), // (【시큐리티】 줄은 진화원 효과가 아니라 아래 시큐리티 효과)
@@ -1031,6 +1031,7 @@ try { const v = JSON.parse(localStorage.getItem('digimon_last_pick_v1') || 'null
 function restartHand() { if (lastStartPick) setupPick = { ...lastStartPick }; if (!setupPick.p1 || !setupPick.p2) { state = null; render(); return; } startNewGame(); }
 function startNewGame() {
   cpuRandomDeck = null;
+  if (CPU_CFG.mode !== 'net' && Net.NET.role) { Net.reset(); netStatus = ''; } // 온라인 접속이 남은 채로 CPU/2인 대전을 시작하면 자리·화면 방향이 뒤집히므로 끊는다
   if (Net.NET.role === 'host') setupPick.p2 = 'net:guest'; // 온라인: P2 덱은 게스트가 보낸 것
   if (setupPick.p2 === 'cpu:__random') { try { cpuRandomDeck = CD.pickCpuDeck({ style: 'random' }); } catch (e) { /* ignore */ } if (!cpuRandomDeck) { setupError = 'CPU 덱 데이터를 불러오지 못했습니다.'; renderSetup(); return; } }
   // 1-4-1: refuse to start with an illegal deck (previously-saved decks may predate the save check).
@@ -2415,6 +2416,7 @@ async function runPendingScript(trigger, opts = {}) {
     const yes = await ctxChoose('confirmEffect', { player: trigger.player, prompt: `【${trigger.tags.map(tagLbl).join('】【')}】 ${S.card(trigger.cardId).nameKo}: ${trigger.text.replace(/\([^()]*\)/g, '').slice(0, 90)} — 발동할까요?` });
     if (!yes) {
       S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 효과를 발동하지 않음`);
+      S.refundOnceUse(state, trigger); // Q1180: a declined optional watcher effect does not use up its 〔턴에 1회〕
       S.resolvePending(state, trigger.uid);
       render();
       return;
@@ -2422,11 +2424,13 @@ async function runPendingScript(trigger, opts = {}) {
     ctx._optAsked = true; // the "할 수 있다" prompt above already covers the optional processing condition (no second prompt from costGroup)
   }
   if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) onceMark = null;
+  if (trigger.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(state, trigger); // Q1431: watcher whose leading condition is unmet was never activated
   if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
   await Effects.runScript(script, ctx);
   if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
-  if (ctx._declined) { S.resolvePending(state, trigger.uid); render(); if (onceMark) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } return; } // 15-7-1 / 15-14-1: a declined optional cost = the effect was never activated (no 〔턴에 1회〕 use consumed, nothing else runs)
+  if (ctx._declined) { S.refundOnceUse(state, trigger); S.resolvePending(state, trigger.uid); render(); if (onceMark) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } return; } // 15-7-1 / 15-14-1: a declined optional cost = the effect was never activated (no 〔턴에 1회〕 use consumed, nothing else runs)
+  if (trigger.onceKey && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') S.refundOnceUse(state, trigger);
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
   // Sentences the compiler can't express are handed to the player instead of silently vanishing.
   if (!trigger.manualOnly && !Effects.lookupCardSpecific(trigger.cardId, trigger.tags, trigger.text, !!trigger.inherited)) { // bespoke scripts cover the whole segment

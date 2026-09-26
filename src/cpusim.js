@@ -63,14 +63,16 @@ export function createSim(state, opts = {}) {
         }
         if (onceMark && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t }))) onceMark = null; } catch (e) { /* keep the mark */ } }
         if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
-        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) effAtkQ.push({ p, uid, direct, o: o || {} }); }, attack: () => state.attackCtx, endAttack() {},
+        const ctx = { state, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack: (p, uid, direct, o) => { if (!state.attackCtx) { effAtkQ.push({ p, uid, direct, o: o || {} }); const qs = state.players[p].battle.find((s) => s.uid === uid); if (qs) qs._effAtkQueued = true; /* W8: S.consumePierceCheck hold only for a queued attack of this digimon */ } }, attack: () => state.attackCtx, endAttack() {},
           // ≪관통≫ bonus check for a scripted "can battle" op (S.resolveDigimonBattle called directly by a card script) — capped at once per attack (S.consumePierceCheck).
           securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(state, p, uid)) return; await securityCheck(p, uid, op || S.opponentOf(p)); },
           choose: async (k, o) => { const who = decider(t, k, o); return Cpu.answerChoice(state, k, o, who, cfgOf(who) || cfgOf('p1')); } };
         if (CX) cxs = CX.before(state, t, script);
         H.effectBegin && H.effectBegin(t, script);
+        if (t.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(state, t); } catch (e) { /* keep the use */ } } // Q1431: unmet leading condition = never activated
         await Fx.runScript(script, ctx);
         H.effectEnd && H.effectEnd(t, script, ctx);
+        if (t.onceKey && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) S.refundOnceUse(state, t); // Q1180: declined optional watcher effect keeps its 〔턴에 1회〕
         if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
         if (CX) CX.after(state, t, script, cxs);
       } catch (e) { if (CX) CX.error(state, t, e); onError('pending', e); }
@@ -118,7 +120,7 @@ export function createSim(state, opts = {}) {
     else if (direct && tg.includes(direct)) target = direct;
     else if (hit) target = 'PLAYER';
     else if (tg.length) { const op = S.opponentOf(p), me = S.effectiveDP(state, p, st); const dp = (u) => { const d = find(op, u); return d ? S.effectiveDP(state, op, d) : 1e9; }; target = tg.slice().sort((a, b) => (dp(a) < me ? 0 : 1) - (dp(b) < me ? 0 : 1) || dp(b) - dp(a))[0]; }
-    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete st._pierceHeld; return; }
+    if (!target) { S.log(state, `${p} 어택 불가: 어택 대상이 없어 이 효과의 어택을 하지 않음`); delete st._pierceHeld; delete st._effAtkQueued; return; }
     await attack(p, uid, target, o);
   }
   async function attack(p, uid, target, dopts) {
@@ -127,7 +129,7 @@ export function createSim(state, opts = {}) {
     if (!dec.ok) return false;
     stats.attacks++;
     const pa = { attacker: p, opp: op, uid, targetKind: target === 'PLAYER' ? 'player' : 'digimon', targetUid: target === 'PLAYER' ? null : target };
-    pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
+    pa.pierceUsed = !!dec.stack._pierceHeld; delete dec.stack._pierceHeld; delete dec.stack._effAtkQueued; // adopt a ≪관통≫ hold left by a scripted battle that ran before this attack existed (S.consumePierceCheck)
     state.attackCtx = pa; pa.terminate = () => { pa.ended = true; };
     H.attackDeclared && H.attackDeclared({ p, op, uid, target, dec, pa });
     S.queueTriggersForStack(state, p, dec.stack, 'attack');

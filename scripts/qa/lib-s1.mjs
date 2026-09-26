@@ -78,7 +78,9 @@ export async function drain(st) {
       // request the effect actually made (see scripts/qa/qa-ex13-045-jogress-attack-timing.mjs).
       const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, direct: d, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {},
         securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(st, p, uid)) return; await securityCheck(st, p, uid, op || S.opponentOf(p)); }, choose: makeChoose(st) };
+      if (t.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Fx.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(st, t); // mirrors main.js: watcher with an unmet leading condition never activated
       await Fx.runScript(script, ctx);
+      if (t.onceKey && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) S.refundOnceUse(st, t);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }
     } catch (e) { (st._qaErr = st._qaErr || []).push(String(e.stack || e).slice(0, 300)); }
     S.resolvePending(st, t.uid);

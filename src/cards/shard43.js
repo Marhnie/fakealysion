@@ -15,7 +15,7 @@ const fn = (f) => ({ op: 's43_fn', fn: f });
 const srcStack = (ctx) => { const pl = ctx.state.players[ctx.self]; return pl.raising?.uid === ctx.sourceStackUid ? pl.raising : pl.battle.find(s => s.uid === ctx.sourceStackUid) || null; };
 
 // P-016 디아블로몬 【자신의 턴】 자신의 「디아블로몬」 1마리마다 《S 어택 +1》 (counts itself)
-D('P-016', '자신의 턴', '1마리마다', { kwNum: (state, hp, holder) => state.players[hp].battle.filter(s => isDigimon(s) && C(s.cardId).nameKo.includes('디아블로몬')).length });
+D('P-016', '자신의 턴', '1마리마다', { kwNum: (state, hp, holder) => state.players[hp].battle.filter(s => isDigimon(s) && S.cardNameIs(s.cardId, '디아블로몬')).length }); // QA-W6 Q3470: 「디아블로몬」 = exact name (not X항체/ACE)
 
 // P-004 쉬라몬 (진화원) 【자신의 턴】[턴에 1회] 상대 디지몬의 진화원을 파기했을 때, 메모리 +1
 DI('P-004', '자신의 턴', '진화원을 파기했을 때', { limit: 1, events: { sourcesTrashed: (state, hp, holder, info) => info.owner !== hp && isDigimon(info.stack) } });
@@ -157,3 +157,31 @@ SCRIPTS['P-214::등장 시'] = [{ op: 'costGroup', cost: [{ op: 'stackMove', mod
 for (const [id, traits] of [['P-218', ['엔터테인먼트', '툴', '내비']], ['P-233', ['게임', '라이프', '엔터테인먼트']]]) {
   D(id, '자신의 턴', '링크했을 때', { events: { linked: (state, hp, holder, info) => info.owner === hp && isDigimon(info.stack) && !!info.linkCardId && (C(info.linkCardId).types || []).some(t => traits.includes(t)) && !holder.suspended } });
 }
+
+// BT16-077 디노비몬 【진화 시】 (QA-W6 Q3628 / Q4000): the 「그 후」 part runs even if 조그레스 진화하고 있었다면 is unmet, and the Digimon granted ≪속공≫
+// then attacks the Player as far as possible (the generic compile only granted the keyword and dropped the attack clause).
+SCRIPTS['BT16-077::진화 시'] = [fn(async (ctx, api) => {
+  const st = srcStack(ctx);
+  const fused = ctx.trigger && ctx.trigger.evtSnap ? !!ctx.trigger.evtSnap.viaFusion : !!(st && st.viaFusion);
+  if (fused) await api.runScript([{ op: 'playFree', who: 'self', zone: 'trash', filter: { category: 'digimon', traitAny: ['프리'], levelMax: 5 }, rested: false, noTriggers: false, optional: true }], ctx);
+  const mine = ctx.state.players[ctx.self].battle.filter((s) => isDigimon(s));
+  if (!mine.length) return;
+  const uid = mine.length === 1 ? mine[0].uid : await ctx.choose('pickStack', { player: ctx.self, uids: mine.map((s) => s.uid), prompt: '《속공》을 얻고 플레이어에게 어택할 디지몬 선택' });
+  const t = mine.find((s) => s.uid === uid); if (!t) return;
+  S.grantKeyword(ctx.state, ctx.self, t.uid, '속공', true, 'turn');
+  if (!t.suspended && ctx.startAttack) ctx.startAttack(ctx.self, t.uid, 'PLAYER');
+})];
+
+// ST20-04 가루다몬 【자신의 턴】 (QA-W6 Q3987-3995): 「그 디지몬이 특징 「어드벤처」를 가진다면」 only gates the ≪연계≫ grant (mandatory when met); the
+// 「그 후」 attack (optional, any of our digimon) is processed either way. The generic compile granted ≪연계≫ unconditionally.
+const advEntrant = (ctx) => { // (no event info = a unit test / manual run: keep the printed-text default "condition met")
+  const tr = ctx.trigger || {};
+  if (!tr.evtStackUid && !tr.evtSnap) return true;
+  const live = tr.evtStackUid ? [...ctx.state.players.p1.battle, ...ctx.state.players.p2.battle].find((s) => s.uid === tr.evtStackUid) : null;
+  const cid = live ? live.cardId : (tr.evtSnap && tr.evtSnap.cardId);
+  return !!cid && (C(cid).types || []).includes('어드벤처');
+};
+for (const id of ['ST20-04', 'ST20-06', 'ST20-09', 'ST21-04', 'ST21-06', 'ST21-09', 'BT21-061', 'BT21-078']) SCRIPTS[id + '::자신의 턴'] = [
+  { op: 'condition', if: { test: advEntrant }, then: [{ op: 'grantKeyword', target: 'self', thisStack: false, keyword: '연계', duration: 'turn' }], else: [] },
+  { op: 'attackNow', who: 'self', thisStack: false },
+];

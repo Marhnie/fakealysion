@@ -442,9 +442,10 @@ secHook('BT19-100', '상대의 턴', { has: '어택했을 때', events: { attack
 sc('BT19-100::상대의 턴', async (ctx) => {
   const { state, self, opp: o } = ctx;
   const att = stacksOf(state, o).find(s => s.uid === ctx.trigger?.evt?.stackUid);
-  const mine = state.players[self].battle.filter(s => isDig(s) || isTam(s));
+  const asDig = (s) => isDig(s) || C(s.cardId).category === 'digitama'; // w4: 「마더 디·리퍼」 (EX2-007) is a Digi-Egg card that is a Digimon while it stands in the battle area (official Q&A 2036/2627)
+  const mine = state.players[self].battle.filter(s => asDig(s) || isTam(s));
   if (!att || !mine.every(s => traitOf(s.cardId, '디·리퍼'))) return;
-  const mothers = state.players[self].battle.filter(s => isDig(s) && C(s.cardId).nameKo === '마더 디·리퍼');
+  const mothers = state.players[self].battle.filter(s => asDig(s) && C(s.cardId).nameKo === '마더 디·리퍼');
   const m = await pickStack(ctx, self, mothers, 'DP를 내릴 기준이 되는 「마더 디·리퍼」 선택');
   if (!m || !m.sources.length) return;
   S.modifyDP(state, o, att.uid, -1000 * m.sources.length, 'turn');

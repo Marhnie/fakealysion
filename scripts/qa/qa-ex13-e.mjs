@@ -65,7 +65,7 @@ T('E13-asm', '어셈블리: EX13 카드의 재료 조건 (키워드/색/서로 �
   eq('043 계획', S.planAssembly(st, 'p1', 0)?.materials.length, 3);
   pl.trash = [g[0], V('red', 4), g[2]]; eq('043 두 번째 재료가 그린이 아니면 불가', S.planAssembly(st, 'p1', 0), null);
   // 077: 색이 서로 다른 특징 「어드벤처」를 가진 디지몬 카드 6장 (-8)
-  const adv = []; const seen = new Set(); for (const c of Object.values(S.CARDS)) { if (c.category !== 'digimon' || !(c.types || []).includes('어드벤처') || c.isParallel) continue; const k = [...c.colors].sort().join('+'); if (!seen.has(k)) { seen.add(k); adv.push(c.id); } if (adv.length === 6) break; }
+  const adv = []; const seen = new Set(); for (const c of Object.values(S.CARDS)) { if (c.category !== 'digimon' || !(c.types || []).includes('어드벤처') || c.isParallel) continue; if (c.colors.length !== 1) continue; /* W9r2: 「색이 서로 다른」 = a distinct color can be assigned to every card (S.colorsAllDistinct) — single-colored fixtures */ const k = c.colors[0]; if (!seen.has(k)) { seen.add(k); adv.push(c.id); } if (adv.length === 6) break; }
   pl.hand = ['EX13-077']; pl.trash = [...adv]; eq('077 계획(6장)', adv.length === 6 ? S.planAssembly(st, 'p1', 0)?.materials.length : 6, 6);
   pl.trash = [adv[0], adv[0], adv[0], adv[1], adv[2], adv[3]]; eq('077 색이 같은 카드는 중복 불가', S.planAssembly(st, 'p1', 0), null);
   // 061: 명칭이 서로 다른 「헉몬」 기술 디지몬 카드 3장 (-5)

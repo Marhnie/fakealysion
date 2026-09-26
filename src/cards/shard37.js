@@ -350,9 +350,7 @@ sc('BT20-015::등장 시', async (ctx) => {
   if (!pl.raising) {
     const idx = await pickZone(ctx, p, 'hand', (c) => c.category === 'digimon' && ['도루몬', '류우다몬'].includes(c.nameKo), '비어 있는 육성 에어리어에 등장시킬 「도루몬」/「류우다몬」 선택 (취소=안 함)');
     if (idx != null) {
-      const [id] = pl.hand.splice(idx, 1);
-      pl.raising = S._s4.makeStack(id, state.turnNumber); S.recomputeStackGrants(pl.raising);
-      S.log(state, `${p} ${C(id).nameKo}을(를) 육성 에어리어에 코스트 없이 등장`);
+      S.playFreeToRaising(state, p, 'hand', idx, {}); // 효과로 디지몬을 등장시킬 수 없는 락(BT9-033/BT9-047/BT14-009 등)을 존중 (공식 Q&A: 육성 에어리어에도 효과로 등장시킬 수 없다)
     }
   }
   if (!state.attackCtx) return; // 어택 중이라면 (any attack in progress, the opponent's too: Q4715)

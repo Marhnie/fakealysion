@@ -88,7 +88,7 @@ T(4, 'BT21-061: 조건 충족 시 <<연계>> 부여 대상 선택은 필수(requ
   const other = put(st, 'p1', FILL); // eligible recipient of <<연계>>
   const seg = segFor('BT21-061', '자신의 턴');
   const script = Fx.lookupCardSpecific('BT21-061', seg.tags, seg.body) || Fx.compileToScript(seg.body, { cardId: 'BT21-061' });
-  const grantOp = script.find(o => o.op === 'grantKeyword');
+  const grantOp = script.find(o => o.op === 'grantKeyword') || script.flatMap(o => o.then || []).find(o => o.op === 'grantKeyword'); // (W6: the grant now sits inside the 「어드벤처」 condition)
   ok('컴파일된 grantKeyword op은 optional 표시가 없다 (필수)', grantOp && !grantOp.optional);
   const seenRequired = [];
   const ctx = makeCtx(st, 'p1', 'p1', 'BT21-061', me.uid, seg, (payload) => { seenRequired.push(!!payload.required); return payload.uids[0] ?? null; });

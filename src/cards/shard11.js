@@ -194,7 +194,7 @@ js('BT11-087::등장 시', [
   { op: 'trashDeckTop', who: 'self', n: 4 },
   { op: 'returnFromTrash', who: 'self', filter: { traitIncludes: ['바그라군'] } },
   { op: 'returnFromTrash', who: 'self', filter: { traitIncludes: ['바그라군'] } },
-  { op: 'placeUnderTamer', who: 'self', zones: ['trash'], filter: { category: 'digimon', traitAny: ['바그라군'] }, n: 2 },
+  { op: 'placeUnderTamer', who: 'self', zones: ['hand'], filter: { category: 'digimon', traitAny: ['바그라군'] }, n: 2 },
 ]);
 
 // ================================================================== BT11-089 린도 아키호 (자신의 턴)
@@ -577,7 +577,11 @@ sc('BT14-079::진화 시', async (ctx, R) => {
 sc('BT14-081::진화 시', async (ctx, R) => {
   const st = me(ctx);
   const n = 1 + (st && hasEiji(st) ? 2 : 0);
-  for (let i = 0; i < n; i++) await R.runOne({ op: 'playFree', who: 'self', zone: 'trash', filter: { category: 'digimon', traitAny: ['마수형', 'SoC'], levelMax: 4 }, rested: false, noTriggers: false, optional: true }, ctx);
+  // idx1806: a "등장시킬 수 있다" without 「~까지」 is all-or-nothing up to the cap — with more eligible cards than the cap you cannot stop at fewer than the cap
+  const elig = ctx.state.players[ctx.self].trash.filter(id => C(id).category === 'digimon' && hasTrait(C(id), '마수형', 'SoC') && (C(id).level ?? 99) <= 4).length;
+  const k = Math.min(n, elig);
+  if (k > 1 && !(await ask(ctx, `트래시의 「마수형」/「SoC」 Lv.4 이하 카드 ${k}장을 등장시킬까요? (일부만 등장시킬 수 없음)`))) return;
+  for (let i = 0; i < n; i++) await R.runOne({ op: 'playFree', who: 'self', zone: 'trash', filter: { category: 'digimon', traitAny: ['마수형', 'SoC'], levelMax: 4 }, rested: false, noTriggers: false, optional: k <= 1 }, ctx);
 });
 sc('BT14-081::어택 시', async (ctx) => {
   const { state } = ctx, st = me(ctx);
@@ -781,14 +785,14 @@ SCRIPTS['LM-017::진화 시'] = SCRIPTS['LM-017::등장 시'];
 // ================================================================== LM-020 (상대의 턴 개시 시)
 sc('LM-020::상대의 턴 개시 시', async (ctx) => {
   const { state } = ctx, st = me(ctx);
-  const cats = ['digimon', 'tamer', 'option'], labels = ['디지몬', '테이머', '옵션'];
+  const cats = ['digimon', 'tamer', 'option', 'digitama'], labels = ['디지몬', '테이머', '옵션', '디지타마']; // (QA-W6 Q3347: a category that cannot be in the deck, e.g. 디지타마, may be declared too)
   const k = await ctx.choose('multipleChoice', { prompt: '카드 카테고리 1개를 선언', options: labels });
   const cat = cats[k ?? 0] || 'digimon';
   const ol = state.players[ctx.opp];
   const top = ol.deck[0];
   if (top == null) return;
   S.log(state, `${ctx.self} 카테고리 「${labels[cats.indexOf(cat)]}」 선언 — 상대 덱 위 카드 오픈: ${C(top).nameKo}`);
-  if (C(top).category === cat && st) S.grantShield(state, ctx.self, st.uid, { kinds: ['all'], until: state.turnNumber, fromCategory: cat });
+  if (C(top).category === cat && st) S.grantShield(state, ctx.self, st.uid, { kinds: ['all'], until: state.turnNumber, fromCategory: cat, anySide: true }); // anySide (QA-W6 Q3354): 「이 디지몬 이외의 …의 효과」 includes our own cards' effects
   const r = await ctx.choose('multipleChoice', { prompt: `${C(top).nameKo}: 상대의 덱 위 / 덱 아래로 되돌린다`, options: ['덱 위', '덱 아래'] });
   if (r === 1) { ol.deck.shift(); ol.deck.push(top); }
 });
@@ -982,7 +986,7 @@ sc('BT16-025::진화 시', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st) return;
   const n = st.sources.length;
   for (const s of [...digs(state, ctx.opp)]) if (s.sources.length <= n) S.restStack(state, ctx.opp, s.uid);
-  if (st.viaFusion) for (const s of digs(state, ctx.opp)) S.setSkipNextUnsuspend(state, ctx.opp, s.uid); // 조그레스 진화하고 있었다면
+  if (st.viaFusion) S.addNoActiveAll(state, ctx.opp, state.activePlayer === ctx.self ? state.turnNumber + 1 : state.turnNumber, ['digimon']); // 조그레스 진화하고 있었다면: "상대의 턴 종료까지 상대의 디지몬 전부는 액티브가 되지 않는다" (idx1974; also later arrivals)
 });
 
 // ================================================================== EX4-021 / EX4-060 (서로의 턴): "…소멸하거나 패/덱으로 되돌아갈 때" /

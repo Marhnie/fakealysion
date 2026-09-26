@@ -17,15 +17,30 @@ async function runSeg(st, p, stack, id, tagWanted) {
   await drain(st);
 }
 
-T(1, 'EX12-052: 「카운터」로 발휘한 스크립트 배틀이 ≪관통≫으로 승리하면 시큐리티 체크가 1회 발동한다 (attackCtx 없이도)', async () => {
+T(1, 'EX12-052: 어택이 예약된(효과로 선언 직전) 이 디지몬의 스크립트 배틀이 ≪관통≫으로 승리하면 시큐리티 체크가 1회 발동한다 (EX13-045형, _effAtkQueued 보류)', async () => {
   const st = mk();
   const a = put(st, 'p1', 'EX12-052'); // 《관통》《볼텍스》, DP 12000
+  a._effAtkQueued = true; // set by the driver's ctx.startAttack when the effect declared this digimon's attack but it has not started yet
   const o = put(st, 'p2', LOW);
   setSec(st, 'p2', [FILL, FILL, FILL]);
-  await runSeg(st, 'p1', a, 'EX12-052', '카운터'); // no real attack in progress: state.attackCtx is null the whole time
+  await runSeg(st, 'p1', a, 'EX12-052', '카운터'); // state.attackCtx is null the whole time (attack still queued)
   ok('배틀에서 상대 디지몬 소멸', !st.players.p2.battle.includes(o));
   eq('≪관통≫ 시큐리티 체크 1회 (시큐리티 1장 소모)', st.players.p2.security.length, 2);
   eq('오류 없음', st._qaErr || [], []);
+});
+
+T('1b', 'W8 Q5959 (EX11-074): 어택하지 않는 디지몬(어택 없음 / 다른 디지몬의 어택 중)의 스크립트 배틀은 ≪관통≫ 체크를 발동하지 않는다', async () => {
+  for (const mode of ['no attack', 'other digimon attacking']) {
+    const st = mk();
+    const a = put(st, 'p1', 'EX12-052');
+    const other = put(st, 'p1', LOW);
+    const o = put(st, 'p2', LOW);
+    setSec(st, 'p2', [FILL, FILL, FILL]);
+    if (mode !== 'no attack') st.attackCtx = { attacker: 'p1', opp: 'p2', uid: other.uid, targetKind: 'player' };
+    await runSeg(st, 'p1', a, 'EX12-052', '카운터');
+    ok(mode + ': 배틀에서 상대 디지몬 소멸', !st.players.p2.battle.includes(o));
+    eq(mode + ': 시큐리티 체크 없음', st.players.p2.security.length, 3);
+  }
 });
 
 T(2, 'EX12-052: 「카운터」 스크립트 배틀에 ≪관통≫이 없으면(가상: 상대 소멸 안 됨) 체크가 발동하지 않는다', async () => {

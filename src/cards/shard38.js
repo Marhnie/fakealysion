@@ -144,6 +144,28 @@ for (const [id, nm] of [['BT22-081', '카미시로 유코'], ['BT22-082', '사�
 }
 // BT22-075: 【서로의 턴】[턴 1회] 이 디지몬이 배틀 에어리어를 벗어날 때, 이 디지몬의 링크 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
 hk('BT22-075', { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: leaveBonusOptions('linkCards', (x) => C(x).category === 'digimon', 1, null) });
+// BT24-065 디아블로몬 X항체 (W8, official Q5644-5646): 【서로의 턴】[턴에 1회] 명칭에 「디아블로몬」을 포함하는 자신의 디지몬이 배틀 에어리어를 벗어날 때, 자신의 패나 이 디지몬의 진화원에서 「디아블로몬」 1장을
+// 코스트를 지불하지 않고 등장시킬 수 있다. — printed "벗어날 때" = 즉시형 (15-8-5-1): a PASSIVE candidate of the shared 18-2 gate (the leave itself still happens; a freshly played 「디아블로몬」 can then be
+// sacrificed by e.g. BT22-053's inherited "벗어나지 않는다", Q5644). [턴에 1회] + "1장" = only one card even when several 「디아블로몬」 leave together (Q5645); the played card's own
+// 【상대의 턴】 attack-redirect (BT17-059) is a 유발형 that already missed the attack declaration (Q5646) — nothing extra to model.
+hk('BT24-065', { tag: '서로의 턴', has: '자신의 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: (state, hp, holder, target, tp, cause, mode, cid) => {
+  if (!holder || tp !== hp || !target || C(target.cardId).category !== 'digimon') return [];
+  let nameOk = C(target.cardId).nameKo.includes('디아블로몬');
+  try { const eff = S.effectiveInfo(state, target, hp); if (eff && eff.names) nameOk = nameOk || eff.names.some((n) => n.includes('디아블로몬')); } catch (e) { /* printed name only */ }
+  if (!nameOk) return [];
+  const d = { tag: '서로의 턴', has: '자신의 디지몬이 배틀 에어리어를 벗어날 때' };
+  if (S.turnUsesRemaining(holder, S.onceLimitKey(cid, [d.tag, d.has]), 1) <= 0) return [];
+  const isDia = (x) => C(x).category === 'digimon' && S.cardNames(x).includes('디아블로몬');
+  const pl = state.players[hp], out = [], seen = new Set();
+  for (const id of pl.hand) { if (seen.has('h' + id) || !isDia(id)) continue; seen.add('h' + id); out.push({ passive: true, apply() {
+    const i = pl.hand.indexOf(id); if (i < 0 || !S.hookUseOnce(holder, cid, d, 1)) return false;
+    const st = S.playFreeFromZone(state, hp, 'hand', i); if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 디아블로몬 계열이 벗어나기 전, 패의 ${C(id).nameKo}을(를) 코스트 없이 등장`); return !!st; } }); }
+  for (const id of holder.sources.filter((_, i) => i >= S.fdCount(holder))) { if (seen.has('s' + id) || !isDia(id)) continue; seen.add('s' + id); out.push({ passive: true, apply() {
+    const at = holder.sources.lastIndexOf(id); if (at < S.fdCount(holder) || !S.hookUseOnce(holder, cid, d, 1)) return false;
+    holder.sources.splice(at, 1); S.recomputeStackGrants(holder); pl.trash.push(id);
+    const st = S.playFreeFromZone(state, hp, 'trash', pl.trash.length - 1, { fromSources: true }); if (st) S.log(state, `${hp} ${C(holder.cardId).nameKo} — 디아블로몬 계열이 벗어나기 전, 진화원의 ${C(id).nameKo}을(를) 코스트 없이 등장`); return !!st; } }); }
+  return out;
+} });
 
 // =====================================================================================================================
 // D. compile fixes (generic compile dropped a clause / mis-ordered / lost a "대신")
@@ -325,7 +347,41 @@ for (const id of ['BT24-015', 'BT24-039']) sc(`${id}::시큐리티`, async (ctx,
       return victims.map((v) => ({ apply() { if (!S.hookUseOnce(holder, id, d, 1)) return false; S.deleteStack(state, hp, v.uid, 'trash', 'ownEffect'); return true; } }));
     } };
   hk('BT22-036', d);
+  hk('EX9-032', d); // W8: 카라쿠루몬 inherits the very same text (had no hook -> never offered)
 }
+
+// W8 (leave-time 즉시형 abilities that had no wiring at all — found by scanning every 【자신/상대/서로의 턴】 "…벗어날/소멸할 때" segment for a hook):
+// EX10-031 【서로의 턴】[턴 1회] 이 디지몬이 배틀 에어리어를 벗어날 때, 이 디지몬의 진화원에서 등장 코스트 4 이하의 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다. (passive, BT23-032 shape)
+hk('EX10-031', { tag: '서로의 턴', has: '이 디지몬이 배틀 에어리어를 벗어날 때', preventLeaveOptions: leaveBonusOptions('sources', (x) => ['digimon', 'tamer'].includes(C(x).category) && (C(x).cost ?? 99) <= 4, 1, null) });
+// BT14-020 (inherited) 【상대의 턴】 이 디지몬이 소멸할 때, 이 디지몬의 진화원에서 「쉬라몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다. (deletion only)
+{ const bo = leaveBonusOptions('sources', (x) => C(x).category === 'digimon' && C(x).nameKo === '쉬라몬', null, null);
+  hk('BT14-020', { tag: '상대의 턴', src: 'inheritedKo', has: '이 디지몬이 소멸할 때', preventLeaveOptions: (state, hp, holder, target, tp, cause, mode, id) => (mode === 'delete' ? bo(state, hp, holder, target, tp, cause, mode, id) : []) }); }
+// EX13-015 듀크몬 【서로의 턴】[턴 1회] 이 디지몬이 자신의 효과 이외로 배틀 에어리어를 벗어날 때, DP 9000 이하의 상대의 디지몬 1마리를 소멸시키는 것으로, 벗어나지 않는다.
+{ const d = { tag: '서로의 턴', has: '이 디지몬이 자신의 효과 이외로 배틀 에어리어를 벗어날 때', noAuto: true,
+    preventLeaveOptions: (state, hp, holder, target, tp, cause, mode, id) => {
+      if (!holder || target !== holder || cause === 'ownEffect') return [];
+      if (S.turnUsesRemaining(holder, S.onceLimitKey(id, [d.tag, d.has || '']), 1) <= 0) return [];
+      const o = opp(hp);
+      return state.players[o].battle.filter((s) => C(s.cardId).category === 'digimon' && S.effectiveDP(state, o, s) <= 9000 && !S.effectBlocked(state, o, s, 'delete'))
+        .map((v) => ({ apply() { if (!S.hookUseOnce(holder, id, d, 1)) return false; S.deleteStack(state, o, v.uid, 'trash', 'effect'); return !state.players[o].battle.includes(v); } }));
+    } };
+  hk('EX13-015', d); }
+// BT26-055 째리몬 (inherited) 【서로의 턴】[턴 1회] 이 디지몬이 배틀 에어리어를 벗어날 때, 상대의 시큐리티를 위에서부터 1장 파기한다. (mandatory, does not stop the leave)
+hk('BT26-055', { tag: '서로의 턴', src: 'inheritedKo', has: '이 디지몬이 배틀 에어리어를 벗어날 때', noAuto: true, forcedOnLeave: (state, hp) => { S.trashTopSecurityByEffect(state, opp(hp)); } });
+
+// W8: 【서로의 턴】 이 디지몬의 진화원에 테이머 카드가 놓였을 때, … (BT24-060 히샤류우몬: 상대 디지몬 1마리를 레스트 → 이 디지몬으로 어택 / BT20-071 솔루가몬: DP 6000 이하의 상대 디지몬 1마리를 소멸) — had no watcher at all
+// (BT20-035 / BT17-003 got theirs individually); the hk() helper compiles the part after the first "…때," generically.
+// W8: 「이 디지몬이 링크했을 때」 continuous-tag watchers (same shape as BT21-005/009 in shard37) that were never hooked: BT22-035 / EX10-016 (【자신의 턴】[턴 1회]), BT23-022 / BT26-086 (【서로의 턴】[턴 1회]; BT26-086 keeps its
+// bespoke script in shard14 -> noAuto), P-217 (tamer: another own digimon got a 「소셜」/「내비」/「툴」 link card) and BT19-075 (【서로의 턴】[턴에 1회] another digimon/tamer was deleted).
+hk('BT22-035', { tag: '자신의 턴', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+hk('EX10-016', { tag: '자신의 턴', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+hk('BT23-022', { tag: '서로의 턴', has: '이 디지몬이 링크했을 때', limit: 1, events: { linked: onSelfLinked } });
+hk('BT26-086', { tag: '서로의 턴', has: '이 디지몬이 링크했을 때', limit: 1, noAuto: true, events: { linked: onSelfLinked } });
+hk('P-217', { tag: '자신의 턴', has: '링크했을 때', events: { linked: (state, hp, h, info) => info.owner === hp && !!info.stack && C(info.stack.cardId).category === 'digimon' && (C(info.linkCardId).types || []).some((t) => ['소셜', '내비', '툴'].includes(t)) } });
+hk('BT19-075', { tag: '서로의 턴', has: '다른 디지몬/테이머가 소멸했을 때', limit: 1, events: { delete: (state, hp, h, info) => !!info.stack && info.stack !== h && ['digimon', 'tamer'].includes(C(info.stack.cardId).category) } });
+// BT18-065 / BT21-058 (inherited, same trigger as BT11-065's hook in shard34): 【서로의 턴】[턴에 1회] 이 디지몬의 진화원에서 「벰몬」이 덱 아래로 되돌아갔을 때, … (BT18-065: 이 디지몬을 액티브 + 상대의 턴 종료까지 《블로커》 / BT21-058: 등장 코스트 4이하의 상대 디지몬 1마리를 소멸)
+for (const id of ['BT18-065', 'BT21-058']) hk(id, { tag: '서로의 턴', src: 'inheritedKo', has: '덱 아래로 되돌아갔을', limit: 1, events: { b4SourceToDeckBottom: (state, hp, h, i) => i.owner === hp && i.stack === h && (i.ids || []).some((x) => S.cardNames(x).includes('벰몬')) } });
+for (const id of ['BT24-060', 'BT20-071']) hk(id, { tag: '서로의 턴', has: '이 디지몬의 진화원에 테이머 카드가 놓였을 때', events: { sourcesAdded: (state, hp, h, info) => info.stack === h && info.owner === hp && (info.added || []).some((x) => C(x).category === 'tamer') } });
 
 // BT22-088 (tamer) 【서로의 턴】 자신의 토큰 또는 특징 「퍼펫형」을 가진 자신의 디지몬이 등장했을 때, 이 테이머를 레스트시키는 것으로, 《1 드로우》. ("토큰 또는" is not understood by the generic subject parser)
 hk('BT22-088', { tag: '서로의 턴', has: '자신의 토큰 또는 특징 「퍼펫형」을 가진 자신의 디지몬이 등장했을 때', events: { play: (state, hp, h, info) => info.owner === hp && !!info.stack && C(info.stack.cardId).category === 'digimon' && (!!C(info.stack.cardId).isToken || hasT(info.stack.cardId, '퍼펫형')) } });
@@ -338,6 +394,22 @@ sc('BT24-051::등장 시', async (ctx, R) => {
   const lp = ctx._lastPick; if (!lp) return;
   const st = findStack(ctx.state, lp.player, lp.uid);
   if (st && !st.suspended && ctx.startAttack && S.legalDigimonTargets(ctx.state, ctx.self, st.uid).length) ctx.startAttack(ctx.self, st.uid, undefined, { digimonOnly: true });
+});
+
+// BT24-078 마왕몬 X항체 [트래시]【자신의 턴】 자신의 「마왕몬」이 어택했을 때, 상대의 트래시가 10장 이상이라면, 그 디지몬을 이 카드로 코스트를 지불하지 않고 진화시키는 것으로, 상대의 시큐리티를 위에서 1장 파기한다.
+// (W8, official Q5656-5658/5775: the generic compile turned the evolution into a manualCost -> the digimon never evolved yet the security was discarded anyway.) The evolution IS the cost: it happens with its evolution draw
+// (deck 0 does not undo it, Q5658) and only then the security is discarded; the attacker's own pending 【어택 시】 is dropped by the top-card change (Q5656).
+sc('BT24-078::자신의 턴@이 카드로 코스트를 지불하지 않고 진화시키는', async (ctx, R) => {
+  const { state } = ctx, me_ = ctx.self, pl = state.players[me_];
+  if (state.players[opp(me_)].trash.length < 10) return;
+  const st = findStack(state, me_, ctx.trigger && ctx.trigger.evtStackUid);
+  const at = pl.trash.lastIndexOf('BT24-078');
+  if (!st || at < 0) return;
+  if (!ctx.E.canEvolveAny(st.cardId, 'BT24-078', S.evoExtraArg(state, null, st), S.evolveTargetRestriction(state, me_, st)).ok) return;
+  if (!(await confirm(ctx, '트래시의 이 카드로 어택한 「마왕몬」을 코스트 없이 진화시키고 상대의 시큐리티를 위에서 1장 파기할까요?'))) return;
+  pl.trash.splice(at, 1);
+  if (!S.digivolve(state, me_, st.uid, 'BT24-078', 0, 'trash')) { pl.trash.splice(at, 0, 'BT24-078'); return; }
+  await R.runOne({ op: 'removeSecurity', who: 'opponent', position: 'top' }, ctx);
 });
 
 // BT23-084 【자신의 턴 종료 시】 이 테이머를 레스트시키고, 특징 「후디에」를 가진 자신의 디지몬 1마리를 패로 되돌리는 것으로, 자신의 패에서, 특징 「CS」를 가진 Lv.3의 디지몬 카드 1장을 비어 있는 자신의 육성 에어리어에 코스트를 지불하지 않고 등장시킬 수 있다.

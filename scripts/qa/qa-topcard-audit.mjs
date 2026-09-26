@@ -45,10 +45,10 @@ T('b58', 'BT13-058 [End of Your Turn]: trash top card, unsuspend all', async () 
   fire(st, 'p1', h, 'BT13-058', '자신의 턴 종료 시'); await drain(st);
   eq('top', h.cardId, B); eq('src', h.sources, [A]); ok('trashed', has(st.players.p1.trash, 'BT13-058')); ok('unsuspended', !o.suspended);
 });
-T('b58b', 'BT13-058 with no other card: the lone Digimon is trashed (leaves battle area)', async () => {
+T('b58b', 'BT13-058 with no other card: a lone card has nothing "overlaid" (official Q&A 1247/1712/2892/4958 family) -> it stays; the other digimon are still unsuspended', async () => {
   const st = newGame(); const h = put(st, 'p1', 'BT13-058', { src: [] }); const o = put(st, 'p1', D, { susp: true });
   fire(st, 'p1', h, 'BT13-058', '자신의 턴 종료 시'); await drain(st);
-  ok('gone', !st.players.p1.battle.includes(h)); ok('trash', has(st.players.p1.trash, 'BT13-058')); ok('unsuspended', !o.suspended);
+  ok('stays', st.players.p1.battle.includes(h)); ok('not trashed', !has(st.players.p1.trash, 'BT13-058')); ok('unsuspended', !o.suspended);
 });
 T('b91', 'BT13-091/EX10-022 inherited: Belphemon Sleep Mode (top) is trashed, next card becomes the Digimon', async () => {
   const st = newGame(); const h = put(st, 'p1', 'EX10-021', { src: [A, 'EX10-022'] });

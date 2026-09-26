@@ -173,9 +173,13 @@ async function playDiscounted(ctx, pred, discount, prompt) {
   // Q4295 (BT20-013 family): "서로는 지불하는 등장 코스트를 마이너스할 수 없다" (ST12-03 등) still lets the effect
   // activate and summon the card — only the discount itself is nullified, paying the full printed cost.
   const eff = S.isPlayCostLocked(state) ? 0 : discount;
-  const cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - eff);
+  // 공식 Q&A (BT21-021 Q4021 / P-205 Q4665): 효과로 등장시킬 때도 디지크로스를 선언할 수 있고(효과를 발휘한 이 디지몬 자신도 재료로 놓을 수 있다), 그 만큼 등장 코스트가 더 내려간다
+  let xo = {};
+  try { const Fx = await import('../effects.js'); xo = await Fx.xrosOptsFor(ctx, who, 'hand', idx, true); } catch (e) { xo = {}; }
+  const xrosCut = S.isPlayCostLocked(state) ? 0 : ((xo.materials && xo.materials.length) ? (S.parseDigiXros(pl.hand[idx])?.per || 0) * xo.materials.length : 0) + (xo.asmDiscount || 0);
+  const cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - eff - xrosCut);
   if (cost > 0) S.spendMemory(state, cost);
-  return S.playDigimonFresh(state, who, idx);
+  return S.playDigimonFresh(state, who, idx, xo);
 }
 
 // a card can only be jogress-evolved into when it actually has a 〔조그레스〕 line (S.canJogress is permissive for cards without one)
@@ -922,6 +926,32 @@ sc('BT21-021::어택 종료 시', async (ctx) => {
   const played = await playDiscounted(ctx, c => hasType(c, '크로스 하트', '블루 플레어', '히어로'), 5, '등장시킬 카드 선택');
   if (played && st && findStack(state, ctx.self, st.uid)) del(state, ctx.self, st, ctx.self);
 });
+// 【소멸 시】 자신의 패/트래시에서 특징 「크로스 하트」/「블루 플레어」를 가진 디지몬 카드 1장을 자신의 테이머 아래에 놓을 수 있다. 그 후, 《세이브》.
+// (the generic compile only offered ONE zone — hand if it had a match, else trash; the player must be able to choose hand OR trash)
+sc('BT21-021::소멸 시', async (ctx) => {
+  const { state } = ctx, who = ctx.self, pl = state.players[who];
+  const pred = (c) => c.category === 'digimon' && hasType(c, '크로스 하트', '블루 플레어');
+  const t = tams(state, who);
+  if (t.length) {
+    const zones = ['hand', 'trash'].filter(z => pl[z].some(id => pred(C(id))));
+    if (zones.length) {
+      let zone = zones[0];
+      if (zones.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: '테이머 아래에 놓을 카드의 위치 선택 (취소=안 함)', options: ['패', '트래시'] }); zone = k == null ? null : zones[k]; }
+      if (zone) {
+        const idx = await pickZone(ctx, who, zone, pred, `${zone === 'hand' ? '패' : '트래시'}에서 테이머 아래에 놓을 카드 선택`);
+        let tam = t[0];
+        if (idx != null && t.length > 1) { const u = await pickStack(ctx, who, t, '카드를 놓을 자신의 테이머 선택'); tam = t.find(x => x.uid === u?.uid) || u || t[0]; }
+        if (idx != null && tam) { const [id] = pl[zone].splice(idx, 1); putSourceBottom(state, tam, id, false); S.log(state, `${who} ${C(id).nameKo} ${zone === 'hand' ? '패' : '트래시'}에서 ${C(tam.cardId).nameKo} 아래에 놓음`); }
+      }
+    }
+  }
+  // 그 후, 《세이브》
+  const tu = tams(state, who).map(x => x.uid);
+  if (!tu.length || !pl.trash.includes(ctx.sourceCardId)) return;
+  if (!(await ask(ctx, `${C(ctx.sourceCardId).nameKo}: 《세이브》(자신의 테이머 아래에 놓기) 사용?`))) return;
+  const tu2 = tu.length === 1 ? tu[0] : await ctx.choose('pickStack', { player: who, uids: tu, prompt: '세이브할 테이머 선택' });
+  if (tu2) S.saveCardUnderTamer(state, who, ctx.sourceCardId, tu2);
+});
 sc('BT21-023::등장 시', async (ctx) => {
   const st = me(ctx); if (!st) return;
   if (!(await ask(ctx, 'Lv.4 이하의 디지몬 카드를 링크할까요?'))) return;
@@ -1214,7 +1244,10 @@ sc('BT21-092::메인', async (ctx) => {
   const tamer = src && await pickStack(ctx, ctx.self, tams(state, ctx.self), '카드를 놓을 테이머 선택');
   if (!src || !tamer) return;
   let n = 0;
-  for (let i = src.sources.length - 1; i >= S.fdCount(src); i--) if (C(src.sources[i]).category === 'digimon') { const [id] = src.sources.splice(i, 1); tamer.sources.splice(S.fdCount(tamer), 0, id); n++; }
+  const moved = []; // QA-W6 Q3916: the player chooses the order in which the cards go under the Tamer (listed top-first, placed as a block at the very bottom of the Tamer's stack: Q3917)
+  for (let i = src.sources.length - 1; i >= S.fdCount(src); i--) if (C(src.sources[i]).category === 'digimon') { const [id] = src.sources.splice(i, 1); moved.push(id); n++; }
+  const ordered = await S.orderPlacement(ctx.choose, ctx.self, moved, '테이머 아래에 놓을 카드의 순서를 정하세요 (위쪽부터)');
+  tamer.sources.splice(S.fdCount(tamer), 0, ...[...ordered].reverse());
   S.recomputeStackGrants(src);
   if (n) await playDiscounted(ctx, c => hasType(c, '크로스 하트'), n, '등장시킬 「크로스 하트」 디지몬 선택');
 });
@@ -1256,7 +1289,7 @@ hk('EX9-003', { tag: '자신의 턴', src: 'inheritedKo', evoDiscount: (state, h
 } });
 sc('EX9-005::메인', async (ctx) => {
   const { state } = ctx, st = me(ctx), pl = state.players[ctx.self]; if (!st) return;
-  const cnt = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter(id => C(id).nameKo === '네가몬').length, 0);
+  const cnt = pl.trash.filter(id => C(id).nameKo === '네가몬').length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo === '네가몬').length, 0); // 뒷면의 진화원은 카드 정보를 갖지 않는다
   const played = await playDiscounted(ctx, c => c.category === 'digimon' && mention(c, '네가몬'), Math.max(0, 2 - cnt), '등장시킬 「네가몬」 디지몬 선택');
   if (played && findStack(state, ctx.self, st.uid)) putStackUnder(state, ctx.self, st, played);
 });
@@ -1269,7 +1302,9 @@ hk('EX9-005', { tag: '상대의 턴', src: 'inheritedKo', redirectOptions: (stat
 sc('EX9-006::어택 시', async (ctx) => {
   const { state } = ctx, st = me(ctx); if (!st || !fdN(st)) return;
   const o = { stack: st, zones: ['trash'], pred: c => hasType(c, 'Ver.5'), cost: { mode: 'discount', n: 1 } };
-  if (!evoCands(ctx, o).length || !(await ask(ctx, '뒷면의 진화원 1장을 파기하고 「Ver.5」 디지몬으로 진화할까요?'))) return;
+  // 공식 Q&A (EX9-006 Q4042): 이 효과로 진화원에서 파기한 카드로도 진화할 수 있다 -> 파기 전 트래시에 후보가 없어도, 아래에서 1번째 뒷면 카드가 「Ver.5」 디지몬이라면 발휘할 수 있다
+  const bottomFd = st.sources[0];
+  if (!(evoCands(ctx, o).length || (bottomFd != null && C(bottomFd).category === 'digimon' && hasType(C(bottomFd), 'Ver.5'))) || !(await ask(ctx, '뒷면의 진화원 1장을 파기하고 「Ver.5」 디지몬으로 진화할까요?'))) return;
   S.trashEvoSources(state, ctx.self, st.uid, 1, 'bottom');
   await evolveInto(ctx, o);
 });
@@ -1319,7 +1354,7 @@ sc('EX9-031::서로의 턴', async (ctx) => {
 });
 sc('EX9-055::등장 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
-  const n = pl.trash.filter(id => C(id).nameKo.includes('네가몬')).length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter(id => C(id).nameKo.includes('네가몬')).length, 0);
+  const n = pl.trash.filter(id => C(id).nameKo.includes('네가몬')).length + digs(state, ctx.self).reduce((a, s) => a + s.sources.filter((id, i) => i >= fdN(s) && C(id).nameKo.includes('네가몬')).length, 0);
   if (n < 4 || pl.raising) return;
   const zones = ['hand', 'trash'].filter(z => pl[z].some(id => C(id).nameKo === '아바도몬 코어'));
   if (!zones.length || !(await ask(ctx, '「아바도몬 코어」를 육성 에어리어에 등장시킬까요?'))) return;
@@ -1341,6 +1376,10 @@ sc('EX9-055::서로의 턴 종료 시', async (ctx) => {
   const t = await pickStack(ctx, o, digs(state, o).filter(s => C(s.cardId).level === C(id).level), `소멸시킬 Lv.${C(id).level}의 상대 디지몬 선택`);
   if (t) del(state, o, t, ctx.self);
 });
+// EX9-069 【자신의 턴】 자신의 디지몬의 진화원에 뒷면의 카드가 놓였을 때, 이 테이머를 레스트시키는 것으로, 메모리 +1. 또한, 자신의 패가 7장 이하라면, 《1 드로우》. (공식 Q&A 4123/4268: 육성 에어리어의 디지몬에게 놓인 경우는 유발하지 않는다 — state.emitGameEvent의 육성 에어리어 필터가 처리)
+// The generic event watcher leaves this conditional sentence manual (EW_UNSAFE) — mark it trusted and give it a bespoke script.
+hk('EX9-069', { tag: '자신의 턴', has: '뒷면의 카드가 놓였을 때', ewTrusted: true });
+sc('EX9-069::자신의 턴', async (ctx) => { const { state } = ctx; S.grantMemory(state, ctx.self, 1, ctx.sourceCardId); if (state.players[ctx.self].hand.length <= 7) S.drawCards(state, ctx.self, 1); });
 sc('EX9-069::자신의 메인 페이즈 개시 시', async (ctx) => {
   const { state } = ctx, pl = state.players[ctx.self];
   const ts = digs(state, ctx.self).filter(s => hasType(C(s.cardId), 'DM'));

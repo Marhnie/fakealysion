@@ -179,7 +179,9 @@ async function evolveEffect(ctx, o) {
   const id = pl[zone][idx];
   let printed = printedEvoCost(ctx, st, id);
   if (printed == null) printed = C(id).evoNormal?.cost ?? 0;
-  const cost = costFrom(printed, o.cost);
+  let cost = costFrom(printed, o.cost);
+  // 공식 Q&A (P-202 Q4476-4479 / BT22-038 Q4176 family): an effect evolution that pays a cost also gets the digimon's own / continuous evolve-cost reductions (not when "코스트를 지불하지 않고")
+  if (!(o.cost && o.cost.mode === 'free')) cost = Math.max(0, cost + S.continuousEvoCostDiscount(state, me, st, id) + S.hookEvoCostDiscount(state, me, st, id));
   if (zone === 'trash') pl.trash.splice(idx, 1);
   S.digivolve(state, me, st.uid, id, cost, zone === 'hand' ? 'hand' : 'trash');
   return true;
@@ -191,6 +193,7 @@ function scriptOfSegment(cardId, seg) {
   return lookupCardSpecific(cardId, seg.tags, seg.body) || compileToScript(seg.body);
 }
 async function runSegmentsOf(ctx, cardId, tagPart, R, label) {
+  if (tagPart === '등장 시' && S.playTrigSuppressed(ctx.state, ctx.self, srcSt(ctx))) { S.log(ctx.state, `${C(cardId).nameKo}의 【등장 시】 효과는 발휘하지 않음 (효과)`); return false; } // Q4135
   const segs = S.parseEffectSegments(C(cardId).effectKo || '').segments.filter(sg => sg.tags.some(t => t.includes(tagPart)) && !/^[≪《]\s*딜레이/.test(sg.body));
   const usable = segs.filter(sg => scriptOfSegment(cardId, sg).length);
   if (!usable.length) { S.log(ctx.state, `${C(cardId).nameKo}의 【${tagPart}】 효과를 자동 처리할 수 없음 (수동 확인)`); return false; }
@@ -342,7 +345,8 @@ function handEvolveMain({ need, subject, cost, under }) {
     const st = cands.length === 1 ? cands[0] : await pickStackOf(ctx, me, cands, `「${subject}」 선택`);
     if (!st) return;
     if (under) { const [id] = pl.trash.splice(underIdx, 1); placeSources(state, me, st, [id], 'bottom'); }
-    S.digivolve(state, me, st.uid, cardId, cost, 'hand');
+    // 공식 Q&A (BT22-024/036, EX10-032, BT23-065): 「산호몬」 등의 진화 코스트 감소 효과와 합쳐서 (진화 코스트 3 - 1 = 2) 진화한다
+    S.digivolve(state, me, st.uid, cardId, Math.max(0, cost + S.continuousEvoCostDiscount(state, me, st, cardId) + S.hookEvoCostDiscount(state, me, st, cardId)), 'hand');
   });
 }
 SC('BT22-013', '메인', '자신의 「시라미네 노키아」가 있다면', handEvolveMain({ need: '시라미네 노키아', subject: '아구몬', cost: 6 }));
@@ -679,7 +683,7 @@ SC('BT22-090', '자신의 턴 종료 시', '로드나이트몬', RUN(async (ctx)
 SC('EX10-013', '자신의 턴 종료 시', '루체몬: 폴다운 모드', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me];
   const cm = M({ mention: ['루체몬'] });
-  const o = { subject: 'this', zones: ['trash'], card: { nameEq: ['루체몬: 폴다운 모드'] }, cost: { mode: 'free' }, ignoreCond: true }; // fall-down mode's own evolution condition is a hand-only text ("자신의 「루체몬」은 …패의 이 카드로 진화할 수 있다"), not a printed 〔진화〕 line
+  const o = { subject: 'this', zones: ['trash'], card: { nameEq: ['루체몬: 폴다운 모드'] }, cost: { mode: 'free' } }; // 공식 Q&A (EX10-013 Q4324 / BT18-034 Q4282): 진화 조건은 무시할 수 없다 — 폴다운 모드에는 인쇄된 〔진화〕 조건이 없어(패 전용 텍스트) 트래시에서의 진화는 성립하지 않는다
   if (cnt(pl.trash, cm) < 5 || !(await evolveEffect(ctx, { ...o, dry: true }))) return;
   if (!(await optional(ctx, me, '트래시의 「루체몬」 카드 5장을 덱 아래로 되돌리고 진화'))) return;
   const ids = [];
@@ -1195,6 +1199,7 @@ SC('ST22-07', '자신의 턴', '이 테이머의 아래에 있는 그 디지몬�
   state.players[me].trash.push(id);
   S.log(state, `${me} ${C(id).nameKo} 사용 (코스트 없이)`);
   S.queueTriggersFor(state, me, id, 'use');
+  S.emitGameEvent(state, 'optionUsed', { owner: me, stack: null, cause: 'effect', cardId: id, useCost: 0 }); // W8 (Q5449-5518): a free use from under the tamer is still a 「사용」
 }));
 
 // #129 BT23-074
@@ -1499,12 +1504,28 @@ SC('BT22-092', '자신의 턴', '그 디지몬의 【메인】 효과 1개를 �
   const ev = self && self.hookEvt;
   const t = ev && findSt(state, me, ev.stackUid);
   if (!self || self.suspended || !t) return;
-  const has = S.parseEffectSegments(C(t.cardId).effectKo).segments.some(sg => sg.tags.includes('메인') && !sg.zoneMarker && !/^[≪《]\s*딜레이/.test(sg.body));
-  if (!has || !(await optional(ctx, me, `이 테이머를 레스트시키고 ${C(t.cardId).nameKo}의 【메인】 효과 발휘`))) return;
+  // 공식 Q&A (BT22-092 Q4251-4253): 「그 디지몬의 【메인】 효과」 = 카드 자체의 효과 + 진화원 효과(상속)로 얻고 있는 【메인】 효과도 포함, [턴에 1회] 효과는 이 효과로 발휘하면 그 턴에 다시 발휘할 수 없다
+  const cands = [];
+  const addSegs = (id, text, inherited) => {
+    if (!text) return;
+    for (const sg of S.parseEffectSegments(text).segments) {
+      if (!sg.tags.includes('메인') || sg.zoneMarker || /^[≪《]\s*딜레이/.test(sg.body)) continue;
+      const om = String(sg.body || '').trim().match(/^[\[〔]턴\s*에?\s*(\d+)\s*회[\]〕]/); const key = S.onceLimitKey(id, sg.tags);
+      if (om && S.turnUsesRemaining(t, key, Number(om[1])) <= 0) continue;
+      if (!(lookupCardSpecific(id, sg.tags, sg.body, inherited) || compileToScript(sg.body)).length) continue;
+      cands.push({ id, sg, inherited, key, once: !!om });
+    }
+  };
+  addSegs(t.cardId, C(t.cardId).effectKo, false);
+  t.sources.slice(S.fdCount(t)).forEach((sid) => addSegs(sid, C(sid).inheritedKo, true));
+  if (!cands.length || !(await optional(ctx, me, `이 테이머를 레스트시키고 ${C(t.cardId).nameKo}의 【메인】 효과 발휘`))) return;
   S.restStack(state, me, self.uid);
-  const sub = { ...ctx, sourceStackUid: t.uid };
-  const done = await runSegmentsOf(sub, t.cardId, '메인', R, C(t.cardId).nameKo);
-  if (done) S.grantMemory(state, me, 1, ctx.sourceCardId);
+  let cand = cands[0];
+  if (cands.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: `${C(t.cardId).nameKo} 발휘할 【메인】 효과 1개 선택`, options: cands.map(c => `${c.inherited ? "[진화원] " : ""}${c.sg.body.replace(/s+/g, " ").slice(0, 60)}`) }); if (k == null) return; cand = cands[k] || cands[0]; }
+  if (cand.once) S.markTurnEffectUsed(t, cand.key);
+  const sub = { ...ctx, sourceStackUid: t.uid, sourceCardId: cand.id };
+  await R.runScript(lookupCardSpecific(cand.id, cand.sg.tags, cand.sg.body, cand.inherited) || compileToScript(cand.sg.body), sub);
+  S.grantMemory(state, me, 1, ctx.sourceCardId);
 }));
 
 // ---- #35 BT22-094 / #102 P-199 (play cost) / #103 P-200 / #104 P-202 (evolution cost)
@@ -1743,7 +1764,7 @@ SC('BT23-079', '자신의 턴', '자신의 디지몬이 링크했을 때', RUN(a
 }));
 // ---- 어플 합체 tamers: 【자신의 턴】 자신의 디지몬이 링크했을 때, 이 테이머를 레스트시키는 것으로, <효과>. 또한, … 어플 합체할 수 있다.
 const linkedTamerHook = (id) => HK(id, { tag: '자신의 턴', has: '자신의 디지몬이 링크했을 때', events: { linked: (state, hp, holder, info) => isTam(holder) && !holder.suspended && info.owner === hp && !!info.stack } });
-for (const id of ['BT21-084', 'BT22-087', 'BT24-087']) linkedTamerHook(id);
+for (const id of ['BT21-084', 'BT22-087', 'BT24-087', 'P-241']) linkedTamerHook(id);
 const linkedTamer = (id, label, effect, zone = 'hand', pred = null) => SC(id, '자신의 턴', '자신의 디지몬이 링크했을 때', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, self = srcSt(ctx);
   if (!self || self.suspended) return;
@@ -1753,6 +1774,14 @@ const linkedTamer = (id, label, effect, zone = 'hand', pred = null) => SC(id, '�
   await appFusion(ctx, zone, pred);
 }));
 linkedTamer('BT21-084', '이 테이머를 레스트시키고 《1 드로우》, 어플 합체', async (ctx) => { S.drawCards(ctx.state, ctx.self, 1); });
+// P-241 김영웅 【자신의 턴】 자신의 디지몬이 링크했을 때, 이 테이머를 레스트시키는 것으로, 턴 종료까지, 특징 「어플몬」을 가진 자신의 디지몬 1마리는 《볼텍스》를 얻고, DP +3000. 또한, 자신의 디지몬 1마리를 패의 디지몬 카드로 어플 합체할 수 있다. (공식 Q&A idx6130: 레스트하지 않으면 「또한」 이후도 처리할 수 없다 — linkedTamer가 보장)
+linkedTamer('P-241', '이 테이머를 레스트시키고 어플몬 디지몬 《볼텍스》·DP +3000, 어플 합체', async (ctx) => {
+  const { state } = ctx, me = ctx.self;
+  const t = await pickStackOf(ctx, me, digimonsOf(state, me).filter(s => (C(s.cardId).types || []).includes('어플몬')), '《볼텍스》와 DP +3000을 받을 특징 「어플몬」 디지몬 선택');
+  if (!t) return;
+  S.grantKeyword(state, me, t.uid, '볼텍스', true, 'turn');
+  dpMod(state, me, t, 3000, state.turnNumber);
+});
 linkedTamer('BT22-087', '이 테이머를 레스트시키고 상대 디지몬 DP -2000, 어플 합체', async (ctx) => {
   const { state } = ctx, me = ctx.self, o = opp(me);
   const t = await pickStackOf(ctx, o, digimonsOf(state, o), 'DP를 낮출 상대 디지몬 선택', 'dpDown');
@@ -1914,4 +1943,54 @@ SC('EX10-072', '상대의 턴 종료 시', '앞면의 디지몬 카드', RUN(asy
   state.endOfTurnEffects.push({ turnNumber: tn, player: me, label: '자신의 턴 종료 시, 등장시킨 디지몬 소멸', fn: () => {
     if (pl.battle.some(s => s.uid === uid)) S.deleteStack(state, me, uid, 'trash', 'ownEffect');
   } });
+}));
+
+// ---- w7 recheck2: effects that were left to a manual prompt (scan-manual) ----
+// P-179 저스티몬: 크리티컬 암 【진화 시】 자신의 패/트래시에서 특징 「디바이스」를 가진 옵션 카드 1장을 배틀 에어리어에 놓는 것으로, 상대의 턴 종료까지 이 디지몬을 DP +3000.
+SC('P-179', '진화 시', '「디바이스」를 가진 옵션 카드 1장을 배틀 에어리어에 놓는 것으로', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me], st = srcSt(ctx);
+  if (!st) return;
+  const cm = M({ cat: 'option', trait: ['디바이스'] });
+  const zones = ['hand', 'trash'].filter(z => pl[z].some(cm));
+  if (!zones.length || !(await optional(ctx, me, '패/트래시의 「디바이스」 옵션 카드 1장을 배틀 에어리어에 놓고 DP +3000'))) return;
+  let zone = zones[0];
+  if (zones.length > 1) { const k = await ctx.choose('multipleChoice', { prompt: '옵션 카드를 가져올 곳', options: zones.map(z => (z === 'hand' ? '패' : '트래시')) }); if (k == null) return; zone = zones[k]; }
+  const idx = await pickZoneCard(ctx, me, zone, cm, '배틀 에어리어에 놓을 「디바이스」 옵션 카드 선택');
+  if (idx == null) return;
+  const [id] = pl[zone].splice(idx, 1);
+  pl.trash.push(id);
+  if (!S.placeThisInBattle(state, me, id)) { const i = pl.trash.lastIndexOf(id); if (i >= 0) pl.trash.splice(i, 1); pl[zone].push(id); return; }
+  dpMod(state, me, st, 3000, untilOppTurnEnd(state, me));
+}));
+// EX10-054 베놈묘티스몬 [트래시]【메인】 「묘티스몬」이 기술되어 있는 Lv.5의 자신의 디지몬 1마리를 소멸시키는 것으로, 이 카드를 지불하는 코스트 -7 하여 등장시킨다. (EX10-011의 같은 형태)
+SC('EX10-054', '메인', '이 카드를 지불하는 코스트 -7', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me], id = ctx.sourceCardId;
+  const ti = pl.trash.lastIndexOf(id);
+  if (ti === -1) { S.log(state, `${C(id).nameKo}: 트래시에 없어 발휘할 수 없음`); return; }
+  const cost = Math.max(0, (C(id).cost || 0) - 7);
+  const cm = stM({ lv: 5, mention: ['묘티스몬'] });
+  const cands = () => digimonsOf(state, me).filter(cm);
+  if (!cands().length || !S.canPayCost(state, cost)) { S.log(state, `${C(id).nameKo}: 소멸시킬 「묘티스몬」 Lv.5 디지몬이 없거나 코스트를 지불할 수 없음`); return; }
+  if (!(await optional(ctx, me, `자신의 「묘티스몬」 Lv.5 디지몬 1마리를 소멸시키고 ${C(id).nameKo}을(를) 코스트 ${cost}로 등장`))) return;
+  const t = await pickStackOf(ctx, me, cands(), '소멸시킬 「묘티스몬」 Lv.5 디지몬 선택', 'delete');
+  if (!t) return;
+  S.deleteStack(state, me, t.uid, 'trash', 'ownEffect');
+  const k = pl.trash.lastIndexOf(id);
+  if (k === -1) return;
+  if (cost > 0) S.spendMemory(state, cost);
+  S.playFreeFromZone(state, me, 'trash', k, {});
+}));
+// EX10-058 리리스몬 【서로의 턴】[턴 1회] 상대의 디지몬이 등장/소멸했을 때, 이 디지몬의 진화원을 선택하여 2장 파기하는 것으로, 자신의 트래시에서 퍼플인 Lv.4 이하의 디지몬 카드 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
+// (공식 Q&A 4443: 파기한 진화원 카드를 그대로 트래시에서 등장시켜도, 발휘 대기 중이던 그 카드의 진화원 효과는 이미 장소를 벗어나 발휘할 수 없다)
+const onOppDigimonPlayDel = (state, hp, holder, info) => info.owner !== hp && !!info.stack && isDigimon(info.stack.cardId) && holder.sources.length >= 2;
+HK('EX10-058', { tag: '서로의 턴', has: '상대의 디지몬이 등장/소멸했을 때', limit: 1, events: { play: onOppDigimonPlayDel, delete: onOppDigimonPlayDel } });
+SC('EX10-058', '서로의 턴', '이 디지몬의 진화원을 선택하여 2장 파기하는 것으로', RUN(async (ctx) => {
+  const { state } = ctx, me = ctx.self, pl = state.players[me], st = srcSt(ctx);
+  if (!st || st.sources.length < 2) return;
+  const cm = M({ cat: 'digimon', colors: ['purple'], lvMax: 4 });
+  if (!(await optional(ctx, me, '이 디지몬의 진화원 2장을 파기하고 트래시의 퍼플 Lv.4 이하 디지몬을 등장'))) return;
+  const idxs = await pickFromIds(ctx, me, st.sources, () => true, '파기할 진화원 2장 선택', 2);
+  if (idxs.length < 2) return;
+  S.trashEvoSources(state, me, st.uid, 2, 'bottom', idxs);
+  await playFreeChoose(ctx, { zones: ['trash'], card: { colors: ['purple'], lvMax: 4 }, prompt: '코스트를 지불하지 않고 등장시킬 퍼플 Lv.4 이하 디지몬 선택' });
 }));

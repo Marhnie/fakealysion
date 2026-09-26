@@ -71,14 +71,16 @@ export function nextPhase(state) {
     // every cycle, never consumed.
     const wokeUp = [];
     [...pl.battle, ...(pl.raising ? [pl.raising] : [])].forEach(s => { // 6-2-1: ALL own cards in the areas (breeding area included)
-      if (s._pierceHeld) delete s._pierceHeld; // S.consumePierceCheck: sweep a stale ≪관통≫ hold whose attack, in the end, never started (never leak into a later unrelated attack)
+      if (s._pierceHeld) delete s._pierceHeld; if (s._effAtkQueued) delete s._effAtkQueued; // S.consumePierceCheck: sweep a stale ≪관통≫ hold whose attack, in the end, never started (never leak into a later unrelated attack)
       if (s.deferred) S.settleDeferred(state, s, active); // 15-15-5-2: recorded "다음 액티브 페이즈에 액티브되지 않는다" grants apply once the immunity is gone
       if (s.skipNextUnsuspend) { s.skipNextUnsuspend = false; return; }
+      if (S.lateUnsuspendSkipApplies(state, active, s)) return; // idx1598/1769: "…전부는 다음 액티브 페이즈에서 액티브가 되지 않는다" (arrivals + DP judged now)
       if (s.cannotUnsuspendUntil != null && state.turnNumber <= s.cannotUnsuspendUntil) return; // s8: 액티브 봉인 (~상대의 턴 종료까지)
       if (S.isPreventedFromUnsuspending(state, active, s)) return;
       if (s.suspended) wokeUp.push(s); // shard1: 'unsuspend' events (EX2-037)
       s.suspended = false;
     });
+    S.clearLateUnsuspendSkips(state, active);
     for (const s of wokeUp) S.s1Unsuspended(state, active, s);
     // 16-11-1/16-11-5: a ≪재기동≫ (Reboot) Digimon also becomes Active during
     // the OPPONENT's Active Phase, on top of its own controller's — not just
@@ -433,7 +435,7 @@ export function evolutionMethods(sourceCardId, targetCardId, extraColors = [], r
   sat.forEach((c, i) => addPlain({ id: (c.isNormal ? 'normal' : 'line') + i, kind: c.isNormal ? 'normal' : 'special-line', label: c.isNormal ? '일반 진화' : '특수 진화 조건', baseCost: c.cost, conditionText: c.raw || '', ignoresCondition: false, sideEffect: false }));
   const okBase = !restriction || !restriction.cannotEvolve;
   // "패의 이 카드는, <색>인 자신의 테이머를 <색>인 Lv.N의 디지몬으로서 취급하여 [진화 코스트 X를 지불하여] 진화할 수 있다." (BT4/6/7 하이브리드체 Lv.4): a Tamer in the battle area can be the evolution base.
-  if (ctx && ctx.stack && okBase && S.card(ctx.stack.cardId).category === 'tamer') {
+  if (ctx && ctx.stack && okBase && !(ctx.state && S.evolveBanTamerAlt(ctx.state, ctx.p)) && S.card(ctx.stack.cardId).category === 'tamer') {
     const tgtC = S.card(targetCardId); let tm = (tgtC.effectKo || '').match(/패의\s*이\s*카드는,?\s*((?:[가-힣]+(?:\/[가-힣]+)*)인\s*)?자신의\s*(?:테이머|「([^」]+)」)(?:를|을)\s*((?:[가-힣]+(?:\/[가-힣]+)*)인\s*)?Lv\.\s*(\d+)의\s*디지몬(?:으로서|으로|로서|로)도?\s*취급하여\s*(?:진화\s*코스트\s*(\d+)(?:을|를|으로|로)\s*(?:지불하여\s*)?)?진화할\s*수\s*있다/); // (batch4: BT12-012/013/024/025/065/066 print "패의 이 카드는 [색인] 자신의 테이머/「이름」을 …" without the comma, with a named tamer, "디지몬로" and "진화 코스트 N로")
     if (tm) tm = [tm[0], tm[1], tm[3], tm[4], tm[5], tm[2]]; // -> [full, tamerColors, digimonColors, level, cost, namedTamer]
     // BT7-112: "자신의 패 또는 트래시에서 테이머 카드 또는 특징으로 「하이브리드체」를 갖는 카드 합계 10장을 원하는 순서대로 덱 아래로 되돌리는 것으로, 자신의 테이머를 Lv.6의 디지몬으로서 취급하여 진화할 수 있다" (the return is paid by main.js before digivolving)

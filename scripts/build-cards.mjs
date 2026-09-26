@@ -75,5 +75,20 @@ try {
   for (const [no, t] of Object.entries(ov)) if (out[no] && !out[no].types.length) out[no].types = [...t];
 } catch { /* no overrides file */ }
 
+// Korean fill for cards the KOR export lacks (data/ko-overrides.json: {cardNo: {nameKo, effectKo, inheritedKo}}).
+// Applied ONLY where the KOR field is missing/empty (nameKo: also when it is just the English name / card number).
+let koFilled = 0;
+try {
+  const ko = JSON.parse(readFileSync(new URL('../data/ko-overrides.json', import.meta.url), 'utf-8'));
+  for (const [no, o] of Object.entries(ko)) {
+    const e = out[no]; if (!e) continue;
+    const untranslated = (s) => !s || s === e.id || s === e.nameEn || !/[가-힣]/.test(s);
+    if (o.nameKo && untranslated(e.nameKo)) { e.nameKo = o.nameKo; koFilled++; }
+    if (o.effectKo && !e.effectKo) { e.effectKo = o.effectKo; koFilled++; }
+    if (o.inheritedKo && !e.inheritedKo) { e.inheritedKo = o.inheritedKo; koFilled++; }
+  }
+} catch { /* no overrides file */ }
+if (koFilled) console.log(`ko-overrides applied: ${koFilled} fields`);
+
 writeFileSync(OUT_PATH, JSON.stringify(out));
 console.log(`Wrote ${Object.keys(out).length} cards to ${OUT_PATH.pathname}`);

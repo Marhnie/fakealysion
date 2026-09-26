@@ -199,7 +199,8 @@ sc('BT13-092::어택 시', async (ctx) => {
   const [id] = pl.trash.splice(k, 1);
   pl.deck.push(id);
   S.log(state, `${o} 트래시의 ${C(id).nameKo}을(를) 덱 아래로 되돌림`);
-  for (const s of pl.battle.filter(x => isDig(x) && C(x.cardId).nameKo === C(id).nameKo)) S.deleteStack(state, o, s.uid, 'trash', 'effect');
+  const retNames = S.cardNames(id); // idx1693/1694: "같은 명칭" — every name of the returned card (〈룰〉 aliases included) vs every name of the opp digimon; a plain same-name card only matches the exact name
+  for (const s of pl.battle.filter(x => isDig(x) && retNames.some(n => S.effectiveInfo(state, x, o).nameIs(n)))) S.deleteStack(state, o, s.uid, 'trash', 'effect');
 });
 // BT13-094 최민지 【등장 시】 상대의 턴 종료까지 자신의 디지몬 1마리는 「【소멸 시】 자신의 패/트래시에서 「피요몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.」의 효과를 얻는다. (generic compiled a bogus "패에서 아무 카드 등장" + truncated label at the nested 「」)
 SCRIPTS['BT13-094::등장 시'] = [{ op: 'grantText', trigger: 'delete', label: '자신의 패/트래시에서 「피요몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.', until: 'opponentTurn', side: 'self', all: false, n: 1 }];
@@ -207,8 +208,80 @@ SCRIPTS['BT13-094::등장 시'] = [{ op: 'grantText', trigger: 'delete', label: 
 sc('BT14-047::등장 시', async (ctx, R) => {
   await R.runOne({ op: 'rest', target: 'opponent', n: 1, digimonOnly: true }, ctx);
   const o = opp(ctx.self);
-  for (const s of ctx.state.players[o].battle.filter(x => isDig(x) && S.effectiveDP(ctx.state, o, x) <= 5000)) S.setSkipNextUnsuspend(ctx.state, o, s.uid);
+  S.addLateUnsuspendSkip(ctx.state, o, { kind: 'dpMax', dpMax: 5000 }); // idx1769: "DP 5000 이하의 상대의 디지몬 전부" — judged at the active phase (later DP changes / arrivals count)
 });
+// BT13-089 레이브몬 【자신의 턴 종료 시】 진화원에 특징으로 「조」/「새」/「병아리」를 포함하는 카드가 있는 이 디지몬을 소멸시키는 것으로, 다음 상대의 턴 종료 시에, 자신의 트래시에서 「레이브몬」 1장을 코스트를 지불하지 않고 등장시킬 수 있다.
+// (was a generic manualCost: the destroy-self cost was never actually paid — the free re-play got scheduled while the digimon stayed on the field). idx1690/1691.
+sc('BT13-089::자신의 턴 종료 시', async (ctx, R) => {
+  const { state } = ctx, st = me(ctx);
+  if (!st || !st.sources.some(id => (C(id).types || []).some(t => /조|새|병아리/.test(t)))) return;
+  if (!(await ask(ctx, '이 디지몬을 소멸시키고, 다음 상대의 턴 종료 시에 트래시에서 「레이브몬」 1장을 등장시킬까요?'))) return;
+  S.deleteStack(state, ctx.self, st.uid, 'trash', 'ownEffect');
+  if (findStack(state, ctx.self, st.uid)) return; // it survived (a replacement): the cost was not paid
+  await R.runOne({ op: 'atTurnEnd', when: 'opp', then: [{ op: 'playFree', who: 'self', zone: 'trash', filter: { exactAny: ['레이브몬'] }, rested: false, noTriggers: false, optional: true }] }, ctx);
+});
+// BT13-033 미라쥬가오가몬: 버스트 모드 【어택 시】 상대의 패가 9장 이상이라면, 상대의 패가 8장이 되도록 보지 않고 선택하여 덱 아래로 되돌리는 것으로, 이 디지몬을 액티브로 한다.
+// (was a manual cost). idx1641/1642: the effect's owner picks WITHOUT looking (the cards' owner may still look at his own hand until they go back) -> a blind pick = random cards, random order.
+sc('BT13-033::어택 시', async (ctx) => {
+  const { state } = ctx, o = opp(ctx.self), pl = state.players[o], st = me(ctx);
+  if (pl.hand.length < 9) return;
+  const k = pl.hand.length - 8;
+  for (let i = 0; i < k; i++) { const idx = Math.floor(Math.random() * pl.hand.length); const [id] = pl.hand.splice(idx, 1); pl.deck.push(id); }
+  S.log(state, `${o} 패 ${k}장을 (보지 않고 선택하여) 덱 아래로 되돌림`);
+  if (st) S.unsuspendStack(state, ctx.self, st.uid);
+});
+// BT13-108 엔드·왈츠 【메인】 상대의 턴 종료까지 자신의 디지몬 1마리는 「【상대의 턴】 이 디지몬이 레스트했을 때, 이 디지몬의 등장 코스트 이하의 상대의 디지몬 전부를 소멸시킨다.」와
+// 「【상대의 턴】 이 디지몬은 상대의 옵션 카드의 효과를 받지 않는다.」의 효과를 얻는다. (was a manual noop; two granted effects) — idx1714/1715: the option immunity also covers the option's 【시큐리티】 effect,
+// while the granted destroy effect is a DIGIMON effect (option immunity does not stop it).
+const BT13108_LABEL = '이 디지몬의 등장 코스트 이하의 상대의 디지몬 전부를 소멸시킨다.';
+sc('BT13-108::메인', async (ctx) => {
+  const { state } = ctx, mine = state.players[ctx.self];
+  const t = await pickStack(ctx, ctx.self, mine.battle.filter(isDig), '「효과」를 얻을 자신의 디지몬 선택');
+  if (!t) return;
+  const until = state.activePlayer === ctx.self ? state.turnNumber + 1 : state.turnNumber;
+  S.grantShield(state, ctx.self, t.uid, { kinds: ['all'], until, fromCategory: 'option' });
+  (t.s2Granted ||= []).push({ trigger: 'g:rest', label: BT13108_LABEL, until, turnTag: '상대의 턴', cardId: 'BT13-108' });
+  S.log(state, `${ctx.self} ${C(t.cardId).nameKo}: 상대의 턴 종료까지 「레스트했을 때 소멸」 효과와 「상대의 옵션 카드 효과를 받지 않음」을 얻음`);
+});
+SCRIPTS[`BT13-108::부여:${BT13108_LABEL}`] = [fn(async (ctx) => {
+  const { state } = ctx, st = findStack(state, ctx.self, ctx.sourceStackUid); if (!st) return;
+  const cost = C(st.cardId).cost ?? 0, o = opp(ctx.self);
+  for (const s of [...state.players[o].battle]) if (isDig(s) && (C(s.cardId).cost ?? 99) <= cost) S.deleteStack(state, o, s.uid, 'trash', 'effect');
+})];
+// BT12-088 (진화원) 【자신의 턴】 이 디지몬을 DP +2000. DP 10000 이상의 이 디지몬은 「【자신의 턴】[턴에 1회] 이 디지몬이 상대의 시큐리티를 체크했을 때, 메모리 +2.」의 효과를 얻는다.
+// (was a manual noop for the granted memory+2). idx1576-1578: DP >= 10000 is judged when the effect resolves (after the checked card's 【시큐리티】 effect, before the security battle).
+DI('BT12-088', '자신의 턴', '체크했을 때', { limit: 1, events: { securityChecked: (state, hp, h, info) => info.owner === hp && info.stack === h && S.effectiveDP(state, hp, h) >= 10000 } });
+sc('BT12-088::자신의 턴', async (ctx) => {
+  const h = me(ctx); if (!h || S.effectiveDP(ctx.state, ctx.self, h) < 10000) return;
+  S.grantMemory(ctx.state, ctx.self, 2, ctx.sourceCardId);
+});
+// BT14-088 흰수염 도사 【상대의 턴】 Lv.5 이상의 상대의 디지몬이 어택했을 때, 이 테이머를 레스트시키는 것으로, 육성 에어리어의 자신의 디지몬 1마리를 배틀 에어리어로 이동시킨다.
+// (was a generic manual noop). idx1816/1817: a DP-less raising digimon (Lv.2 / 위그드라실_7D6) cannot move; 마더 디·리퍼 (has DP) can. An effect-move is not the once-per-breeding-phase action.
+sc('BT14-088::상대의 턴', async (ctx) => {
+  const { state } = ctx, pl = state.players[ctx.self];
+  if (!pl.raising) return;
+  const saved = state.breedingActionTaken; state.breedingActionTaken = false;
+  try { S.moveRaisingToBattle(state, ctx.self); } finally { state.breedingActionTaken = saved; }
+});
+// BT14-030 마린엔젤몬 【등장 시/진화 시】 Lv.3의 상대의 디지몬 1마리 또는 자신의 디지몬 1마리를 패로 되돌리는 것으로, 되돌린 디지몬의 Lv. 이하의 상대의 디지몬 1마리를 패로 되돌린다.
+// (was a generic manualCost). idx1753-1757: any own digimon is legal; a Lv-less returned card (마더 디·리퍼 / token) still pays the cost but leaves no Lv to reference -> no second bounce.
+sc('BT14-030::등장 시', async (ctx, R) => {
+  const { state } = ctx, mine = ctx.self, o = opp(mine);
+  const entries = [];
+  for (const s of state.players[o].battle) if (isDig(s) && C(s.cardId).level === 3 && !S.effectBlocked(state, o, s, 'bounce')) entries.push({ player: o, uid: s.uid });
+  for (const s of state.players[mine].battle) if (isDig(s) || C(s.cardId).category === 'digitama') entries.push({ player: mine, uid: s.uid });
+  if (!entries.length) return;
+  const pick = entries.length === 1 ? entries[0] : await ctx.choose('pickStackAnySide', { entries, prompt: '패로 되돌릴 Lv.3의 상대 디지몬 또는 자신의 디지몬 선택 (취소 = 비용을 지불하지 않음)' });
+  if (!pick) return;
+  const st = findStack(state, pick.player, pick.uid); if (!st) return;
+  const lv = C(st.cardId).level ?? null;
+  ctx._lastPick = { player: pick.player, uid: pick.uid };
+  await R.runOne({ op: 'returnToHandStripSources', last: true, target: pick.player === mine ? 'self' : 'opponent' }, ctx);
+  if (findStack(state, pick.player, pick.uid)) return; // it did not leave: the cost was not paid
+  if (lv == null) { S.log(state, `${mine} 되돌린 카드가 Lv.를 가지지 않아 Lv.를 참조할 수 없음 — 상대의 디지몬을 되돌리지 못함`); return; }
+  await R.runOne({ op: 'returnToHandStripSources', target: 'opponent', n: 1, filter: { levelMax: lv } }, ctx);
+});
+SCRIPTS['BT14-030::진화 시'] = SCRIPTS['BT14-030::등장 시'];
 SCRIPTS['BT14-047::진화 시'] = SCRIPTS['BT14-047::등장 시'];
 // BT14-049 릴리몬 【등장 시】【진화 시】 상대의 디지몬 1마리를 레스트시킨다. 그 후, DP 5000 이하의 레스트 상태인 상대의 디지몬 1마리를 덱 아래로 되돌릴 수 있다.
 sc('BT14-049::등장 시', async (ctx, R) => {
