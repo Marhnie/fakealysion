@@ -105,10 +105,15 @@ export function reset() {
 // this caught live): if the normal Set/Map-aware stringify throws, retry once with a plain circular-safe
 // replacer so one bad field drops silently instead of losing the whole message (and the connection looking dead).
 function safeStringify(obj) {
-  const seen = new WeakSet();
-  return JSON.stringify(obj, (k, v) => {
-    if (v && typeof v === 'object') { if (seen.has(v)) return undefined; seen.add(v); }
+  // 진짜 순환(자기 조상을 다시 가리키는 것)만 끊는다 — 같은 배열을 두 군데서 참조하는 정상적인 공유(예: pa.res.checks === pa.secCtl.results)는 그대로 둔다
+  const stack = [];
+  return JSON.stringify(obj, function (k, v) {
     if (typeof v === 'function') return undefined;
+    if (v && typeof v === 'object') {
+      while (stack.length && stack[stack.length - 1] !== this) stack.pop();
+      if (stack.includes(v)) return undefined;
+      stack.push(v);
+    }
     return v;
   });
 }
@@ -175,10 +180,28 @@ export function buildSnapshot(state, forSeat) {
 // sel.pendingAttack travels separately (it isn't part of `state` at all — see design doc). Strips the two
 // function fields (fireDeclare/terminate) explicitly since this object is sent as-is, not through SN.stringify's
 // top-level dataOf-style pass — JSON.stringify would drop them too, but being explicit documents the intent.
-export function buildPa(pa) {
+export function buildPa(pa, state, forSeat = 'p2') {
   if (!pa) return null;
   const { fireDeclare, terminate, ...rest } = pa;
-  return rest;
+  // 카운터 후보(pa.counters)는 수비측 패에서 뽑은 카드 목록 — 수비측이 이 화면의 주인이 아니면 상대 패를 들여다보는 셈이라 비워서 보낸다
+  if (pa.opp !== forSeat) rest.counters = [];
+  // 공격 진행 객체 안쪽(예: 시큐리티 체크 컨트롤러 secCtl.state)이 호스트의 "엔진 전체 상태"를 그대로 물고 있다 — 그대로 보내면
+  // 순환 참조로 전송이 깨지는 데다 대체 직렬화가 호스트의 패/덱까지 게스트에게 흘려보낸다. 상태 자신을 가리키는 참조는 전부 제거한다.
+  const done = new Map();
+  const scrub = (o, depth) => {
+    if (!o || typeof o !== 'object') return o;
+    if (done.has(o)) return done.get(o);
+    if (depth > 6) return undefined;
+    const out = Array.isArray(o) ? o.slice() : { ...o };
+    done.set(o, out);
+    for (const k of Object.keys(out)) {
+      const v = out[k];
+      if (state && v === state) delete out[k];
+      else if (v && typeof v === 'object') out[k] = scrub(v, depth + 1);
+    }
+    return out;
+  };
+  return scrub(rest, 0);
 }
 
 // Host: call once per render() while connected. No-op if not connected yet (guest simply gets the next one).
@@ -187,7 +210,7 @@ export function buildPa(pa) {
 // driven by plain main.js module variables rather than `state`).
 export function broadcastState(state, pa, extra) {
   if (NET.role !== 'host' || !NET.connected) return;
-  send({ t: 'state', state: buildSnapshot(state, 'p2'), pa: buildPa(pa), ...extra });
+  send({ t: 'state', state: buildSnapshot(state, 'p2'), pa: buildPa(pa, state), ...extra });
 }
 
 // Guest: turn a received {t:'state', state, pa, ...extra} message into a live state object ready for main.js's

@@ -147,8 +147,18 @@ function netApplyIntent(action, args) {
   // 조작으로 바뀔 수 있으니, args가 주장하는 자리를 그대로 믿지 않고 실제 접속 자리로 강제한다 (호스트 자신의 결정을 게스트가
   // 원격으로 가로채 대신 눌러버리는 것을 막는다 — renderMulliganStage/renderModal의 화면단 가림과 짝을 이루는 서버측 검증).
   const guestSeat = S.opponentOf(Net.NET.mySeat);
+  // 게스트가 보낸 의도 중 "어느 자리가 하는 행동인지"를 명시한 인자(첫 번째 또는 playFreshFromDrag의 두 번째)는 반드시 게스트 자리여야 한다
+  const seatArg = action === 'playFreshFromDrag' ? args[1] : args[0];
+  if (typeof seatArg === 'string' && /^p[12]$/.test(seatArg) && seatArg !== guestSeat) { console.warn('netplay: rejected intent for the wrong seat', action, seatArg); return; }
   try {
     if (action === 'mulligan') { const p = guestSeat; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'zoneMain') {
+      const [zp, zone, zidx] = args;
+      const abs = [...S.zoneMainAbilities(state, zp, 'hand').map(x => ({ ...x, zone: 'hand' })), ...S.zoneMainAbilities(state, zp, 'trash').map(x => ({ ...x, zone: 'trash' }))];
+      const a = abs.find(x => x.zone === zone && x.idx === zidx);
+      if (a && !blockIfBusy()) state.pending.push({ uid: 'zmain' + Math.random().toString(36).slice(2), player: zp, cardId: a.cardId, stackUid: null, tags: a.tags, text: a.text, resolved: false, zoneMain: a.zone, zoneIdx: a.idx });
+      render(); return;
+    }
     if (action === 'jogressCancel') { jogressModal = null; render(); return; }
     if (action === 'jogress') { jogressModal = null; }
     if (action === 'surrender') { E.surrender(state, guestSeat); render(); return; }
@@ -1982,6 +1992,7 @@ function renderPlayerPanel(p) {
       return abs.length ? [h('div', { className: 'actions-row' }, abs.map(a => h('button', {
         className: 'delay-btn main-btn', title: `【메인】 ${a.text.replace(/\n/g, ' ')}`,
         onClick: () => {
+          if (netIntercept('zoneMain', [p, a.zone, a.idx])) return;
           if (blockIfBusy()) return;
           state.pending.push({ uid: 'zmain' + Math.random().toString(36).slice(2), player: p, cardId: a.cardId, stackUid: null, tags: a.tags, text: a.text, resolved: false, zoneMain: a.zone, zoneIdx: a.idx });
           render();
@@ -2086,6 +2097,7 @@ function val(id) { return Number(document.getElementById(id)?.value || 0); }
 // large share of card text, and leaves everything else for manual handling
 // via the generic tools (which stay visible either way).
 function quickApplyButtonsFor(text, player) {
+  if (Net.NET.role === 'guest') return []; // 온라인: 즉석 적용 버튼은 상태를 직접 바꾸는 수동 도구라 호스트에서만
   const opp = S.opponentOf(player);
   const btns = [];
   let m;
@@ -2144,7 +2156,7 @@ async function ctxChoose(kind, payload) {
     // Presentation order: activation VFX (banner / play flourish) FIRST, then the modal. `hold` keeps the choice registered (engine-side
     // busy checks still see it) but renderModal draws nothing until the fx timeline is idle (hard timeout inside fxWhenIdle).
     const st = state;
-    const uc = { kind, payload, hold: false, by: cpuOn ? Cpu.deciderFor(st, kind, payload, { pendingOwner: cpuPendingOwner(), override: cpuActing ? CPU_P : null }) : null, resolve: (val) => { if (st.uiChoice === uc) st.uiChoice = null; resolve(val); if (state) render(); } };
+    const uc = { kind, payload, hold: false, by: (cpuOn || Net.NET.role) ? Cpu.deciderFor(st, kind, payload, { pendingOwner: cpuPendingOwner() || (Net.NET.role && payload && payload._self) || undefined, override: cpuActing ? CPU_P : null }) : null, resolve: (val) => { if (st.uiChoice === uc) st.uiChoice = null; resolve(val); if (state) render(); } };
     st.uiChoice = uc;
     try {
       const rec = st._fxRec;
@@ -2423,7 +2435,7 @@ function renderPendingEffects() {
           ? h('span', { className: 'meta' }, t.uid === runningPendingUid ? '▶ 처리 중…' : t.resolved ? '완료' : `⏳ 대기 중 (순서 ${state.pending.filter(x => !x.resolved && scriptFor(x).length).indexOf(t) + 1})`)
           : h('span', { className: 'meta' }, '자동 인식 실패 — 아래 버튼이나 범용 도구로 수동 처리'),
         ...quickApplyButtonsFor(t.text, t.player),
-        h('button', { className: 'danger', onClick: () => { S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
+        h('button', { className: 'danger', onClick: () => { if (netIntercept('closePending', [t.uid])) return; S.resolvePending(state, t.uid); render(); } }, '처리 완료 (닫기)'),
       ]),
     ]);
   });
@@ -2700,12 +2712,12 @@ function renderActions() {
     ]));
   }
 
-  rows.push(h('div', {
+  if (Net.NET.role !== 'guest') rows.push(h('div', { // 온라인: 범용 도구(수동 상태 조작)는 호스트에서만
     className: 'section-title clickable',
     onClick: () => { panelsOpen.advancedTools = !panelsOpen.advancedTools; render(); },
   }, `${panelsOpen.advancedTools ? '▼' : '▶'} 범용 도구 (카드 효과 수동 처리용 — 평소엔 접어두세요)`));
 
-  if (panelsOpen.advancedTools) {
+  if (panelsOpen.advancedTools && Net.NET.role !== 'guest') {
     rows.push(h('div', { className: 'actions-row' }, [
       h('span', {}, '대상'),
       ...['p1', 'p2'].map(p => h('button', { className: sel.player === p ? 'primary' : '', onClick: () => { sel.player = p; render(); } }, p)),
