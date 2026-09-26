@@ -149,6 +149,8 @@ function netApplyIntent(action, args) {
   const guestSeat = S.opponentOf(Net.NET.mySeat);
   try {
     if (action === 'mulligan') { const p = guestSeat; E.mulligan(state, p); mulliganDealFlash[p] = true; mulliganDecided[p] = true; afterMulliganCheck(); return; }
+    if (action === 'jogressCancel') { jogressModal = null; render(); return; }
+    if (action === 'jogress') { jogressModal = null; }
     if (action === 'surrender') { E.surrender(state, guestSeat); render(); return; }
     if (action === 'keepHand') { const p = guestSeat; mulliganDecided[p] = true; afterMulliganCheck(); return; }
     if (action === 'answer') {
@@ -199,6 +201,7 @@ function netOnState(msg) {
   netCanonicalize(rev.state, state);
   state = rev.state;
   if (rev.mulliganDecided) mulliganDecided = rev.mulliganDecided;
+  jogressModal = rev.jogressModal; // 조그레스 재료 선택창은 호스트 로컬 UI 상태라, 게스트 몫이면 호스트가 실어 보낸다
   sel.pendingAttack = rev.pa;
   cpuOn = false; // an online match is never also a CPU match
   if (state.phase === 'setup') renderMulliganStage(); else render();
@@ -209,7 +212,7 @@ Net.NET.onState = netOnState;
 // attack in progress" value on the wire too).
 function netBroadcast() {
   if (Net.NET.role !== 'host' || !state) return;
-  Net.broadcastState(state, sel.pendingAttack, { mulliganDecided: { ...mulliganDecided } });
+  Net.broadcastState(state, sel.pendingAttack, { mulliganDecided: { ...mulliganDecided }, jogressModal: jogressModal && jogressModal.player === S.opponentOf(Net.NET.mySeat) ? jogressModal : null });
   // 패 추가/소멸 표시는 "한 번 보이고 지워지는" 플래그라 호스트 렌더가 이미 지웠다 — 그 값을 netXxx에 모아 두었다가 한 번 보낸 뒤 비운다
   for (const q of ['p1', 'p2']) if (state.players[q]) state.players[q].netDrawFlash = 0;
   state.netVanish = null;
@@ -1629,6 +1632,7 @@ async function runJogress(p, uidA, uidB, cardId) {
 function renderJogressModal() {
   const m = jogressModal;
   if (!m) return null;
+  if (Net.NET.role && m.player !== Net.NET.mySeat) return null; // 온라인: 상대 자리의 조그레스 창은 내 화면에 띄우지 않는다
   const p = m.player, info = jogressInfo(p, m.cardId);
   if (!info || !info.pairs.length || state.activePlayer !== p || state.phase !== 'main' || !state.players[p].hand.includes(m.cardId)) { jogressModal = null; return null; }
   const pre = m.preUid ? info.pairs.filter(x => x.top.uid === m.preUid || x.bottom.uid === m.preUid) : [];
@@ -1672,7 +1676,7 @@ function renderJogressModal() {
     ...rows,
     h('div', { className: 'actions-row' }, [
       filtered ? h('button', { onClick: () => { m.showAll = true; render(); } }, `다른 조합도 보기 (${info.pairs.length}개)`) : null,
-      h('button', { onClick: () => { jogressModal = null; render(); } }, '취소'),
+      h('button', { onClick: () => { jogressModal = null; if (netIntercept('jogressCancel', [])) { render(); return; } render(); } }, '취소'),
     ].filter(Boolean)),
   ]);
 }

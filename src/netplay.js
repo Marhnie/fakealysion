@@ -200,5 +200,5 @@ export function reviveIncoming(msg) {
     const { kind, payload, by } = state.uiChoice;
     state.uiChoice = { kind, payload, by, resolve: (val) => sendIntent('answer', [val]) };
   }
-  return { state, pa: msg.pa || null, mulliganDecided: msg.mulliganDecided || null };
+  return { state, pa: msg.pa || null, mulliganDecided: msg.mulliganDecided || null, jogressModal: msg.jogressModal || null };
 }
