@@ -13,7 +13,7 @@ export const HOOKS = {};
 // ------------------------------------------------------------------ helpers
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const digs = (state, p) => state.players[p].battle.filter(isDig);
 const tams = (state, p) => state.players[p].battle.filter(isTam);
@@ -139,6 +139,7 @@ async function evolveInto(ctx, { stacks, zone = 'hand', pred, cost = { mode: 'no
 }
 // run one of `stack`'s own <tag> effects (top card's, plus inherited ones from its sources) as that Digimon's effect ("【소멸 시】 효과 1개를 발휘한다")
 async function runTagOf(ctx, R, stack, tag, owner = ctx.self) {
+  if (tag.includes('등장 시') && S.borrowerPlayTrigBlocked(ctx.state, ctx.self, ctx.sourceStackUid || stack.uid)) return false; // unres-A (6) BT20-037: Q4350
   const Fx = await import('../effects.js');
   const opts = [];
   const add = (id, src) => { for (const sg of S.parseEffectSegments(C(id)[src] || '').segments) if (sg.tags.some(t => t.includes(tag)) && !/^[≪《]\s*딜레이/.test(sg.body.trim())) opts.push({ id, sg }); };

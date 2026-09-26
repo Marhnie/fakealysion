@@ -9,7 +9,7 @@ export const HOOKS = {};
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; };
-const digs = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
+const digs = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 const fn = (f) => ({ op: 's66_fn', fn: f });
 OPS.s66_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };

@@ -14,7 +14,7 @@ OPS.s42_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
 const HK = (id, d) => { (HOOKS[id] ||= []).push(d); };
 const hasT = (c, ...ts) => ts.some(t => (c.types || []).includes(t));
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const digs = (state, p) => state.players[p].battle.filter(isDig);
 const tams = (state, p) => state.players[p].battle.filter(isTam);

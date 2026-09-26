@@ -15,7 +15,7 @@ const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const findSt = (state, p, uid) => stacksOf(state, p).find(s => s.uid === uid) || null;
 const meOf = (ctx) => findSt(ctx.state, ctx.self, ctx.sourceStackUid);
-const isDig = (s) => C(s.cardId).category === 'digimon';
+const isDig = (s) => S.isDigimonLike(s);
 // w4 recheck2 (official Q&A 2892 BT17-098 / 4958 BT24-093 / 1247 BT9-083 / 6497 EX13-032): 「겹쳐져 있는 카드」 exists only when at least one (face-up) card lies under the top card; a lone card has none
 const hasUnder = (s) => s.sources.length - S.fdCount(s) >= 1;
 const ask = async (ctx, prompt, who) => !!(await ctx.choose('confirmEffect', { player: who || ctx.self, prompt }));

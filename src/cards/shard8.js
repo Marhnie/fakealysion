@@ -394,7 +394,11 @@ OPS.s8_costThen = async (i, ctx, run) => {
   await run.runScript(i.then || [], ctx);
 };
 // { test:(ctx)=>bool, then:[...], else:[...] } — arbitrary JS condition
-OPS.s8_if = async (i, ctx, run) => { await run.runScript(i.test(ctx) ? (i.then || []) : (i.else || []), ctx); };
+OPS.s8_if = async (i, ctx, run) => {
+  const yes = i.test(ctx);
+  if (!yes && i.sole && !(i.else || []).length) { ctx._declined = true; ctx._costUnpaid = true; return; } // unresolved-b Q3 (Q1431 pattern): a sole leading condition that is unmet = the effect never activated (no 〔턴에 1회〕 use)
+  await run.runScript(yes ? (i.then || []) : (i.else || []), ctx);
+};
 
 
 // ---------------------------------------------------------------- evolve / play / use / link ops
@@ -480,10 +484,12 @@ OPS.s8_playOrUse = async (i, ctx) => {
     let cost = wantsFree ? 0 : Math.max(0, (C(id).cost || 0) + (dl < 0 && playLocked ? 0 : dl) + selfDc); // slice6: 「지불하는 등장 코스트를 마이너스할 수 없다」 (ST12-03)
     // W9r2 official Q6098 (AD1-019 + ST21-13): a PAID effect-play of a digimon from the hand also gets the continuous play-cost reductions that a normal hand play gets (tamer "이 테이머를 레스트시키는 것으로 지불하는 코스트 -N", trait discounts)
     if (cost > 0 && z === 'hand' && ucat(id) === 'digimon' && !playLocked) cost = Math.max(0, cost + S.tamerPlayCostDiscount(state, ctx.self, id) + S.traitPlayCostDiscount(state, ctx.self, id) + S.s1PlayDiscount(state, ctx.self, id));
-    const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, k, cost > 0) : {}; // 7-2-2-13 (paid play: 《어셈블리》 too — P-205 Q4665)
+    let hk = k; // Q3699: hook play-cost options (EX6-006 …) also apply to a PAID effect-play from the hand
+    if (cost > 0 && z === 'hand' && ucat(id) === 'digimon' && !playLocked) { const hd = await S.effectPlayHookDiscount(state, ctx.self, id, (kd, pd) => ctx.choose(kd, pd)); if (hd) cost = Math.max(0, cost + hd); hk = pl.hand[k] === id ? k : pl.hand.indexOf(id); if (hk < 0) hk = k; }
+    const xo = ucat(id) === 'digimon' ? await FX_HELPERS.xrosOptsFor(ctx, ctx.self, z, hk, cost > 0) : {}; // 7-2-2-13 (paid play: 《어셈블리》 too — P-205 Q4665)
     if (cost > 0 && !playLocked) cost = Math.max(0, cost - ((xo.materials || []).length ? (S.parseDigiXros(id)?.per || 0) * xo.materials.length : 0) - (xo.asmDiscount || 0)); // 디지크로스/어셈블리는 등장 코스트를 더 내린다
     if (cost > 0) S.spendMemory(state, cost);
-    const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, k, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
+    const st = z === 'hand' ? S.playDigimonFresh(state, ctx.self, hk, xo) : S.playFreeFromZone(state, ctx.self, z, k, xo);
     if (st) { st.byEffect = { kind: 'play', effect: true, turn: state.turnNumber }; S8(ctx).played = true; }
     return;
   }
@@ -1396,3 +1402,5 @@ OPS.s8_jogressOrLeave = async (i, ctx) => {
 };
 SCRIPTS['EX12-003::서로의 턴'] = [{ op: 's8_jogressOrLeave' }];
 for (const s of Object.values(SCRIPTS)) if (Array.isArray(s) && s.length === 1 && s[0] && s[0].op === 's8_costThen') s[0].sole = true; // W9r2: see s8_costThen
+// unresolved-b Q3: the same for a lone leading s8_if (no else) whose only then-op is a cost — [s8_if > s8_costThen] (ST23-04/08, BT26-074 …)
+for (const s of Object.values(SCRIPTS)) if (Array.isArray(s) && s.length === 1 && s[0] && s[0].op === 's8_if' && !(s[0].else || []).length && s[0].then && s[0].then.length === 1 && s[0].then[0].op === 's8_costThen') { s[0].sole = true; s[0].then[0].sole = true; }

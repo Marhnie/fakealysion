@@ -13,7 +13,7 @@ const log = (ctx, msg) => S.log(ctx.state, msg);
 const fn = (f) => ({ op: 's73_fn', fn: f });
 OPS.s73_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
-const digs = (ctx, who) => ctx.state.players[who].battle.filter(s => C(s.cardId).category === 'digimon');
+const digs = (ctx, who) => ctx.state.players[who].battle.filter(s => S.isDigimonLike(s));
 async function pickOne(ctx, list, prompt) {
   if (!list.length) return null;
   const uid = await ctx.choose('pickStack', { player: ctx.self, uids: list.map(s => s.uid), prompt });

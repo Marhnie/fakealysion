@@ -8,7 +8,7 @@ export const HOOKS = {};
 
 OPS.s18_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [{ op: 's18_fn', fn: f }]; };
-const opDigs = (ctx) => ctx.state.players[ctx.opp].battle.filter(s => S.card(s.cardId).category === 'digimon');
+const opDigs = (ctx) => ctx.state.players[ctx.opp].battle.filter(s => S.isDigimonLike(s));
 
 // BT8-101 플라즈마 슛 【메인】 이 턴 동안 상대 디지몬 1마리를 DP-4000 하고, 자신의 트래시의 특징으로 「아머체」를 가진 카드 1장마다 상대의 디지몬 전부를 DP-1000.
 sc('BT8-101::메인', async (ctx) => {
@@ -30,7 +30,7 @@ SCRIPTS['BT5-094::메인'] = [
 ];
 
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
-const digsOf = (state, p) => state.players[p].battle.filter(s => S.card(s.cardId).category === 'digimon');
+const digsOf = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 const tamsOf = (state, p) => state.players[p].battle.filter(s => S.card(s.cardId).category === 'tamer');
 const pick = async (ctx, list, prompt) => { if (!list.length) return null; const uid = list.length === 1 ? list[0].uid : await ctx.choose('pickStack', { player: ctx.self, uids: list.map(s => s.uid), prompt }); return list.find(s => s.uid === uid) || null; };
 

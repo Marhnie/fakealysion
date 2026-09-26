@@ -8,7 +8,7 @@ export const HOOKS = {};
 const C = (id) => S.card(id);
 const PL = (ctx, p) => ctx.state.players[p];
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find((s) => s.uid === uid) || null; };
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const mentions = (id, n) => S.cardMentions(id, n);
 const sc = (key, f) => { SCRIPTS[key] = [{ op: 's150_fn', fn: f }]; };
 OPS.s150_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };

@@ -20,7 +20,7 @@ async function pickOne(ctx, who, stacks, prompt) {
   const uid = await ctx.choose('pickStack', { player: who, uids: stacks.map((s) => s.uid), prompt });
   return stacks.find((s) => s.uid === uid) || null;
 }
-const digs = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
+const digs = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 const tams = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'tamer');
 
 // BT18-083 【서로의 턴】 이 디지몬의 DP 이하의 디지몬 전부는 《충돌》을 얻는다 (both sides' digimon; grantKwAny lets the hook grant across players).

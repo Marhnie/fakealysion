@@ -6,7 +6,7 @@ export const OPS = {};
 export const HOOKS = {};
 
 OPS.c74_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
-const digs = (state, p) => state.players[p].battle.filter(s => S.card(s.cardId).category === 'digimon');
+const digs = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 
 // BT2-049 피노키몬 【등장 시】 상대의 디지몬 1마리를 레스트시킨다. 다음 상대의 액티브 페이즈에서는, 상대의 디지몬 전부는 액티브가 되지 않는다.
 // (Q1019: not only the digimon rested by this effect; Q1020: digimon that were active are not rested by it; Q1021: tamers are unaffected.)

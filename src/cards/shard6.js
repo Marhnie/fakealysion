@@ -21,7 +21,7 @@ const isDigimon = (id) => C(id).category === 'digimon';
 const stackList = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const findSt = (state, p, uid) => stackList(state, p).find(s => s.uid === uid) || null;
 const ownerOf = (state, st) => ['p1', 'p2'].find(p => stackList(state, p).includes(st)) || null;
-const digimonsOf = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
+const digimonsOf = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 const tamersOf = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'tamer');
 const srcSt = (ctx) => findSt(ctx.state, ctx.self, ctx.sourceStackUid);
 const cnt = (arr, f) => arr.filter(f).length;
@@ -418,7 +418,7 @@ SC('P-191', '등장 시', '올림포스 12신', RUN(async (ctx, R) => {
 // #0 EX9-073
 SC('EX9-073', '등장 시', '놓은 카드의 【등장 시】 효과 1개를', RUN(async (ctx, R) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me], st = srcSt(ctx);
-  if (!st) return;
+  if (!st || S.borrowerPlayTrigBlocked(state, me, st.uid)) return; // unres-A (6) BT20-037: Q4351/4353 — nothing (also not the 「놓는 것으로」 part) while 【등장 시】 is suppressed
   const cm = M({ lv: 5, trait: ['사이보그형', 'Ver.5'] });
   const zs = ['hand', 'trash'].filter(z => pl[z].some(cm));
   if (!zs.length || !(await optional(ctx, me, 'EX9-073: 패/트래시의 카드를 진화원 위에 놓고 【등장 시】 효과를 발휘'))) return;
@@ -1116,6 +1116,7 @@ SC('EX10-062', '자신의 턴 종료 시', '어플 합체할 수 있다', RUN(as
 // #118 BT23-060 어택 시
 SC('BT23-060', '어택 시', '앞면의 디지몬 카드 1장의 【등장 시】 효과', RUN(async (ctx, R) => {
   const { state } = ctx, me = ctx.self, pl = state.players[me];
+  if (S.borrowerPlayTrigBlocked(state, me, ctx.sourceStackUid)) return; // unres-A (6) BT20-037: Q4351
   const ups = faceUpIds(pl).filter(id => isDigimon(id) && (C(id).types || []).includes('잭슨'));
   if (!ups.length) { S.log(state, '앞면의 「잭슨」 디지몬 카드가 없음'); return; }
   const r = await pickFromIds(ctx, me, ups, () => true, '【등장 시】 효과를 발휘할 앞면의 시큐리티 카드 선택');
@@ -1158,6 +1159,7 @@ SC('BT23-101', '등장 시', '특징 「후디에」를 가진 자신의 디지�
 // #124 BT23-101 어택 시
 SC('BT23-101', '어택 시', '특징 「CS」를 가진 자신의 테이머 1명을 패로 되돌리는 것으로', RUN(async (ctx, R) => {
   const { state } = ctx, me = ctx.self;
+  if (S.borrowerPlayTrigBlocked(state, me, ctx.sourceStackUid)) return; // unres-A (6) BT20-037: Q4350/4353 — the 「것으로」 cost is not paid either
   const tams = tamersOf(state, me).filter(stM({ trait: ['CS'] }));
   if (!tams.length || !(await optional(ctx, me, 'CS 테이머 1명을 패로 되돌리고 【등장 시】 효과 1개를 발휘'))) return;
   const t = await pickStackOf(ctx, me, tams, '패로 되돌릴 CS 테이머 선택');
@@ -1331,7 +1333,7 @@ SC('ST22-13', '어택 시', '액티브 상태인 상대의 디지몬이 없다�
 // ==================================================================== SECTION 5: continuous / replacement / event hooks
 // (HOOKS descriptors are consumed by state.js — see activeHooks / dispatchHookEvents / hookPreventLeave …)
 const isTam = (st) => C(st.cardId).category === 'tamer';
-const isDig = (st) => C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const hasTr = (st, t) => (C(st.cardId).types || []).includes(t);
 const askPick = (cands, label) => { for (const c of cands) if (askSync(label(c))) return c; return null; };
 // A leave/delete replacement: `fn(state,hp,holder,target,tp,cause,mode,once)` returns true when the leave was prevented.

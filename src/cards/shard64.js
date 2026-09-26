@@ -115,7 +115,7 @@ sc('P-142::등장 시', async (ctx, R) => {
 });
 
 // ---- shared helpers for "place a digimon/tamer of either side into a security stack" costs
-const digsOf = (state, p) => state.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
+const digsOf = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 function detachToTrash(state, p, st) { // the stack leaves the battle area; its evolution/link cards go to the trash, the top card is returned
   const pl = state.players[p], i = pl.battle.indexOf(st); if (i === -1) return null;
   pl.battle.splice(i, 1);

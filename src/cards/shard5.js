@@ -11,7 +11,7 @@ export const HOOKS = {};
 // ------------------------------------------------------------------ helpers
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const digs = (state, p) => state.players[p].battle.filter(isDig);
@@ -177,9 +177,11 @@ async function playDiscounted(ctx, pred, discount, prompt) {
   let xo = {};
   try { const Fx = await import('../effects.js'); xo = await Fx.xrosOptsFor(ctx, who, 'hand', idx, true); } catch (e) { xo = {}; }
   const xrosCut = S.isPlayCostLocked(state) ? 0 : ((xo.materials && xo.materials.length) ? (S.parseDigiXros(pl.hand[idx])?.per || 0) * xo.materials.length : 0) + (xo.asmDiscount || 0);
-  const cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - eff - xrosCut);
+  let cost = Math.max(0, (C(pl.hand[idx]).cost || 0) - eff - xrosCut);
+  let pidx = idx; // Q3699: hook play-cost options (EX6-006 …) also apply to a paid effect-play
+  if (cost > 0 && !S.isPlayCostLocked(state) && C(pl.hand[idx]).category === 'digimon') { const id0 = pl.hand[idx]; const hd = await S.effectPlayHookDiscount(state, who, id0, (kd, pd) => ctx.choose(kd, pd)); if (hd) cost = Math.max(0, cost + hd); pidx = pl.hand[idx] === id0 ? idx : pl.hand.indexOf(id0); if (pidx < 0) pidx = idx; }
   if (cost > 0) S.spendMemory(state, cost);
-  return S.playDigimonFresh(state, who, idx, xo);
+  return S.playDigimonFresh(state, who, pidx, xo);
 }
 
 // a card can only be jogress-evolved into when it actually has a 〔조그레스〕 line (S.canJogress is permissive for cards without one)

@@ -64,7 +64,7 @@ sc('BT10-068::진화 시', async (ctx, R) => {
   if (!cond) return;
   const until = ctx.state.activePlayer === ctx.self ? ctx.state.turnNumber + 1 : ctx.state.turnNumber;
   await R.runOne({ op: 'modifyDPAll', target: 'self', amount: 2000, duration: 'nextOpponentTurn' }, ctx);
-  for (const s of pl.battle.filter(x => C(x.cardId).category === 'digimon')) {
+  for (const s of pl.battle.filter(x => S.isDigimonLike(x))) {
     // 'dpDown' shield (not the ad hoc s1.noNegDP flag): goes through grantGate/effectBlocked, so a negative DP already
     // applied by an OPPONENT's effect before this resolves is retroactively undone (settleDeferred) — matching the
     // official ruling ("DP가 마이너스되지 않는다" restores original DP, then this effect's own +2000 applies on top).
@@ -93,7 +93,7 @@ sc('BT10-025::메인', async (ctx) => {
 });
 
 // ================= continuous / event hooks (BT10-/BT11-/BT12-) =================
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const ownerOf = (state, st) => ['p1', 'p2'].find(p => state.players[p].battle.includes(st) || state.players[p].raising === st) || null;
 const digsOf = (state, p) => state.players[p].battle.filter(isDig);
 const trIncl = (id, ...ts) => (C(id).types || []).some(t => ts.some(x => t.includes(x)));

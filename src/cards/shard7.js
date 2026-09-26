@@ -15,7 +15,7 @@ export const HOOKS = {};
 const C = (id) => S.card(id);
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
-const digimonsOf = (state, p) => state.players[p].battle.filter((s) => C(s.cardId).category === 'digimon');
+const digimonsOf = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 const tamersOf = (state, p) => state.players[p].battle.filter((s) => C(s.cardId).category === 'tamer');
 const findSt = (state, p, uid) => stacksOf(state, p).find((s) => s.uid === uid) || null;
 const ownerOf = (state, st) => ['p1', 'p2'].find((p) => stacksOf(state, p).includes(st)) || null;

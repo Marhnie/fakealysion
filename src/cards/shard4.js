@@ -14,7 +14,7 @@ const areaOf = (st, p) => [st.players[p].raising, ...st.players[p].battle].filte
 const stackByUid = (st, p, uid) => (uid ? areaOf(st, p).find(s => s.uid === uid) || null : null);
 const findStackAny = (st, uid) => { for (const p of ['p1', 'p2']) { const s = stackByUid(st, p, uid); if (s) return { p, s }; } return null; };
 const ownerOf = (st, stack) => ['p1', 'p2'].find(p => areaOf(st, p).includes(stack)) || null;
-const digimonOf = (st, p) => st.players[p].battle.filter(s => C(s.cardId).category === 'digimon');
+const digimonOf = (st, p) => st.players[p].battle.filter(s => S.isDigimonLike(s));
 const tamersOf = (st, p) => st.players[p].battle.filter(s => C(s.cardId).category === 'tamer');
 const digiOrTamer = (st, p) => st.players[p].battle.filter(s => ['digimon', 'tamer'].includes(C(s.cardId).category));
 const thisStack = (ctx) => stackByUid(ctx.state, ctx.self, ctx.sourceStackUid);
@@ -309,9 +309,11 @@ OPS.s4_play = async (instr, ctx) => {
     const i = await pickIdx(ctx, p, z, (id) => ['digimon', 'tamer'].includes(C(id).category) && (!instr.pred || instr.pred(id, ctx)), instr.prompt || `${z === 'trash' ? '트래시' : z === 'hand' ? '패' : '시큐리티'}에서 등장시킬 카드 선택`);
     if (i == null) continue;
     const id = pl[z][i];
-    const cost = instr.costDelta == null ? 0 : Math.max(0, (C(id).cost || 0) + instr.costDelta);
+    let cost = instr.costDelta == null ? 0 : Math.max(0, (C(id).cost || 0) + instr.costDelta);
+    let pi = i; // Q3699: hook play-cost options (EX6-006 …) also apply to a paid effect-play from the hand
+    if (cost > 0 && z === 'hand' && C(id).category === 'digimon' && !S.isPlayCostLocked(st)) { const hd = await S.effectPlayHookDiscount(st, p, id, (kd, pd) => ctx.choose(kd, pd)); if (hd) cost = Math.max(0, cost + hd); pi = pl.hand[i] === id ? i : pl.hand.indexOf(id); if (pi < 0) pi = i; }
     if (cost > 0) S.spendMemory(st, cost);
-    const stack = S.playFreeFromZone(st, p, z, i, { rested: !!instr.rested });
+    const stack = S.playFreeFromZone(st, p, z, pi, { rested: !!instr.rested });
     if (z === 'security') S.secFaceUpTake(pl, id);
     if (stack) { V(ctx).played = stack; if (instr.rested) stack.suspended = true; }
     return;
@@ -1170,6 +1172,7 @@ OPS.s4_playThisFromTrash = async (instr, ctx) => {
 };
 SCRIPTS['EX7-060::메인'] = [{ op: 's4_playThisFromTrash', handMax: 4, costDelta: -4 }];
 OPS.s4_placeAndBorrow = async (instr, ctx, { runScript }) => {
+  if (instr.tagWord === '등장 시' && S.borrowerPlayTrigBlocked(ctx.state, ctx.self, ctx.sourceStackUid)) return; // unres-A (6) BT20-037: Q4351/4353 (BT18-066)
   await OPS.s4_placeUnder({ target: { this: true }, zones: instr.zones, pred: instr.pred, max: 1, key: 'placed' }, ctx);
   const me = thisStack(ctx);
   if (!V(ctx).placed || !me) return;
@@ -1304,6 +1307,7 @@ function zoneLeaveOptions(zone, pred) {
       seen.add(cardId);
       out.push({
         passive: true,
+        label: `${C(cardId).nameKo} 등장`,
         apply() {
           if (!S.hookUseOnce(holder, cid, d, 1)) return false;
           const at = pl[zone].lastIndexOf(cardId);

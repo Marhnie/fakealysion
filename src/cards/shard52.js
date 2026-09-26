@@ -16,7 +16,7 @@ SCRIPTS['BT25-073::진화 시'] = SCRIPTS['BT25-073::등장 시'];
 
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const hk = (id, d) => { (HOOKS[id] ||= []).push(d); };
-const digs = (state, p) => state.players[p].battle.filter((s) => C(s.cardId).category === 'digimon');
+const digs = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 
 // ---- BT25-075 이 카드가 등장할 때, 자신의 디지몬 수가 상대보다 적다면, 등장 코스트 -5. (no printed hook existed → full cost was always charged)
 hk('BT25-075', { tag: '__handPlay', selfPlayDiscount: (state, hp) => (digs(state, hp).length < digs(state, opp(hp)).length ? -5 : 0) });
@@ -53,3 +53,27 @@ OPS.s52_borrowEvo = async (instr, ctx, R) => {
   if (script && script.length) await R.runScript(script, { ...ctx, sourceCardId: st.cardId });
 };
 SCRIPTS['BT24-079::서로의 턴'] = [{ op: 's52_borrowEvo' }];
+
+// ---- unres-A (4) BT25-075 (Q6370): link cards above the cap after 《링크 +1》 is lost — the PLAYER chooses which one is discarded (rule check queues this pending choice)
+OPS.ua_linkTrim = async (i, ctx) => {
+  const { state } = ctx, p = ctx.self, pl = state.players[p];
+  const st = pl.battle.find((x) => x.uid === ctx.sourceStackUid); if (!st) return;
+  for (let g = 0; g < 8 && S.linkExcessCount(st) > 0; g++) {
+    const ids = st.linkCards.map((l) => l.cardId);
+    let k = await ctx.choose('pickLinkCard', { player: p, ids, prompt: `링크 상한 초과 — 파기할 링크 카드를 선택하세요 (${C(st.cardId).nameKo}, 룰 17-1-3-2-5)` });
+    k = Number.isInteger(k) && k >= 0 && k < ids.length ? k : 0;
+    S.trashLinkCardAt(state, p, st, k);
+  }
+};
+SCRIPTS['*::__링크상한'] = [{ op: 'ua_linkTrim' }];
+
+// ---- unres-A (5) EX7-014 / EX7-049 (Q6718/6719): passive 「벗어날 때 …」 options of a DigiXros material (see state.js offerXrosLeaveOptions)
+OPS.ua_leaveOpt = async (i, ctx) => {
+  const opts = S.takeLeaveOptions(ctx.trigger && ctx.trigger.uid); if (!opts.length) return;
+  const p = ctx.self;
+  let k;
+  if (opts.length === 1) k = (await ctx.choose('confirmEffect', { player: p, prompt: `${opts[0].label || '효과'} — 사용할까요?` })) ? 0 : -1;
+  else { const r = await ctx.choose('multipleChoice', { player: p, prompt: '디지크로스 재료가 벗어날 때 사용할 효과 선택', options: [...opts.map((o) => o.label || '효과'), '사용하지 않음'] }); k = Number.isInteger(r) && r < opts.length ? r : -1; }
+  if (k >= 0) opts[k].apply();
+};
+SCRIPTS['*::__이탈효과'] = [{ op: 'ua_leaveOpt' }];

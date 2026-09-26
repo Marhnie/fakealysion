@@ -8,7 +8,7 @@ export const HOOKS = {};
 
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const stacksOf = (state, p) => [state.players[p].raising, ...state.players[p].battle].filter(Boolean);
 const findStack = (state, p, uid) => stacksOf(state, p).find(s => s.uid === uid) || null;
 const hk = (id, d) => { (HOOKS[id] ||= []).push(d); return d; };

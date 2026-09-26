@@ -253,7 +253,7 @@ async function runRevealPick(instr, ctx) {
   const { state, S } = ctx, who = ctx.self, pl = state.players[who];
   if (instr.optReveal) { const ok = await ctx.choose('confirmEffect', { player: who, prompt: `덱 위에서부터 ${instr.n}장을 오픈하시겠습니까?` }); if (!ok) return; }
   let nWant = instr.n;
-  if (instr.nMulOpp) { nWant *= state.players[ctx.opp].battle.filter(s => S.card(s.cardId).category === 'digimon').length; if (!nWant) { S.log(state, '상대의 디지몬이 없어 오픈하지 않음'); return; } } // "상대 디지몬 1마리마다, 덱 위에서부터 N장"
+  if (instr.nMulOpp) { nWant *= state.players[ctx.opp].battle.filter(s => S.isDigimonLike(s)).length; if (!nWant) { S.log(state, '상대의 디지몬이 없어 오픈하지 않음'); return; } } // "상대 디지몬 1마리마다, 덱 위에서부터 N장"
   const n = Math.min(nWant, pl.deck.length);
   const revealed = pl.deck.slice(0, n);
   if (!n) { S.log(state, `${who} 덱에 카드가 없어 오픈할 수 없음`); return; }
@@ -607,6 +607,7 @@ function fxSnapshot(state) {
 }
 function fxEmit(ctx, instr, snap) {
   const { state, S } = ctx;
+  S.normalizeDigitamaZones(state); // unres-A (1): a Digi-Egg (EX2-007) "returned to hand/deck/security" is redirected to the digi-egg deck bottom before any 「늘어났을 때」 comparison (Q1198/1265/2402/3558)
   const skipHand = /evolve|jogress|digivolve|fuse/i.test(instr.op);
   const cat = fxSourceOf(ctx).category;
   for (const pp of ['p1', 'p2']) {
@@ -936,7 +937,7 @@ async function runOneCore(instr, ctx) {
     case 'revealTop': {
       let dWho = who;
       if (instr.nMulOpp || instr.pick?.maxMulOpp) { // "상대 디지몬 1마리마다": N per opposing Digimon (0 Digimon -> nothing happens)
-        const oc = state.players[ctx.opp].battle.filter(s => S.card(s.cardId).category === 'digimon').length;
+        const oc = state.players[ctx.opp].battle.filter(s => S.isDigimonLike(s)).length;
         if (!oc && instr.nMulOpp) { S.log(state, '상대의 디지몬이 없어 효과를 처리하지 않음'); break; } // (maxMulOpp only scales the pick count: with 0 opp digimon the cards are still opened and the rest discarded — BT8-068 Q1660)
         instr = { ...instr, ...(instr.nMulOpp ? { n: instr.n * oc } : {}), ...(instr.pick?.maxMulOpp ? { pick: { ...instr.pick, max: (instr.pick.max || 1) * oc } } : {}) };
       }
@@ -990,7 +991,7 @@ async function runOneCore(instr, ctx) {
     case 'destroy': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const pl = state.players[targetPlayer];
-      let uids = pl.battle.filter(s => S.card(s.cardId).category === 'digimon').map(s => s.uid); // "디지몬을 소멸" never targets Tamers/Options in the battle area
+      let uids = pl.battle.filter(s => S.isDigimonLike(s)).map(s => s.uid); // "디지몬을 소멸" never targets Tamers/Options in the battle area
       // "자신이 발휘하는 DP 소멸 효과의 상한+N." raises the ceiling on the
       // ACTIVATING player's own dpMax-filtered destroy effects.
       let filter = instr.filter;
@@ -1170,7 +1171,7 @@ async function runOneCore(instr, ctx) {
         const entries = [
           ...state.players[ctx.self].battle.map(s => ({ player: ctx.self, uid: s.uid, s })),
           ...state.players[ctx.opp].battle.map(s => ({ player: ctx.opp, uid: s.uid, s })),
-        ].filter(e => S.card(e.s.cardId).category === 'digimon' && (!instr.filter || matchesFilter(S, e.s, instr.filter, state))) // "디지몬" 대상: 테이머/옵션은 제외
+        ].filter(e => S.isDigimonLike(e.s) && (!instr.filter || matchesFilter(S, e.s, instr.filter, state))) // "디지몬" 대상: 테이머/옵션은 제외
           .map(({ player, uid }) => ({ player, uid }));
         if (!entries.length) break;
         const picked = await ctx.choose('pickStackAnySide', { entries, prompt: instr.prompt || '레스트시킬 디지몬 선택 (자신/상대 무관)' });
@@ -1302,7 +1303,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'grantBattleImmunity': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.filter(s => S.card(s.cardId).category === 'digimon').map(s => s.uid);
+      const uids = state.players[targetPlayer].battle.filter(s => S.isDigimonLike(s)).map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '배틀에서 소멸하지 않을 디지몬 선택' });
       if (targetUid) S.grantBattleImmunity(state, targetPlayer, targetUid);
       break;
@@ -1320,7 +1321,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'setDP': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.filter(s => S.card(s.cardId).category === 'digimon').map(s => s.uid);
+      const uids = state.players[targetPlayer].battle.filter(s => S.isDigimonLike(s)).map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || 'DP를 변경할 디지몬 선택' });
       if (targetUid) {
         const pl = state.players[targetPlayer];
@@ -1352,7 +1353,7 @@ async function runOneCore(instr, ctx) {
         break;
       }
       let uids = candidateStacks(ctx, targetPlayer, instr).map(s => s.uid);
-      if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0 && S.card(s.cardId).category === 'digimon').map(s => s.uid);
+      if (instr.filter?.hasNoSources) uids = state.players[targetPlayer].battle.filter(s => s.sources.length === 0 && S.isDigimonLike(s)).map(s => s.uid);
       const targetUid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '어택 불가로 만들 디지몬 선택' });
       if (targetUid && instr.distinct) ((ctx._distinctPicks ||= {})[instr.distinct] ||= new Set()).add(targetUid);
       if (targetUid) { S.restrictAttack(state, targetPlayer, targetUid, expiresAfterTurn); if (instr.noBlock) { const tst = state.players[targetPlayer].battle.find(s => s.uid === targetUid); if (tst) S.setS3FlagFx(state, targetPlayer, tst, 'noBlock', expiresAfterTurn === 'permanent' ? 1e9 : expiresAfterTurn); } }
@@ -1363,7 +1364,7 @@ async function runOneCore(instr, ctx) {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
       const dur = instr.expiresAfterTurn;
       const expiresAfterTurn = dur === 'permanent' || dur == null ? 'permanent' : S.durationEnd(state, dur);
-      const matching = () => state.players[targetPlayer].battle.filter(s => S.card(s.cardId).category === 'digimon' && (!instr.filter || matchesFilter(S, s, instr.filter, state)));
+      const matching = () => state.players[targetPlayer].battle.filter(s => S.isDigimonLike(s) && (!instr.filter || matchesFilter(S, s, instr.filter, state)));
       if (instr.all) {
         if (S.addAttackPlayerLate && !instr.filter?.ref) { S.setLateFilterMatcher((stk, f, stt) => matchesFilter(S, stk, f, stt)); S.addAttackPlayerLate(state, targetPlayer, expiresAfterTurn, instr.filter); } // Q&A BT3-105: digimon arriving later are covered too
         for (const s of matching()) S.restrictAttackPlayer(state, targetPlayer, s.uid, expiresAfterTurn);
@@ -1425,7 +1426,7 @@ async function runOneCore(instr, ctx) {
       if (instr.subject.thisStack) stacks = pl.battle.filter(x => x.uid === ctx.sourceStackUid);
       else {
         const pr = instr.subject.desc ? S.cardDescPredicate(instr.subject.desc + ' 가진') : null;
-        stacks = pl.battle.filter(x => S.card(x.cardId).category === 'digimon'
+        stacks = pl.battle.filter(x => S.isDigimonLike(x)
           && !(instr.subject.other && x.uid === ctx.sourceStackUid)
           && (!instr.subject.name || S.effectiveInfo(state, x).nameIs(instr.subject.name))
           && (!instr.subject.desc || (pr && pr(S.card(x.cardId)))));
@@ -1462,7 +1463,7 @@ async function runOneCore(instr, ctx) {
       let left = instr.limit + (instr.stat === 'dp' ? S.dpDestroyCapBoost(state, ctx.self, ctx.sourceStackUid) : 0); const chosen = []; // official Q&A (BT9-094): "DP消滅効果の上限+X" also raises a "total DP N or less" cap
       const statOf = (st) => instr.stat === 'dp' ? S.effectiveDP(state, ctx.opp, st) : (S.card(st.cardId).cost || 0);
       for (;;) {
-        const opts = state.players[ctx.opp].battle.filter(st => S.card(st.cardId).category === 'digimon' && !chosen.includes(st.uid) && statOf(st) <= left);
+        const opts = state.players[ctx.opp].battle.filter(st => S.isDigimonLike(st) && !chosen.includes(st.uid) && statOf(st) <= left);
         if (!opts.length) break;
         const uid = await ctx.choose('pickStack', { player: ctx.opp, uids: opts.map(x => x.uid), required: chosen.length === 0, prompt: `소멸시킬 디지몬 선택 (남은 ${instr.stat === 'dp' ? 'DP' : '등장 코스트'} 합계 ${left})` }); // official Q&A (ST7-12/Q693): only the FIRST pick is mandatory — the player may stop short of the cap afterward, unlike a fixed-count "N마리를 소멸시킨다" destroy
         if (!uid) break;
@@ -1578,7 +1579,7 @@ async function runOneCore(instr, ctx) {
     }
     case 'skipUnsuspend': {
       const targetPlayer = instr.target === 'opponent' ? ctx.opp : ctx.self;
-      const uids = state.players[targetPlayer].battle.filter(s => S.card(s.cardId).category === 'digimon').map(s => s.uid); // 디지몬만 (테이머/옵션 제외)
+      const uids = state.players[targetPlayer].battle.filter(s => S.isDigimonLike(s)).map(s => s.uid); // 디지몬만 (테이머/옵션 제외)
       if (!uids.length) break;
       const uid = await ctx.choose('pickStack', { player: targetPlayer, uids, prompt: instr.prompt || '액티브가 되지 않을 디지몬 선택' });
       if (uid) S.setSkipNextUnsuspend(state, targetPlayer, uid);
@@ -1735,6 +1736,7 @@ async function runOneCore(instr, ctx) {
         S.log(state, `${targetPlayer} ${S.card(stack.cardId).nameKo} ${dest === 'deckBottom' ? '덱 아래로' : '핸드로'}, 진화원 ${stack.sources.length}장 + 링크 ${linkIds.length}장 파기`);
         // Overflow (4-19-1) doesn't cover Link Cards leaving (4-9-1/4-9-4) — exclude linkIds.
         S.applyOverflowBatch(state, targetPlayer, [...stack.sources, stack.cardId]);
+        stack._leftTo = dest; // unres-c: BT14-030 "다른 디지몬이 패로 되돌아갔을 때" reads where the stack went
         S.hookLeaveTriggers(state, targetPlayer, stack, targetPlayer === ctx.self ? 'ownEffect' : 'effect'); // "패/덱으로 되돌아갈 때" leave abilities (EX4-021/060)
       };
       const matching = () => candidateStacks(ctx, targetPlayer, { filter: instr.filter && Object.keys(instr.filter).length ? instr.filter : undefined, excludeSelf: instr.excludeSelf, anyKind: !!instr.anyKind }).filter(s =>
@@ -3310,7 +3312,7 @@ function parseConditionText(c) {
   if ((m = c.match(/^이\s*디지몬이\s*【([^】]+)】\s*효과를\s*가진다면$/))) { const tg = m[1]; return (ctx) => { const st = stackOf(ctx); if (!st) return false; return ctx.S.parseEffectSegments(ctx.S.card(st.cardId).effectKo || '').segments.some(sg => sg.tags.some(t => t.includes(tg))); }; }
   const descPred = (ctx, desc) => { const pr = ctx.S.cardDescPredicate(desc); if (!pr) ctx.S.log(ctx.state, `조건 "${desc}"을(를) 판정할 수 없어 효과를 건너뜀 (수동 확인)`); return pr; };
   if ((m = c.match(/^(?:자신의\s*)?메모리가\s*(-?\d+)\s*(이하|이상)(?:이)?라면$/))) { const f = NUM_CMP(Number(m[1]), m[2]); return (ctx) => f(mem(ctx)); }
-  if ((m = c.match(/^메모리가\s*상대\s*쪽의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
+  if ((m = c.match(/^메모리가\s*상대\s*(?:쪽|측)의\s*(\d+)\s*이상(?:이)?라면$/))) return (ctx) => -mem(ctx) >= Number(m[1]);
   // g7 audit (EX13-060/BT26-078; also BT25-019, whose own bespoke script already handled it): "상대의 메모리가 N 이상/이하(이)라면"
   // — the OPPONENT's own signed memory count, not "메모리가 상대 쪽의 N" (word order differs: 상대의 precedes 메모리가 here).
   // Before this branch existed, condTestFor fell through to `undefined`, which evalCondition({test: undefined}, ctx) treats as
@@ -4303,6 +4305,19 @@ export function lookupCardSpecific(cardId, tags, text, inherited = false) {
 // helpers for per-card shard scripts (src/cards/shard1X.js): compile a printed sentence / evaluate a printed condition at run time
 // main.js: a 〔턴에 1회〕 effect whose whole script is one leading condition ("자신의 패가 8장 이상일 때, …") that is unmet is not activated, so it must not use up the once-per-turn count
 export const evalConditionPublic = (cond, ctx) => evalCondition(cond, ctx);
+// 15-7-1 / 15-14-1 (unresolved-b Q3): an effect whose only interaction was a CANCELLED pick/confirm and that changed nothing was never activated, so its 〔턴에 N회〕 use
+// must be given back. onceGuard(ctx) wraps ctx.choose and fingerprints the game state; guard.noop() is true when a choice was cancelled AND the state is unchanged.
+const _GUARD_SKIP = new Set(['log', 'fxHistory', 'fxQueue', 'pending', 'pendingVanishFlash', 'ownedIds', 'turnEffectUses', 'art', 'contTs', 'hookEvt', 'attackCtx']);
+function _stateFp(state) {
+  const seen = new WeakSet();
+  try { return JSON.stringify(state, (k, v) => { if (_GUARD_SKIP.has(k) || (typeof k === 'string' && k[0] === '_')) return undefined; if (v && typeof v === 'object') { if (seen.has(v)) return '~'; seen.add(v); } return v; }); } catch (e) { return null; }
+}
+export function onceGuard(ctx) {
+  const orig = ctx.choose; let cancelled = false;
+  ctx.choose = async (k, o) => { const r = await orig(k, o); if (r == null || r === false || (Array.isArray(r) && !r.length)) cancelled = true; return r; };
+  const before = _stateFp(ctx.state);
+  return { noop: () => { return cancelled && before != null && _stateFp(ctx.state) === before; } };
+}
 export const FX_HELPERS = { compileSecurityLook, prepText, strictCardFilter, xrosOptsFor, parseConditionText, condTestFor, parseCardFilter, matchesFilter, compileToScript, perCount };
 
 // verify-reveal-1: re-reads the whole "덱 위에서부터 N장 오픈한다. 그중 … " text of a compiled revealTop and fills in what the first pass can't:
