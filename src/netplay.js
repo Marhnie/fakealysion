@@ -151,7 +151,7 @@ function redactPlayer(pl, seat, forSeat) {
 // currently attacking") turned out to hold a cycle back to itself once queried mid-attack (observed live: a
 // `TypeError: Converting circular structure to JSON` naming 'attackCtx' as the closing property) — the guest
 // never needs it (it gets the same information via the separate `pa` field on the wire, see buildPa/broadcastState).
-const DROP_KEYS = new Set(['pendingReplacements', '_fxRec', '_rcDepth', '_caster', '_fxOp', '_replWaiters', '_leavePending', 'fxHistory', 'uiChoice', 'players', 'attackCtx']);
+const DROP_KEYS = new Set(['pendingReplacements', '_rcDepth', '_caster', '_fxOp', '_replWaiters', '_leavePending', 'fxHistory', '_fxRec', 'log', 'uiChoice', 'players', 'attackCtx']);
 
 // Builds the plain, JSON-safe, redacted object sent to `forSeat` ('p1'|'p2'). Functions (pending[].fn, pa
 // closures, etc.) are dropped for free by JSON.stringify inside SN.stringify — not handled here explicitly.
@@ -159,7 +159,14 @@ export function buildSnapshot(state, forSeat) {
   const out = {};
   for (const k of Object.keys(state)) { if (!DROP_KEYS.has(k)) out[k] = state[k]; }
   out.players = { p1: redactPlayer(state.players.p1, 'p1', forSeat), p2: redactPlayer(state.players.p2, 'p2', forSeat) };
-  if (Array.isArray(out.log) && out.log.length > 200) out.log = out.log.slice(0, 200);
+  // 효과 연출(배너/필드 표기/공격 연출)은 state.fxHistory·_fxRec·log를 보고 그려진다 — 게스트에게도 보내야 같은 연출이 보인다.
+  // 다만 상대 드로우 줄에는 뽑은 카드 이름이 들어 있으므로 이름은 가린다. '_'로 시작하는 키는 호스트 화면의 진행 기록이라 뺀다.
+  const hide = (m) => String(m).replace(/^(p[12]) 드로우 (\d+)장: .*$/, (all, who, n) => (who === forSeat ? all : `${who} 드로우 ${n}장`));
+  const cleanEntry = (e) => ({ ...e, msg: hide(e.msg) });
+  const cleanRec = (r) => { const o = {}; for (const k of Object.keys(r)) if (k[0] !== '_') o[k] = r[k]; o.entries = (r.entries || []).map(cleanEntry); return o; };
+  out.log = (state.log || []).slice(0, 200).map(cleanEntry);
+  out.fxHistory = (state.fxHistory || []).slice(0, 20).map(cleanRec);
+  out._fxRec = state._fxRec ? cleanRec(state._fxRec) : null;
   const uc = state.uiChoice;
   out.uiChoice = uc ? { kind: uc.kind, payload: uc.payload, by: uc.by || Cpu.deciderFor(state, uc.kind, uc.payload, {}) } : null;
   return out;

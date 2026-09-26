@@ -360,7 +360,11 @@ function playRec(rec) {
 let logState = null, logSeen = null;
 function watchLog(state) {
   if (!state) return;
-  if (logState !== state) { logState = state; logSeen = state.log[0] || null; return; }
+  if (logState !== state) { // 새 상태 객체라도 이미 본 마지막 줄이 로그에 그대로 있으면 같은 게임의 연속 (온라인 게스트는 상태가 매번 새 객체로 온다)
+    const cont = logState && logSeen && state.log.slice(0, 40).includes(logSeen);
+    logState = state;
+    if (!cont) { logSeen = state.log[0] || null; return; }
+  }
   const fresh = [];
   for (let i = 0; i < Math.min(state.log.length, 15); i++) { if (state.log[i] === logSeen) break; fresh.push(state.log[i]); }
   if (state.log[0]) logSeen = state.log[0];
