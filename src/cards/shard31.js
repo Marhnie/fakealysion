@@ -45,7 +45,7 @@ sc('BT7-041::진화 시', async (ctx) => {
 HOOKS['BT7-042'] = [{ tag: '상대의 턴', has: '시큐리티 디지몬', src: 'effectKo', s1securityDP: (state, hp, holder, info) => (info.p === hp && holder.sources.some(id => (C(id).types || []).includes('하이브리드체')) ? 4000 : 0) }];
 HOOKS['BT7-088'] = [{ tag: '상대의 턴', has: '시큐리티 디지몬', src: 'inheritedKo', s1securityDP: (state, hp, holder, info) => (info.p === hp ? 3000 : 0) }];
 
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const hasT = (id, t) => (C(id).types || []).includes(t);
 // BT7-053 다이노렉스몬 【자신의 턴】 레스트 상태의 상대 디지몬 1마리당 이 디지몬의 DP +1000 (per-count continuous, not handled generically)
 HOOKS['BT7-053'] = [{ tag: '자신의 턴', has: '1마리당', src: 'effectKo', dp: (state, hp, holder, target, tp) => (target === holder && tp === hp ? 1000 * state.players[opp(hp)].battle.filter(s => isDig(s) && s.suspended).length : 0) }];

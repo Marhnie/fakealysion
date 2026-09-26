@@ -79,7 +79,9 @@ export async function drain(st) {
       const ctx = { state: st, S, E, self: t.player, opp: S.opponentOf(t.player), sourceCardId: t.cardId, sourceStackUid: t.stackUid, trigger: t, startAttack(p, uid, d, o) { (st._qaAtk ||= []).push({ p, uid, direct: d, o: o || {} }); }, attack: () => st.attackCtx, endAttack() {},
         securityCheck: async (p, uid, op) => { if (!S.consumePierceCheck(st, p, uid)) return; await securityCheck(st, p, uid, op || S.opponentOf(p)); }, choose: makeChoose(st) };
       if (t.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Fx.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(st, t); // mirrors main.js: watcher with an unmet leading condition never activated
+      const onceGuard = (onceMark || t.onceKey) ? Fx.onceGuard(ctx) : null; // mirrors main.js (unresolved-b Q3)
       await Fx.runScript(script, ctx);
+      if (onceGuard && !ctx._declined && onceGuard.noop()) ctx._declined = true;
       if (t.onceKey && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) S.refundOnceUse(st, t);
       if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; }
     } catch (e) { (st._qaErr = st._qaErr || []).push(String(e.stack || e).slice(0, 300)); }
@@ -95,12 +97,14 @@ export async function useOption(st, p, id) { const pl = st.players[p]; pl.hand.p
 export async function evolve(st, p, uid, id, cost = 0, source = 'hand') { const pl = st.players[p]; if (source === 'hand') pl.hand.push(id); const r = S.digivolve(st, p, uid, id, cost, source); await drain(st); return r; }
 async function securityCheck(st, p, uid, op) {
   const ctl = S.beginSecurityCheck(st, p, uid, op); ctl.deferBattle = true; let g = 0;
-  while (!ctl.done && !st.winner && g++ < 30) {
-    if (ctl.awaiting) { await drain(st); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-    await drain(st);
-    if (ctl.awaiting) { await drain(st); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+  for (;;) {
+    while (!ctl.done && !st.winner && g++ < 30) {
+      if (ctl.awaiting) { await drain(st); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+      await drain(st);
+      if (ctl.awaiting) { await drain(st); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+    }
+    if (st.winner || S.settleSecurityLoss(ctl) !== 'survived') break; // BT8-095 (Q4705): a survivor keeps checking
   }
-  if (!ctl.gameOver && ctl.results.length) { const last = ctl.results[ctl.results.length - 1]; if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(st, p, uid, 'trash', 'battle'); }
   return { checks: ctl.results, gameOver: !!ctl.gameOver, ctl };
 }
 // Full attack mirroring cpusim.attack. target = 'PLAYER' | uid. opts.block = uid of a blocker to use (default none). opts.counter = option chosen from findCounterOptions (default none).

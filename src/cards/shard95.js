@@ -8,7 +8,7 @@ export const HOOKS = {};
 
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const hasType = (c, ...ts) => ts.some((t) => (c.types || []).includes(t));
 OPS.s95_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [{ op: 's95_fn', fn: f }]; };

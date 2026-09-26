@@ -7,7 +7,7 @@ export const HOOKS = {};
 
 const C = (id) => S.card(id);
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
-const isDigimon = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDigimon = (st) => S.isDigimonLike(st);
 function D(id, tag, has, d, src = 'effectKo') { (HOOKS[id] ||= []).push({ tag, has, src, ...d }); }
 const DI = (id, tag, has, d) => D(id, tag, has, d, 'inheritedKo');
 OPS.s43_fn = async (instr, ctx, api) => { await instr.fn(ctx, api); };

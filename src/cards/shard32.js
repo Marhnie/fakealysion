@@ -7,7 +7,7 @@ export const HOOKS = {};
 
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; };
 const me = (ctx) => findStack(ctx.state, ctx.self, ctx.sourceStackUid);
 const fn = (f) => ({ op: 's32_fn', fn: f });

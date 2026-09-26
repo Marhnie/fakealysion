@@ -25,7 +25,7 @@ for (const [id, qs] of byCard) {
       const rp = findReveal(script); if (!rp || !rp.steps) continue;
       const crit = []; for (const st of rp.steps) if ((st.dests || []).some(d => d.k === 'hand')) for (const g of st.groups) if (g.filter && !g.all) crit.push({ g });
       if (crit.length < 2) continue;
-      const pool = cards.filter(x => x.id !== c.id);
+      const pool = cards.filter(x => x.id !== c.id && x.category !== 'digitama'); // (a Digi-Egg card can't be in the deck/hand: rule 3-1-3-9 sends it to the digi-egg deck — unres-A (1))
       const used = new Set(), chosen = [];
       for (let k = 0; k < crit.length; k++) { const cand = pool.filter(x => !used.has(x.id) && matches(S, x.id, crit[k].g.filter, null)); const only = cand.find(x => crit.every((o, j) => j === k || !matches(S, x.id, o.g.filter, null))); const x = only || cand[0]; if (!x) { chosen.push(null); continue; } used.add(x.id); chosen.push(x); }
       if (chosen.some(x => !x)) continue;

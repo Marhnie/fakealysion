@@ -109,7 +109,7 @@ for (let g = 0; g < G && true; g++) {
                 S.queueTriggersForStack(state, p, dec.stack, 'attack'); S.emitGameEvent(state, 'attack', { owner: p, stack: dec.stack, cause: null });
                 const targets = S.legalDigimonTargets(state, p, att.uid);
                 if (targets.length && Math.random() < 0.5) S.resolveDigimonBattle(state, p, att.uid, pick(targets));
-                else { const res = S.resolveSecurityCheck(state, p, att.uid, opp); if (!res.gameOver) { const last = res.checks[res.checks.length - 1]; if (last && (last.result === 'defenderWins' || last.result === 'tie')) S.deleteStack(state, p, att.uid, 'trash', 'battle'); } }
+                else { const res = S.resolveSecurityCheck(state, p, att.uid, opp, { settle: true }); }
                 S.queueTriggersForStack(state, p, dec.stack, 'attackEnd');
               }
             }

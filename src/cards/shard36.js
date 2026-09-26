@@ -87,7 +87,7 @@ sc('BT16-102::진화 시', async (ctx) => {
 });
 
 // ===================================================================== BT17 watchers (generic parser could not read these phrasings)
-const isDigimon = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDigimon = (st) => S.isDigimonLike(st);
 const isTamerSt = (st) => !!st && C(st.cardId).category === 'tamer';
 const fromOwnSources = { play: (state, hp, h, info) => info.owner === hp && !!info.stack && !!info.stack.playedFromSources && isDigimon(info.stack) };
 const holderOf = (ctx) => [ctx.state.players[ctx.self].raising, ...ctx.state.players[ctx.self].battle].filter(Boolean).find(s => s.uid === ctx.sourceStackUid);

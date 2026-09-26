@@ -76,7 +76,7 @@ export function world(o = {}) {
     if (opts.block) { const b = W.by(opp, opts.block); S.restStack(st, opp, b.uid, 'block'); target = b.uid; S.emitGameEvent(st, 'redirect', { owner: p, stack: atk, cause: null, targetUid: b.uid }); S.emitGameEvent(st, 'blocked', { owner: p, stack: atk, blocker: b, cause: null }); await W.drain(); }
     let res = null;
     if (target) { if (W.by(opp, target)) res = S.resolveDigimonBattle(st, p, uid, target); }
-    else if (!st.winner && W.by(p, uid)) { res = S.resolveSecurityCheck(st, p, uid, opp); const last = res.checks?.[res.checks.length - 1]; if (last && (last.result === 'defenderWins' || last.result === 'tie') && W.by(p, uid)) S.deleteStack(st, p, uid, 'trash', 'battle'); }
+    else if (!st.winner && W.by(p, uid)) { res = S.resolveSecurityCheck(st, p, uid, opp, { settle: true }); }
     await W.drain();
     if (W.by(p, uid)) { S.queueTriggersForStack(st, p, atk, 'attackEnd'); S.emitGameEvent(st, 'attackEnd', { owner: p, stack: atk, cause: null }); await W.drain(); }
     return { ok: true, res };

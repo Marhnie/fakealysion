@@ -11,7 +11,7 @@ export const HOOKS = {};
 const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 const C = (id) => S.card(id);
 const PL = (ctx, p) => ctx.state.players[p];
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const findStack = (state, p, uid) => { const pl = state.players[p]; return pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid) || null; };
 const me = (ctx) => findStack(ctx.state, ctx.self, ctx.sourceStackUid);
@@ -72,6 +72,7 @@ function bounceStack(ctx, p, st, dest = 'hand') {
   else if (dest === 'securityBottom') pl.security.push(st.cardId);
   S.log(ctx.state, `${p} ${C(st.cardId).nameKo} → ${dest} (진화원 ${st.sources.length}장 파기)`);
   S.applyOverflowBatch(ctx.state, p, [...st.sources, st.cardId]);
+  st._leftTo = dest; // unres-c (BT14-030)
   S.hookLeaveTriggers(ctx.state, p, st, p === ctx.self ? 'ownEffect' : 'effect');
   if (dest.startsWith('security') && secAdded) S.emitGameEvent(ctx.state, 'securityIncrease', { owner: p, stack: null, cause: 'effect' });
   return true;

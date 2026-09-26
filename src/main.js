@@ -1550,7 +1550,7 @@ async function handleStackDrop(p, stack, zoneKind, drag) {
   }
   const cost = Math.max(0, check.cost + evoModDelta);
   if (method && method.id === 'tamer10') { // BT7-112: pay "패 또는 트래시에서 테이머/하이브리드체 카드 N장을 (원하는 순서대로) 덱 아래로 되돌린다" before digivolving
-    if (!S.canPayCost(state, cost)) { S.log(state, `${p} ${S.card(drag.cardId).nameKo} 진화 불가: 코스트 ${cost}를 지불할 수 없음`); S.restoreEvoCostMods(evoSnap); dragData = null; render(); return; }
+    if (!S.canPayCost(state, cost)) { S.log(state, `${p} ${S.card(drag.cardId).nameKo} 진화 불가: 코스트 ${cost}를 지불할 수 없음`); S.evolveAttempt(state, p, stack, drag.cardId); S.restoreEvoCostMods(evoSnap); dragData = null; render(); return; }
     const plR = state.players[p], okR = (id) => S.card(id).category === 'tamer' || (S.card(id).types || []).includes(method.returnTrait);
     const elig = (z) => plR[z].map((id, i) => i).filter(i => okR(plR[z][i]) && !(z === 'hand' && plR.hand[i] === drag.cardId && i === plR.hand.indexOf(drag.cardId)));
     for (let k = 0; k < method.returnN; k++) {
@@ -2396,16 +2396,17 @@ async function runPendingScript(trigger, opts = {}) {
   if (delayPlan) {
     const dst = findStack({ player: trigger.player, uid: trigger.stackUid });
     const cn = S.card(trigger.cardId).nameKo;
-    let why = null;
+    let why = null, gateFailed = false;
     if (!dst || S.card(dst.cardId).category !== 'option') why = '배틀 에어리어에 없어';
     else if (state.turnNumber <= dst.placedTurn) why = '놓인 턴에는 사용할 수 없어';
-    else if (!(await Effects.delayGateOk(delayPlan, ctx))) why = '조건을 만족하지 않아';
+    else if (!(await Effects.delayGateOk(delayPlan, ctx))) gateFailed = true; // Q5710: the bullet's condition is only read when the effect resolves — 《딜레이》 may still discard the option (no effect)
     if (stale()) return;
     if (why) { S.log(state, `${trigger.player} ${cn} 《딜레이》 — ${why} 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
-    if (!(await ctxChoose('confirmEffect', { player: trigger.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${delayPlan.text.slice(0, 90)}` }))) { S.log(state, `${trigger.player} ${cn} 《딜레이》를 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
+    if (!(await ctxChoose('confirmEffect', { player: trigger.player, prompt: `《딜레이》 — ${cn}을(를) 파기하고 효과를 발휘할까요? ${gateFailed ? '(조건 불충족 — 파기만 하고 효과는 발휘되지 않음) ' : ''}${delayPlan.text.slice(0, 90)}` }))) { S.log(state, `${trigger.player} ${cn} 《딜레이》를 발동하지 않음`); S.resolvePending(state, trigger.uid); render(); return; }
     S.discardForDelay(state, trigger.player, dst.uid);
     ctx.sourceStackUid = null;
-    if (delayPlan.script.length) await Effects.runScript(delayPlan.script, ctx);
+    if (gateFailed) S.log(state, `${trigger.player} ${cn}: 《딜레이》 효과의 조건을 만족하지 않아 파기만 함`);
+    else if (delayPlan.script.length) await Effects.runScript(delayPlan.script, ctx);
     else state.pending.push({ uid: 'rem' + Math.random().toString(36).slice(2), player: trigger.player, cardId: trigger.cardId, stackUid: null, tags: trigger.tags, text: delayPlan.text, resolved: false, manualOnly: true, note: '《딜레이》 효과를 자동 처리할 수 없음 — 직접 처리하세요' });
     S.resolvePending(state, trigger.uid);
     render();
@@ -2427,8 +2428,10 @@ async function runPendingScript(trigger, opts = {}) {
   if (trigger.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length && !(await Effects.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(state, trigger); // Q1431: watcher whose leading condition is unmet was never activated
   if (stale()) return; // unmet leading condition: effect not activated -> no 〔턴에 1회〕 use
   if (onceMark) S.markTurnEffectUsed(onceMark.stack, onceMark.key);
+  const onceGuard = (onceMark || trigger.onceKey) ? Effects.onceGuard(ctx) : null; // unresolved-b Q3: cancelled pick + no state change = never activated
   await Effects.runScript(script, ctx);
   if (stale()) return; // (only reachable if the script parked on something other than ctx.choose)
+  if (onceGuard && !ctx._declined && onceGuard.noop()) { S.log(state, `${trigger.player} ${S.card(trigger.cardId).nameKo} 선택을 취소해 효과를 발휘하지 않음 (〔턴에 1회〕 소모 안 함)`); ctx._declined = true; }
   if (ctx._declined) { S.refundOnceUse(state, trigger); S.resolvePending(state, trigger.uid); render(); if (onceMark) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } return; } // 15-7-1 / 15-14-1: a declined optional cost = the effect was never activated (no 〔턴에 1회〕 use consumed, nothing else runs)
   if (trigger.onceKey && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') S.refundOnceUse(state, trigger);
   if (onceMark && ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup') { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // shard45: a sole cost that could not be paid means the effect was never activated -> its 〔턴에 N회〕 use is not consumed
@@ -2960,9 +2963,13 @@ function doSecurityStep(pa) {
     return;
   }
   if (ctl.done) {
-    if (!ctl.gameOver && ctl.results.length) {
-      const last = ctl.results[ctl.results.length - 1];
-      if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, pa.attacker, pa.uid, 'trash', 'battle');
+    // BT8-095 (Q4705): a replacement (≪아머 퍼지≫ …) that keeps the loser in the battle area lets the remaining ≪S 어택≫ checks continue
+    const lossR = ctl.gameOver ? 'none' : S.settleSecurityLoss(ctl);
+    const contMsg = () => `시큐리티 체크 ${ctl.i}/${ctl.total} 완료 — 공격 디지몬이 소멸하지 않아 다음 체크로 넘어갑니다`;
+    if (lossR === 'survived') { stepPause(pa, 'result', contMsg(), () => doSecurityStep(pa)); return; }
+    if (lossR === 'deferred') { // interactive replacement prompt parked: S.resumeReplacement reports the outcome here
+      ctl.onLossResolved = (r2) => { if (r2 === 'survived') stepPause(pa, 'result', contMsg(), () => doSecurityStep(pa)); else { pa.secDone = true; finishAttackRules(pa); } render(); };
+      return;
     }
     pa.secDone = true;
     finishAttackRules(pa);
@@ -3008,14 +3015,13 @@ async function scriptedSecurityCheck(attackerP, attackerUid, defenderP) {
   state._scriptedPierce = { attacker: attackerP, uid: attackerUid, opp: defenderP, ctl };
   render();
   let guard = 0;
-  while (!ctl.done && !state.winner && guard++ < 30) {
-    if (ctl.awaiting) { await drainNestedPending(); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-    render();
-    await drainNestedPending();
-  }
-  if (!ctl.gameOver && ctl.results.length) {
-    const last = ctl.results[ctl.results.length - 1];
-    if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, attackerP, attackerUid, 'trash', 'battle');
+  for (;;) {
+    while (!ctl.done && !state.winner && guard++ < 30) {
+      if (ctl.awaiting) { await drainNestedPending(); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+      render();
+      await drainNestedPending();
+    }
+    if (state.winner || S.settleSecurityLoss(ctl) !== 'survived') break; // BT8-095 (Q4705)
   }
   state._scriptedPierce = null;
   render();

@@ -70,7 +70,9 @@ export function createSim(state, opts = {}) {
         if (CX) cxs = CX.before(state, t, script);
         H.effectBegin && H.effectBegin(t, script);
         if (t.onceKey && script.length === 1 && script[0].op === 'condition' && !(script[0].else || []).length) { try { if (!(await Fx.evalConditionPublic(script[0].if, ctx))) S.refundOnceUse(state, t); } catch (e) { /* keep the use */ } } // Q1431: unmet leading condition = never activated
+        const onceGuard = (onceMark || t.onceKey) ? Fx.onceGuard(ctx) : null; // unresolved-b Q3
         await Fx.runScript(script, ctx);
+        if (onceGuard && !ctx._declined && onceGuard.noop()) ctx._declined = true;
         H.effectEnd && H.effectEnd(t, script, ctx);
         if (t.onceKey && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) S.refundOnceUse(state, t); // Q1180: declined optional watcher effect keeps its 〔턴에 1회〕
         if (onceMark && (ctx._declined || (ctx._costUnpaid && script.length === 1 && script[0].op === 'costGroup'))) { const u = onceMark.stack.turnEffectUses; if (u && u[onceMark.key] > 0) u[onceMark.key]--; } // sole cost not payable: the effect was never activated
@@ -94,17 +96,16 @@ export function createSim(state, opts = {}) {
     ctl.deferBattle = true;
     let g = 0;
     H.secBegin && H.secBegin(ctl);
-    while (!ctl.done && !state.winner && g++ < 30) {
-      H.secStepBefore && H.secStepBefore(ctl);
-      if (ctl.awaiting) { await drain(); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-      H.secRevealed && H.secRevealed(ctl);
-      await drain();
-      if (ctl.awaiting) { await drain(); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
-      H.secStepAfter && H.secStepAfter(ctl);
-    }
-    if (!ctl.gameOver && ctl.results.length) {
-      const last = ctl.results[ctl.results.length - 1];
-      if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, p, uid, 'trash', 'battle');
+    for (;;) {
+      while (!ctl.done && !state.winner && g++ < 30) {
+        H.secStepBefore && H.secStepBefore(ctl);
+        if (ctl.awaiting) { await drain(); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+        H.secRevealed && H.secRevealed(ctl);
+        await drain();
+        if (ctl.awaiting) { await drain(); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+        H.secStepAfter && H.secStepAfter(ctl);
+      }
+      if (state.winner || S.settleSecurityLoss(ctl) !== 'survived') break; // BT8-095 (Q4705): a replacement kept the loser in the battle area -> the remaining ≪S 어택≫ checks continue
     }
   }
   const effAtkQ = [];

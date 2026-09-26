@@ -13,7 +13,7 @@ const opp = (p) => (p === 'p1' ? 'p2' : 'p1');
 
 // ------------------------------------------------------------------ small helpers
 const C = (id) => S.card(id);
-const isDigimon = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDigimon = (st) => S.isDigimonLike(st);
 const isTamer = (st) => !!st && C(st.cardId).category === 'tamer';
 const hasTrait = (id, t) => (C(id).types || []).includes(t);
 const traitAny = (id, list) => list.some(t => hasTrait(id, t));

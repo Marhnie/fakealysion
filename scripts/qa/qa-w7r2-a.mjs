@@ -133,13 +133,13 @@ add(4665, 'P-205 delay play without assembly pays 7', async (ck) => {
 });
 
 
-// EX9-073 (Q4135): while 「【등장 시】 효과는 발휘하지 않는다」 (BT20-037) is active the card may still be placed on the sources, but its 【등장 시】 effect cannot be activated as this digimon's effect
+// EX9-073 (Q4135): while 「【등장 시】 효과는 발휘하지 않는다」 (BT20-037) is active its 【등장 시】 effect cannot be activated as this digimon's effect; per rulings id 4353 (unres-A (6)) not even the 「놓는 것으로」 part is processed, so the card is NOT placed either
 add(4135, 'EX9-073 placed card 등장 시 suppressed under the BT20-037 lock', async (ck) => {
   const cand = Object.values(S.CARDS).find(c => c.category === 'digimon' && c.level === 5 && (c.types || []).includes('사이보그형') && /^【등장 시】/m.test(c.effectKo || ''));
   for (const lock of [false, true]) {
     const st = newState(); const me = put(st, 'p1', ['EX9-073', D3(0)]); put(st, 'p2', [D3(1)]); st.players.p1.hand = [cand.id]; if (lock) (st.s6NoPlayTrigAll ||= {}).p1 = 99;
     await runEffect(st, 'EX9-073', '등장 시', { stackUid: me.uid });
-    ck(me.sources.includes(cand.id), 'card not placed (lock ' + lock + ')');
+    ck(me.sources.includes(cand.id) === !lock, 'placed only when not locked (lock ' + lock + ')');
     ck(st.log.some(l => /등장 시】 효과는 발휘하지 않음/.test(l.msg)) === lock, 'suppression log mismatch (lock ' + lock + ')');
   }
 });

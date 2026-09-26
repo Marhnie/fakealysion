@@ -23,7 +23,7 @@ for (const c of cards) {
       const crit = []; for (const st of rp.steps) if ((st.dests || []).some(d => d.k === 'hand')) for (const g of st.groups) if (g.filter && !g.all) crit.push({ g, max: g.max || 1 });
       if (crit.length < 2 || !matches) continue;
       // find one real card per criterion, distinct, preferring cards matching only that criterion
-      const pool = cards.filter(x => x.id !== c.id);
+      const pool = cards.filter(x => x.id !== c.id && x.category !== 'digitama'); // (a Digi-Egg card can't be in the deck/hand: rule 3-1-3-9 sends it to the digi-egg deck — unres-A (1))
       const pickFor = (k, used) => {
         const cand = pool.filter(x => !used.has(x.id) && matches(S, x.id, crit[k].g.filter, null));
         const only = cand.find(x => crit.every((o, j) => j === k || !matches(S, x.id, o.g.filter, null)));

@@ -15,7 +15,7 @@ const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
 
 // EX1-031 세라피몬 【상대의 턴】 이 디지몬이 레스트 상태인 동안, 자신의 시큐리티 디지몬 전부의 DP +5000 — checked when a security Digimon battles (s1securityDP)
 HOOKS['EX1-031'] = [{ tag: '상대의 턴', has: '시큐리티 디지몬', src: 'effectKo', s1securityDP: (state, hp, holder, info) => (info.p === hp && holder.suspended ? 5000 : 0) }];
-const isDigimon = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDigimon = (st) => S.isDigimonLike(st);
 const srcCards = (st) => st.sources.slice(S.fdCount(st)); // face-down source cards are not "cards in the sources" for conditions
 function D(id, tag, has, d, src = 'effectKo') { (HOOKS[id] ||= []).push({ tag, has, src, ...d }); }
 
@@ -272,6 +272,7 @@ const hina65Types = ['암룡형', '지룡형', '기룡형', '천룡형'];
 D('EX3-065', '자신의 턴', '암룡형', { events: { digivolve: (state, hp, holder, info) => {
   if (info.owner !== hp || !info.stack || !isDigimon(info.stack) || holder.suspended || C(holder.cardId).category !== 'tamer') return false;
   if (!(C(info.stack.cardId).types || []).some(t => hina65Types.includes(t))) return false;
+  if (S.playTrigSuppressed(state, hp, info.stack)) return false; // unres-A (6) BT20-037 (Q4350): that digimon's 【등장 시】 can't be made to fire
   return S.parseEffectSegments(C(info.stack.cardId).effectKo).segments.some(sg => sg.tags.includes('등장 시'));
 } } });
 sc('EX3-065::자신의 턴', async (ctx) => {
@@ -280,6 +281,7 @@ sc('EX3-065::자신의 턴', async (ctx) => {
   if (!holder || holder.suspended || !st || !isDigimon(st) || !(C(st.cardId).types || []).some(t => hina65Types.includes(t))) return; // the digimon left / the tamer is already rested: nothing to pay or resolve
   const segs = S.parseEffectSegments(C(st.cardId).effectKo).segments.filter(sg => sg.tags.includes('등장 시'));
   if (!segs.length) return;
+  if (S.playTrigSuppressed(state, ctx.self, st)) { S.log(state, `${ctx.self} ${C(st.cardId).nameKo}의 【등장 시】 효과는 발휘하지 않는 상태라 발휘시킬 수 없음 (BT20-037)`); return; } // Q4350/4353: neither the rest cost nor the effect
   if (!(await ctx.choose('confirmEffect', { player: ctx.self, prompt: `이 테이머를 레스트시켜 ${C(st.cardId).nameKo}의 【등장 시】 효과 1개를 발휘시킬까요?` }))) return;
   let seg = segs[0];
   if (segs.length > 1) { const k = await ctx.choose('multipleChoice', { player: ctx.self, prompt: '발휘시킬 【등장 시】 효과 선택', options: segs.map(sg => sg.body.replace(/([^()]*)/g, '').slice(0, 60)) }); seg = segs[k || 0] || segs[0]; }

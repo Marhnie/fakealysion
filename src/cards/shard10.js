@@ -12,7 +12,7 @@ let FXH = null;
 const H = async () => (FXH ||= (await import('../effects.js')).FX_HELPERS);
 const P = (ctx, p) => ctx.state.players[p || ctx.self];
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const isTam = (st) => !!st && C(st.cardId).category === 'tamer';
 const digsOf = (ctx, p) => P(ctx, p).battle.filter(isDig);
 const tamsOf = (ctx, p) => P(ctx, p).battle.filter(isTam);

@@ -516,12 +516,14 @@ async function doAttack(g, p, forcedUid, directTarget, atkOpts) {
     const runSec = async () => {
       const ctl = S.beginSecurityCheck(st, p, uid, opp); ctl.deferBattle = true;
       let n = 0;
-      while (!ctl.done && n++ < 30 && !st.winner) {
-        if (ctl.awaiting) { await drainPending(g); if (st.winner) break; S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-        await drainPending(g);
+      for (;;) {
+        while (!ctl.done && n++ < 30 && !st.winner) {
+          if (ctl.awaiting) { await drainPending(g); if (st.winner) break; S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+          await drainPending(g);
+        }
+        if (n >= 30) report('LOOP', 'security check never finishes', '');
+        if (st.winner || n >= 30 || S.settleSecurityLoss(ctl) !== 'survived') break;
       }
-      if (n >= 30) report('LOOP', 'security check never finishes', '');
-      if (!ctl.gameOver && ctl.results.length) { const last = ctl.results[ctl.results.length - 1]; if (last && (last.result === 'defenderWins' || last.result === 'tie') && find(p, uid)) S.deleteStack(st, p, uid, 'trash', 'battle'); }
       if (ctl.gameOver && st.winner !== p) report('WINNER', 'security gameOver but winner != attacker', String(st.winner));
     };
     if (pa.targetKind === 'player') await runSec();

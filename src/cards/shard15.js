@@ -7,7 +7,7 @@ let FXH = null;
 const H = async () => (FXH ||= (await import('../effects.js')).FX_HELPERS);
 const P = (ctx, p) => ctx.state.players[p || ctx.self];
 const C = (id) => S.card(id);
-const isDig = (st) => !!st && C(st.cardId).category === 'digimon';
+const isDig = (st) => S.isDigimonLike(st);
 const meStack = (ctx) => P(ctx).battle.find(s => s.uid === ctx.sourceStackUid) || null;
 async function confirm(ctx, prompt) { return !!(await ctx.choose('confirmEffect', { player: ctx.self, prompt })); }
 async function T(ctx, R, text) { const { compileToScript } = await H(); await R.runScript(compileToScript(text), ctx); } // run printed sentences through the generic compiler

@@ -15,7 +15,8 @@ export function plain(level = 3, n = 0, extra = {}) {
   const l = cards.filter((c) => c.category === 'digimon' && c.level === level && c.dp && !(c.effectKo || '').trim() && !(c.inheritedKo || '').trim() && (!extra.color || (c.colors || []).includes(extra.color)) && (!extra.dp || c.dp === extra.dp) && (!extra.cost || c.cost === extra.cost));
   return l[n % l.length].id;
 }
-export const plainTamer = () => cards.find((c) => c.category === 'tamer' && !(c.effectKo || '').trim() && !(c.inheritedKo || '').trim()).id;
+// (the current card DB has no effect-less tamer any more -> fall back to a synthetic vanilla tamer so the tamer-filler scenarios stay meaningful)
+export const plainTamer = () => { const f = cards.find((c) => c.category === 'tamer' && !(c.effectKo || '').trim() && !(c.inheritedKo || '').trim()); if (f) return f.id; const id = 'TAMER-QAPLAIN'; if (!S.CARDS[id]) S.CARDS[id] = { id, cardId: id, nameKo: 'QA플레인테이머', category: 'tamer', level: null, cost: 2, dp: null, colors: ['red'], types: [], effectKo: '', inheritedKo: '', isToken: false, imgUrl: '' }; return id; };
 export const plainOption = () => cards.find((c) => c.category === 'option' && !(c.effectKo || '').trim()).id;
 const FILL = plain(3, 0);
 
@@ -133,12 +134,14 @@ async function runSeg(w, p, uid, tagWanted, opts = {}) {
 async function scriptedSecCheck(w, p, uid, op) {
   const state = w.st;
   const ctl = S.beginSecurityCheck(state, p, uid, op); ctl.deferBattle = true; let g = 0;
-  while (!ctl.done && !state.winner && g++ < 30) {
-    if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
-    await drain(w);
-    if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+  for (;;) {
+    while (!ctl.done && !state.winner && g++ < 30) {
+      if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); } else S.stepSecurityCheck(ctl);
+      await drain(w);
+      if (ctl.awaiting) { await drain(w); S.battleSecurityCheck(ctl, ctl.awaiting.id); }
+    }
+    if (state.winner || S.settleSecurityLoss(ctl) !== 'survived') break; // BT8-095 (Q4705): a survivor keeps checking
   }
-  if (!ctl.gameOver && ctl.results.length) { const last = ctl.results[ctl.results.length - 1]; if (last.result === 'defenderWins' || last.result === 'tie') S.deleteStack(state, p, uid, 'trash', 'battle'); }
 }
 // attack: declare -> triggers -> (no counter/block) -> security check or digimon battle. target 'PLAYER' or uid of an opponent digimon
 async function attack(w, p, uid, target) {

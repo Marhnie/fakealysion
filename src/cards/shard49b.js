@@ -9,7 +9,7 @@ const fn = (f) => ({ op: 's49b_fn', fn: f });
 OPS.s49b_fn = async (instr, ctx, R) => { await instr.fn(ctx, R); };
 const sc = (key, f) => { SCRIPTS[key] = [fn(f)]; };
 const hasTr = (id, ...ts) => (C(id).types || []).some((t) => ts.includes(t));
-const digs = (state, p) => state.players[p].battle.filter((s) => C(s.cardId).category === 'digimon');
+const digs = (state, p) => state.players[p].battle.filter(s => S.isDigimonLike(s));
 
 // BT12-090 【자신의 턴】 블루와 그린 2색의 자신의 디지몬이 어택했을 때, 이 테이머를 레스트시키는 것으로, 그 디지몬을 패의 명칭에 「황제드라몬」을 포함하는 디지몬 카드로 진화시킬 수 있다.
 // (was: the evolve clause compiled to a manual "noop" note — nothing evolved)
