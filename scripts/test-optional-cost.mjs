@@ -16,7 +16,8 @@ const verbose = process.argv.includes('--verbose');
 const cards = Object.values(S.CARDS);
 const digi = cards.filter(c => c.category === 'digimon' && c.level === 3);
 const filler = digi.slice(0, 40).map(c => c.id);
-const tamerId = cards.find(c => c.category === 'tamer' && !(c.effectKo || '').trim()).id;
+// 효과 없는 테이머가 카드풀에서 사라져(전부 한국어화됨) 테스트 전용 무효과 테이머를 만든다
+const tamerId = (cards.find(c => c.category === 'tamer' && !(c.effectKo || '').trim()) || (() => { const base = cards.find(c => c.category === 'tamer'); S.CARDS['TEST-TAMER'] = { ...base, id: 'TEST-TAMER', effectKo: '', effectEn: '', inheritedKo: '', inheritedEn: '', securityKo: '', securityEn: '' }; return S.CARDS['TEST-TAMER']; })()).id;
 const optId = cards.find(c => c.category === 'option').id;
 let fail = 0, pass = 0;
 const check = (ok, msg) => { if (ok) pass++; else { fail++; console.log('FAIL', msg); } };

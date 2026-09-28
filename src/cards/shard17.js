@@ -191,8 +191,8 @@ OPS.r17_ex9053 = async (instr, ctx) => {
 // ---- BT24-058: 「머신형」/「사이보그형」/「TS」 디지몬/테이머 카드 1장 → 패 or 그 특징의 자신의 디지몬의 진화원 아래. 나머지 덱 위 또는 아래
 { const tr = (id) => hasT(id, '머신형', '사이보그형', 'TS');
   H('BT24-058', ['등장 시', '진화 시'], [R({ restTo: 'either', exclusive: true, steps: [{ pred: (id) => tr(id) && ['digimon', 'tamer'].includes(cat(id)), dest: 'hand', label: '패에 추가' }, { pred: (id) => tr(id) && ['digimon', 'tamer'].includes(cat(id)), dest: 'digimonSrc', tp: stkTraitPred('머신형', '사이보그형', 'TS'), label: '「머신형」/「사이보그형」/「TS」 디지몬의 진화원 아래에 놓기', stackPrompt: '카드를 놓을 디지몬 선택' }] })]); }
-// ---- BT24-066: (특징 소악마형/마룡형/사룡형/암흑기사형 퍼플 카드 or 퍼플 테이머) 1장 → 패, 1장 → 파기. 나머지 덱 아래. 그 후 패 1장 파기
-{ const p = or(and((id) => hasT(id, '소악마형', '마룡형', '사룡형', '암흑기사형'), (id) => (C(id).colors || []).includes('purple')), and((id) => cat(id) === 'tamer', (id) => (C(id).colors || []).includes('purple')));
+// ---- BT24-066: (특징 소악마형/마룡형/사룡형/암흑기사형 카드 or 퍼플 테이머) 1장 → 패, 1장 → 파기. 나머지 덱 아래. 그 후 패 1장 파기
+{ const p = or((id) => hasT(id, '소악마형', '마룡형', '사룡형', '암흑기사형'), and((id) => cat(id) === 'tamer', (id) => (C(id).colors || []).includes('purple')));
   H('BT24-066', ['등장 시'], [R({ steps: [{ pred: p, dest: 'hand', label: '패에 추가할 카드' }, { pred: p, dest: 'trash', label: '파기할 카드' }] }), { op: 'trashHand', who: 'self', n: 1 }]); }
 // ---- BT25-074: 【턴 1회】 3장 등장 코스트 12 이하의 「D-브리가드」/「엑셀」 디지몬 카드 1장을 등장 코스트 -5로 등장시킬 수 있다. 나머지 파기
 H('BT25-074', ['진화 시'], [R({ restTo: 'trash', steps: [{ pred: (id) => cat(id) === 'digimon' && hasT(id, 'D-브리가드', '엑셀') && (C(id).cost || 0) <= 12, dest: 'play', delta: -5, optional: true, label: '등장 코스트 -5로 등장시킬 카드' }] })]);
