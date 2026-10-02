@@ -37,7 +37,12 @@ export function mbMenuButton(app, h) {
 // compact one-line status: 턴 1 · P1 · 육성 · 메모리 +3
 export function mbSummary(h, { turn, player, phase, memory }) {
   const m = (memory > 0 ? '+' : '') + memory;
-  return h('span', { className: 'mb-sum' }, [`턴 ${turn} · ${player} · ${phase} · 메모리 `, h('span', { className: 'mem-top' + (memory > 0 ? ' plus' : memory < 0 ? ' minus' : '') }, m)]);
+  return h('span', { className: `mb-sum mb-sum-${String(player).toLowerCase()}` }, [
+    h('span', { className: 'mb-turn' }, `T${turn}`),
+    h('span', { className: 'mb-pl' }, player),
+    h('span', { className: 'mb-phase' }, phase),
+    h('span', { className: 'mem-top' + (memory > 0 ? ' plus' : memory < 0 ? ' minus' : '') }, m),
+  ]);
 }
 
 export function mbCpuToggle(e) { // strip tap on the CPU bar (compact only)

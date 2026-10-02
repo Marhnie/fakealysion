@@ -110,9 +110,12 @@ sc('프로그레스: another (non-attacking) digimon is not protected', async (W
 
 // ---------- 16-40 링크+ / 4-9 링크 상한 ----------
 const linkTo = (W, host, id) => { W.hand('p1', [id]); return S.linkCardTo(W.st, 'p1', host.uid, id, id, 0, 'hand'); };
-sc('링크+: base cap 1 (no 링크+) -> 2nd link card discards the old one', async (W) => { const h = W.put('p1', 'BT26-051'); linkTo(W, h, 'BT26-010'); linkTo(W, h, 'BT26-019'); return { h }; },
-  (W, { h }) => [ck('1 link card', h.linkCards.length === 1), ck('new one kept', h.linkCards[0].cardId === 'BT26-019')]);
-sc('링크+: 《링크 +1》 raises cap to 2', async (W) => { const h = W.put('p1', 'AD1-005'); linkTo(W, h, 'BT26-010'); linkTo(W, h, 'BT26-019'); return { h }; },
+// ST22-08/ST22-11 링크 조건은 "Lv.3 이상"뿐이라 (특징 조건 없음) 어느 host든 안전하게 쓸 수 있다 — BT26-010/019는
+// 링크 조건이 "특징 「어플몬」"이라 트레이트가 없는 host(BT26-051/AD1-005)에는 룰체크(17-1-3-2-6/7)로 즉시
+// 파기돼 애초에 이 카운트 테스트와 맞지 않았다 (BT26-051 쪽은 우연히 길이가 맞아 들통나지 않았을 뿐).
+sc('링크+: base cap 1 (no 링크+) -> 2nd link card discards the old one', async (W) => { const h = W.put('p1', 'BT26-051'); linkTo(W, h, 'ST22-08'); linkTo(W, h, 'ST22-11'); return { h }; },
+  (W, { h }) => [ck('1 link card', h.linkCards.length === 1), ck('new one kept', h.linkCards[0].cardId === 'ST22-11')]);
+sc('링크+: 《링크 +1》 raises cap to 2', async (W) => { const h = W.put('p1', 'AD1-005'); linkTo(W, h, 'ST22-08'); linkTo(W, h, 'ST22-11'); return { h }; },
   (W, { h }) => [ck('2 link cards', h.linkCards.length === 2)]);
 sc('링크+: printed 링크+1 twice on one stack is additive (+2), not "링크+2" (16-40-3)', async (W) => { const h = W.put('p1', 'AD1-005'); h.inheritedKeywords = { '링크+': 1 }; return { h }; },
   (W, { h }) => [ck('data check (cap = 1 + own 1 + inherited 1)', true)]);
