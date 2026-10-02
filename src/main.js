@@ -1263,6 +1263,9 @@ function renderInner() {
   if (newModal && prevModalScroll) newModal.scrollTop = prevModalScroll;
   const vanishToast = renderVanishToast();
   if (vanishToast) app.appendChild(vanishToast);
+  syncEventToasts();
+  const eventToasts = renderEventToasts();
+  if (eventToasts) app.appendChild(eventToasts);
   app.appendChild(renderFxLayer());
   try { fxFieldRender(state); } catch (e) { console.warn('fxField', e); } // on-field annotations: re-anchor to the rebuilt tiles
   fxEmit('render', { state }); // VFX overlay: snapshot tile geometry, watch battle log lines, play queued effect animations
@@ -1281,6 +1284,49 @@ function renderVanishToast() {
   state.pendingVanishFlash = []; state.pendingVanishSrc = [];
   if (!names.length) return null;
   return h('div', { className: 'vanish-toast' }, `💀 소멸: ${names.join(', ')}` + (srcs.length ? `\n원인: ${srcs.join(', ')}` : ''));
+}
+
+// ---------- 이벤트 토스트 (등장/진화/조그레스/링크/부화/드로우 등 — "방금 무슨 일이 있었는지" 한눈에 보이게) ----------
+// state.log 새 줄을 지켜보는 방식(src/fx.js의 watchLog와 동일한 패턴)이라 엔진 쪽 수정 없이 동작한다. 소음이 큰
+// 이벤트(레스트, 메모리 증감, 시큐리티 체크 결과 — 이미 필드/게이지에 바로 보임)는 일부러 뺐다.
+const toastUI = { queue: [], cursor: null, timer: null };
+function classifyEventToast(msg) {
+  let m;
+  if ((m = /^(p[12]) (.+?) 신규 등장 \(배틀 에어리어\)/.exec(msg))) return { icon: '🟢', who: m[1], text: `${m[2]} 등장` };
+  if ((m = /^(p[12]) (.+?) → (.+?) 진화 /.exec(msg))) return { icon: '🔺', who: m[1], text: `${m[2]} → ${m[3]} 진화` };
+  if ((m = /^(p[12]) DNA\/조그레스 진화: .+? → (.+?) \(/.exec(msg))) return { icon: '🧬', who: m[1], text: `조그레스 진화: ${m[2]}` };
+  if ((m = /^(p[12]) (.+?)에 (.+?) 링크 /.exec(msg))) return { icon: '🔗', who: m[1], text: `${m[2]}에 ${m[3]} 링크` };
+  if ((m = /^(p[12]) 디지타마 부화: (.+)$/.exec(msg))) return { icon: '🥚', who: m[1], text: `${m[2]} 부화` };
+  if ((m = /^(p[12]) (.+?) 사용 \(코스트/.exec(msg))) return { icon: '📜', who: m[1], text: `${m[2]} 사용` };
+  if ((m = /^(p[12]) 드로우 (\d+)장(?::|$)/.exec(msg)) && Number(m[2]) > 1) return { icon: '🃏', who: m[1], text: `드로우 ${m[2]}장` };
+  if ((m = /^(p[12]) (.+?) 딜레이 효과 발동/.exec(msg))) return { icon: '⏳', who: m[1], text: `${m[2]} 딜레이 발동` };
+  return null;
+}
+function syncEventToasts() {
+  if (!state || PR.isReplay()) return;
+  const log = state.log;
+  if (toastUI.cursor && toastUI.cursor.state === state) {
+    const fresh = [];
+    for (let i = 0; i < Math.min(log.length, 12); i++) { if (log[i] === toastUI.cursor.last) break; fresh.push(log[i]); }
+    if (log[0]) toastUI.cursor.last = log[0];
+    for (const e of fresh.reverse()) { const t = classifyEventToast(e.msg); if (t && t.text) toastUI.queue.push({ id: 'tst' + Math.random().toString(36).slice(2), ...t, at: Date.now() }); }
+  } else {
+    toastUI.cursor = { state, last: log[0] || null };
+  }
+  const now = Date.now();
+  toastUI.queue = toastUI.queue.filter(x => now - x.at < 3600);
+  if (toastUI.queue.length > 4) toastUI.queue = toastUI.queue.slice(-4);
+  clearTimeout(toastUI.timer);
+  if (toastUI.queue.length) toastUI.timer = setTimeout(() => { if (state) render(); }, 500);
+}
+function renderEventToasts() {
+  if (!toastUI.queue.length) return null;
+  const mySeat = Net.NET.mySeat || (cpuOn ? S.opponentOf(CPU_P) : null);
+  return h('div', { className: 'event-toasts' }, toastUI.queue.map(t => h('div', { className: `event-toast${mySeat ? (t.who === mySeat ? ' et-mine' : ' et-foe') : ''}` }, [
+    h('span', { className: 'et-icon' }, t.icon),
+    h('span', { className: 'et-who' }, t.who.toUpperCase()),
+    h('span', { className: 'et-text' }, t.text),
+  ])));
 }
 
 function renderTopbar() {
