@@ -2042,8 +2042,16 @@ function renderPlayerPanel(p) {
     },
     onClick: canAttackThisPlayerByClick ? () => { attackFlow(sel.stack.player, sel.stack.uid, 'PLAYER'); sel.stack = null; render(); } : undefined,
   }, [
+    h('i', { className: `pi-avatar pi-${p}` }, p === 'p1' ? '1' : '2'),
     h('b', {}, p.toUpperCase()),
-    h('span', {}, pl.deckName),
+    h('span', { className: 'pi-deck' }, pl.deckName),
+    h('span', { className: 'pi-counts' }, [
+      h('span', { className: 'pi-chip', title: '핸드' }, `🃏 ${pl.hand.length}`),
+      h('span', { className: 'pi-chip', title: '덱' }, `📚 ${pl.deck.length}`),
+      h('span', { className: 'pi-chip', title: '트래시' }, `🗑 ${pl.trash.length}`),
+      h('span', { className: 'pi-chip pi-sec', title: '시큐리티' }, `🛡 ${pl.security.length}`),
+      h('span', { className: 'pi-chip', title: '디지타마 덱' }, `🥚 ${pl.digitamaDeck.length}`),
+    ]),
     canAttackThisPlayer ? h('span', { style: 'color:var(--danger)' }, '← 탭/드래그로 이 플레이어 공격') : null,
   ]);
 
@@ -2183,7 +2191,18 @@ function renderMemoryTrack() {
   const who = leftFavored ? `${leftWord} ${leftSeat.toUpperCase()}` : rightFavored ? `${rightWord} ${rightSeat.toUpperCase()}` : '';
   const signOf = (seat) => (seat === 'p1' ? '+' : '-');
   const wordOf = (seat) => (seat === 'p1' ? '플러스' : '마이너스');
+  const PH_STEPS = ['unsuspend', 'draw', 'breeding', 'main'];
+  const phIdx = PH_STEPS.indexOf(state.phase);
+  const turnOwner = state.activePlayer;
+  const mineSeat = Net.NET.mySeat || (cpuOn ? S.opponentOf(CPU_P) : null);
+  const ownerWord = mineSeat ? (turnOwner === mineSeat ? '내 턴' : (cpuOn ? 'CPU 턴' : '상대 턴')) : `${turnOwner.toUpperCase()}의 턴`;
+  const banner = state.winner ? null : h('div', { className: `phase-banner pb-${turnOwner}${mineSeat && turnOwner === mineSeat ? ' pb-mine' : ''}` }, [
+    h('div', { className: 'pb-steps', title: '액티브 → 드로우 → 육성 → 메인' }, PH_STEPS.map((ph, i) => h('i', { className: 'pb-dot' + (i < phIdx ? ' done' : i === phIdx ? ' now' : '') }))),
+    h('div', { className: 'pb-title' }, [h('span', { className: 'pb-owner' }, `T${state.turnNumber} · ${ownerWord}`), h('b', { className: 'pb-phase' }, PHASE_LABEL[state.phase] || state.phase)]),
+    h('div', { className: 'pb-mem' }, [h('small', {}, '메모리'), h('b', {}, (state.memory > 0 ? '+' : '') + state.memory)]),
+  ]);
   return h('div', { className: 'mem-track' }, [
+    banner,
     h('div', { className: 'mem-head' }, [
       h('div', { className: 'mem-side mem-side-bottom' + (leftFavored ? ' on' : '') }, [h('span', {}, `◀ ${leftWord} ${leftSeat.toUpperCase()} (${wordOf(leftSeat)})`), leftFavored ? h('b', {}, `${signOf(leftSeat)}${magnitude}`) : null]),
       h('div', { className: 'mem-readout' }, m === 0 ? '메모리 0' : `메모리 ${who} ${magnitude}`),
