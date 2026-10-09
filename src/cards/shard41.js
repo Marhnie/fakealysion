@@ -101,8 +101,7 @@ D('EX5-073', '서로의 턴', '벗어나지 않는다', { preventLeaveOptions: (
   if (target !== h || cause !== 'effect') return [];
   const lv = (i) => C(h.sources[i]).level;
   return sourceCombos(h, 2, ([a, b]) => lv(a) != null && lv(a) === lv(b)).map(c => ({ apply() {
-    const removed = c.slice().sort((x, y) => y - x).map(i => h.sources.splice(i, 1)[0]);
-    state.players[hp].trash.push(...removed); S.recomputeStackGrants(h); return true;
+    return S.trashSourceIdxs(state, h, c, { own: true, all: true }).length === c.length; // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires
   } }));
 } });
 // EX5-018 가루몬 X항체 (inherited) 【서로의 턴】[턴에 1회] 명칭에 「가루몬」/「오메가몬」을 포함하는 이 디지몬이 배틀로 소멸할 때, 자신의 트래시에서 디지타마 카드 이외의 카드 2장을 덱 아래로 되돌리는 것으로, 소멸하지 않는다.
@@ -136,7 +135,7 @@ D('EX6-042', '서로의 턴', '소멸하지 않는다', { preventLeaveOptions: (
   const key = S.onceLimitKey('EX6-042', ['서로의 턴']);
   if (S.turnUsesRemaining(h, key, 1) <= 0) return [];
   return sourceCombos(h, 1, ([i]) => hasTr(h.sources[i], 'Legend-Arms')).map(c => ({ apply() {
-    const [id] = h.sources.splice(c[0], 1); state.players[hp].trash.push(id); S.recomputeStackGrants(h); S.markTurnEffectUsed(h, key); return true;
+    if (S.trashSourceIdxs(state, h, [c[0]], { own: true, all: true }).length !== 1) return false; S.markTurnEffectUsed(h, key); return true; // bugsheet 2026-10: shared trasher
   } }));
 } }, 'inheritedKo');
 

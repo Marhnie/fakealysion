@@ -639,13 +639,13 @@ sc('EX5-061::진화 시', loot((st) => st.sources.some(id => C(id).category === 
 
 // ================================================================== EX5-069 / BT15-098 (서로의 턴 옵션의 《딜레이》)
 const delayEvent = (id, tagText, eventPred, then) => {
-  hk(id, { tag: '서로의 턴', has: tagText, events: eventPred });
+  hk(id, { tag: '서로의 턴', has: tagText, events: Object.fromEntries(Object.entries(eventPred).map(([k, f]) => [k, (state, hp, h, info) => S.delayUsableNow(state, h) && f(state, hp, h, info)])) }); // (the event itself is gated too: no pending item on the turn the option was placed)
   sc(`${id}::서로의 턴`, async (ctx) => {
     const { state } = ctx, pl = state.players[ctx.self];
     const st = me(ctx);
-    if (!st || C(st.cardId).category !== 'option' || !pl.battle.includes(st)) return;
+    if (!st || C(st.cardId).category !== 'option' || !pl.battle.includes(st) || !S.delayUsableNow(state, st)) return; // 16-17-3: not on the turn it was placed
     if (!(await ask(ctx, `${C(st.cardId).nameKo}: 《딜레이》 — 이 카드를 파기하고 효과를 발휘할까요?`))) return;
-    S.discardForDelay(state, ctx.self, st.uid);
+    if (!S.discardForDelay(state, ctx.self, st.uid)) return;
     await then(ctx);
   });
 };

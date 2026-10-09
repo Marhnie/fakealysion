@@ -1675,20 +1675,20 @@ HK('EX10-070', { tag: '서로의 턴', has: '링크 카드가 효과로 파기�
 SC('EX10-070', '서로의 턴', '링크 카드가 효과로 파기되었을 때', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, st = srcSt(ctx);
   const ev = st && st.hookEvt;
-  if (!st || !ev) return;
+  if (!st || !ev || !delayUsable(state, st)) return;
   const hostUid = ev.stackUid;
   if (!(await optional(ctx, me, '《딜레이》 — 이 카드를 파기하고 트래시의 어플몬 디지몬을 링크'))) return;
-  S.discardForDelay(state, me, st.uid);
+  if (!S.discardForDelay(state, me, st.uid)) return;
   const host = findSt(state, me, hostUid);
   if (host) await linkFree(ctx, host, { zones: ['trash'], card: { trait: ['어플몬'] } });
 }));
 HK('P-204', { tag: '서로의 턴', has: '디지몬이 플레이어에게 어택했을 때', events: { attackTarget: (state, hp, holder, info) => delayUsable(state, holder) && info.targetKind === 'player' } });
 SC('P-204', '서로의 턴', '디지몬이 플레이어에게 어택했을 때', RUN(async (ctx) => {
   const { state } = ctx, me = ctx.self, st = srcSt(ctx);
-  if (!st) return;
+  if (!st || !delayUsable(state, st)) return;
   const o = { subject: { pred: (s) => C(s.cardId).nameKo === '그레이드몬' || hasTr(s, '크로니클') }, zones: ['hand'], card: { lvMax: 6, or: [{ nameEq: ['알파몬'] }, { trait: ['크로니클'] }] }, cost: { mode: 'free' } };
   if (!(await evolveEffect(ctx, { ...o, dry: true })) || !(await optional(ctx, me, '《딜레이》 — 이 카드를 파기하고 디지몬을 패의 카드로 진화'))) return;
-  S.discardForDelay(state, me, st.uid);
+  if (!S.discardForDelay(state, me, st.uid)) return;
   await evolveEffect(ctx, o);
 }));
 // bullets of the ordinary 《딜레이》 option cards (LM-054/055/056, P-206)

@@ -512,8 +512,7 @@ async function delayGate(ctx) {
   const st = me(ctx);
   if (!st || C(st.cardId).category !== 'option' || ctx.state.turnNumber <= st.placedTurn) return false;
   if (!(await ask(ctx, '《딜레이》 — 이 카드를 파기하고 효과를 발휘할까요?'))) return false;
-  S.discardForDelay(ctx.state, ctx.self, st.uid);
-  return true;
+  return !!S.discardForDelay(ctx.state, ctx.self, st.uid);
 }
 const evtOf = (ctx) => ctx.trigger?.evt || null;
 // the leaving stack's evolution cards are already in the owner's trash (evt.sources): candidates that are still there

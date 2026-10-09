@@ -226,7 +226,7 @@ const delayReady = (state, holder) => holder && holder.placedTurn < state.turnNu
 function discardOption(state, p, holder) {
   const pl = state.players[p];
   const i = pl.battle.indexOf(holder);
-  if (i < 0) return false;
+  if (i < 0 || !delayReady(state, holder)) return false; // bugsheet 2026-10: 16-17-3 -- never on the turn the option was placed
   pl.battle.splice(i, 1);
   pl.trash.push(...holder.sources, holder.cardId);
   S.log(state, `${p} ${C(holder.cardId).nameKo} 딜레이 발동 (파기)`);
@@ -1124,9 +1124,8 @@ sc('BT21-074::진화 시@진화원에서 특징', async (ctx) => {
   const idxs = []; h.sources.forEach((id, i) => { if (i >= fd && pred(id)) idxs.push(i); });
   let at = idxs[idxs.length - 1];
   if (idxs.length > 1) { const k = await pickFromList(ctx, ctx.self, h.sources.slice(), idxs, '파기할 진화원 카드 선택'); if (k == null) return; at = k; }
-  const [id] = h.sources.splice(at, 1);
-  state.players[ctx.self].trash.push(id);
-  S.recomputeStackGrants(h);
+  const [id] = S.trashSourceIdxs(state, h, [at], { own: true }); // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires (it is the cost)
+  if (id == null) return;
   S.log(state, `${ctx.self} ${C(h.cardId).nameKo}의 진화원 ${C(id).nameKo} 파기`);
   const t = await pickStack(ctx, o, digs(state, o), '퇴화시킬 상대 디지몬 선택');
   if (t) S.retreat(state, o, t.uid, 1);

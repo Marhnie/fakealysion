@@ -524,13 +524,10 @@ OPS.s4_trashSourceOption = async (instr, ctx) => {
   const opts = pick.s.sources.map((id, i) => i).filter(i => isOptionCard(pick.s.sources[i]));
   let ix = opts[0];
   if (opts.length > 1) { const c = await ctx.choose('multipleChoice', { options: opts.map(i => C(pick.s.sources[i]).nameKo), prompt: '파기할 옵션 카드 선택' }); ix = opts[c ?? 0]; }
-  const [id] = pick.s.sources.splice(ix, 1);
-  st.players[pick.pp].trash.push(id);
-  S.recomputeStackGrants(pick.s);
+  const [id] = S.trashSourceIdxs(st, pick.s, [ix]); // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires; the option's own "…진화원에서 효과로 파기되었을 때, 메모리 +1" (EX7-071) is queued by the generic own-discard watcher (no inline grant any more)
+  if (id == null) return;
   log(ctx, `${pick.pp} ${C(pick.s.cardId).nameKo}의 진화원 ${C(id).nameKo} 파기`);
   V(ctx).optTrashed = true;
-  // 「이 카드가 진화원에서 효과로 파기되었을 때, 메모리 +1」 (EX7-071)
-  if ((C(id).effectKo || '').includes('진화원에서 효과로 파기되었을 때, 메모리 +1')) S.grantMemory(st, pick.pp, 1, id);
 };
 SCRIPTS['EX6-073::진화 시'] = [
   { op: 's4_placeUnder', target: { this: true }, zones: ['trash'], pred: (id) => hasTrait(id, '7대마왕'), distinct: true, max: 7, key: 'placed' },
@@ -919,7 +916,7 @@ H('BT17-097', { tag: '서로의 턴', has: '황제드라몬', noGroup: true, pre
   const pl = st.players[hp];
   const id = pl.hand.find(x => isDigimonCard(x) && nameHas(x, '황제드라몬') && canEvolveInto(st, hp, target, x, false).ok);
   if (!id) return false;
-  S.discardForDelay(st, hp, h.uid);
+  if (!S.discardForDelay(st, hp, h.uid)) return false;
   S.digivolve(st, hp, target.uid, id, 0, 'hand');
   return true;
 } });
@@ -933,7 +930,7 @@ H('BT17-095', { tag: '서로의 턴', has: '오메가몬」을 포함하는 디�
     for (let mi = 0; mi < pl.hand.length; mi++) {
       if (mi === ti || !isDigimonCard(pl.hand[mi]) || !S.parseJogress(t).test(C(target.cardId), C(pl.hand[mi]))) continue;
       const matId = pl.hand[mi];
-      S.discardForDelay(st, hp, h.uid);
+      if (!S.discardForDelay(st, hp, h.uid)) return false;
       for (const i of [ti, mi].sort((a, b) => b - a)) pl.hand.splice(i, 1);
       fuseWithCard({ state: st }, hp, target, matId, t, S.parseJogress(t).cost);
       return true;
