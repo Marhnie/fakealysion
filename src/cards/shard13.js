@@ -128,7 +128,7 @@ const delayReady = (state, holder) => holder && holder.placedTurn < state.turnNu
 function discardOption(state, p, holder) {
   const pl = state.players[p];
   const i = pl.battle.indexOf(holder);
-  if (i < 0) return false;
+  if (i < 0 || !delayReady(state, holder)) return false; // bugsheet 2026-10: 16-17-3 -- never on the turn the option was placed
   pl.battle.splice(i, 1);
   pl.trash.push(...holder.sources, holder.cardId);
   S.log(state, `${p} ${C(holder.cardId).nameKo} 딜레이 발동 (파기)`);

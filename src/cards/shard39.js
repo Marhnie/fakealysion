@@ -109,10 +109,7 @@ D('EX1-073', '서로의 턴', '소멸할 때', { preventLeaveOptions: (state, hp
   const combos = [], seen = new Set();
   for (let a = 0; a < elig.length; a++) for (let b = a + 1; b < elig.length && combos.length < 24; b++) { const key = [holder.sources[elig[a]], holder.sources[elig[b]]].sort().join(); if (!seen.has(key)) { seen.add(key); combos.push([elig[a], elig[b]]); } }
   return combos.map(c => ({ apply() {
-    const removed = c.slice().sort((x, y) => y - x).map(i => holder.sources.splice(i, 1)[0]);
-    state.players[hp].trash.push(...removed);
-    S.recomputeStackGrants(holder);
-    return true;
+    return S.trashSourceIdxs(state, holder, c, { own: true, all: true }).length === c.length; // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires
   } }));
 } });
 

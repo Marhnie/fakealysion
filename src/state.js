@@ -3273,7 +3273,7 @@ export async function chooseSourceIdxs(state, p, stack, n, choose, pred = null, 
 }
 
 export function redirectSourceTrash(state, p, stack) { return S2.sourceTrashRedirect(state, p, stack); } // BT10-084 (idx1364-1370): lets a caller that lets the player CHOOSE sources apply the replacement first
-export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx = null) {
+export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx = null, opts = null) {
   const pl = state.players[p];
   const stack = pl.raising?.uid === uid ? pl.raising : pl.battle.find(s => s.uid === uid);
   if (!stack) return [];
@@ -3300,11 +3300,41 @@ export function trashEvoSources(state, p, uid, count, from = 'bottom', pickIdx =
   if (fd0) stack.s5fd = Math.max(0, fd0 - fdGone);
   pl.trash.push(...removed);
   log(state, `${p} ${card(stack.cardId).nameKo} 진화원 ${removed.length}장 파기`);
-  if (removed.length) emitGameEvent(state, 'sourcesTrashed', { owner: p, stack, cause: state._fxSrc ? 'effect' : null, from, ids: removed, fdGone, srcPlayer: state._fxSrc?.player }); // b9: fdGone = how many of them were face-down (뒷면) sources
+  if (removed.length) emitGameEvent(state, 'sourcesTrashed', { owner: p, stack, cause: (opts && opts.cause) || (state._fxSrc ? 'effect' : null), from, ids: removed, fdGone, srcPlayer: state._fxSrc?.player }); // b9: fdGone = how many of them were face-down (뒷면) sources
   applyOverflowBatch(state, p, removed);
   recomputeStackGrants(stack);
   ruleCheckDP(state, p, stack);
   return removed;
+}
+
+// bugsheet 2026-10 (P-167 / EX8-005 / P-169): the ONE shared way for bespoke code to trash cards out of a stack's evolution sources (as an effect's text or as its COST --
+// paying a cost with the effect's own resources still counts as "효과로 파기"). It goes through trashEvoSources so the game event 'sourcesTrashed' fires for every effect that trashes
+// sources ("이 카드가 …진화원에서 (효과로) 파기되었을 때" EX8-005/047/048/051, EX10-025/028/032/039/044/045, EX11-038, P-167/169, BT10-006 family, 테이머 아래 watchers …),
+// face-down bookkeeping (s5fd) and protected-source / immunity checks stay in one place. `idxs` = indexes into stack.sources; returns the ids actually trashed (ascending index order).
+// opts.cause forces the event cause ('effect' by default when called from inside an effect or from a keyword/replacement effect such as 《프래그먼트》).
+export function trashSourceIdxs(state, stack, idxs, opts = {}) {
+  const owner = ['p1', 'p2'].find(pp => state.players[pp].battle.includes(stack) || state.players[pp].raising === stack);
+  const list = [...new Set(idxs || [])].filter(i => Number.isInteger(i) && i >= 0 && i < stack.sources.length).sort((a, b) => a - b);
+  if (!owner || !list.length) return [];
+  // opts.own: paid/performed with the stack owner's OWN resources (a cost, a replacement effect, a keyword such as 《프래그먼트》) -> it is the owner's own effect, never blocked by an opponent-effect immunity of the stack
+  // opts.all: all-or-nothing (a cost) -- refuse when a chosen source is protected (BT9-109) instead of trashing only part of it
+  const prev = state._fxSrc;
+  if (opts.own && !(prev && prev.player === owner)) state._fxSrc = { player: owner, category: card(stack.cardId).category, cardId: stack.cardId };
+  try {
+    if (opts.all && list.some(i => s1ProtectedSource(state, owner, stack, stack.sources[i]))) return [];
+    const out = trashEvoSources(state, owner, stack.uid, list.length, 'bottom', list, { cause: opts.cause || 'effect' });
+    return opts.all && out.length !== list.length ? [] : out;
+  } finally { state._fxSrc = prev; }
+}
+// same, addressed by card id (each id occurrence once; face-down copies are only taken when `allowFaceDown`, otherwise the topmost matching face-up copy wins)
+export function trashSourceIds(state, stack, ids, opts = {}) {
+  const fd = fdCount(stack), used = new Set(), idxs = [];
+  for (const id of ids) {
+    let k = -1;
+    for (let i = stack.sources.length - 1; i >= (opts.allowFaceDown ? 0 : fd); i--) if (!used.has(i) && stack.sources[i] === id) { k = i; break; }
+    if (k >= 0) { used.add(k); idxs.push(k); }
+  }
+  return trashSourceIdxs(state, stack, idxs, opts);
 }
 
 // Schedule an effect to run automatically when the CURRENT active player's
@@ -3909,12 +3939,18 @@ export function parseDelayEffect(effectKo) {
   return null;
 }
 
+// 16-17-3: a ≪딜레이≫ option may be discarded for its effect only from a turn AFTER the one it was placed in (placedTurn is stamped by makeStack when the card enters the battle area).
+export function delayUsableNow(state, stack) { return !!stack && card(stack.cardId).category === 'option' && state.turnNumber > (stack.placedTurn ?? -1); }
+
 // Discards a battle-area stack (no evolution sources expected on these —
 // they're placed Option cards) and returns the effect text to run.
 export function discardForDelay(state, p, uid) {
   const pl = state.players[p];
   const idx = pl.battle.findIndex(s => s.uid === uid);
   if (idx === -1) return null;
+  // bugsheet 2026-10 (16-17-3): THE single gate every ≪딜레이≫ activation passes through -- the effect can't be used on the turn this card was placed in the battle area
+  // (manual 🗑 button, CPU, event-/turn-start-triggered options, bespoke scripts all end here). Callers must treat a null return as "not activated" and NOT run the bullet.
+  if (!delayUsableNow(state, pl.battle[idx])) { log(state, `${p} ${card(pl.battle[idx].cardId).nameKo} 《딜레이》 — 놓인 턴에는 발휘할 수 없음`); return null; }
   const [stack] = pl.battle.splice(idx, 1);
   pl.trash.push(...stack.sources, stack.cardId);
   log(state, `${p} ${card(stack.cardId).nameKo} 딜레이 효과 발동 (파기)`);
@@ -4514,12 +4550,10 @@ function trySurviveByKeyword(state, p, stack, cause) {
     rec(M - 1, []);
     for (const combo of idxCombos) {
       if (opt(() => {
-        const fd0 = fdCount(stack); let fdGone = 0; // keep the face-down bottom block (s5fd) in sync when face-down sources are among the chosen ones (4-7-9: they are still evolution cards)
-        const ids = combo.slice().sort((x, y) => y - x).map(i => { if (i < fd0) fdGone++; return stack.sources.splice(i, 1)[0]; });
-        if (fd0) stack.s5fd = Math.max(0, fd0 - fdGone);
-        pl.trash.push(...ids);
+        // (bugsheet 2026-10: through the shared trasher so the face-down block (s5fd) stays in sync (4-7-9) and 'sourcesTrashed' fires for the keyword's trash)
+        const ids = trashSourceIdxs(state, stack, combo, { own: true, all: true });
+        if (ids.length !== combo.length) return false;
         log(state, `${p} ${card(stack.cardId).nameKo} 《프래그먼트 ${frag}》 — 진화원 ${ids.map(id => card(id).nameKo).join(', ')} 파기하여 소멸하지 않음`);
-        recomputeStackGrants(stack);
         return true;
       }, '프래그먼트')) return true;
     }
@@ -4608,9 +4642,10 @@ function surviveCost(text) {
       can(st, p, h) { return this.pick(h).length >= n; },
       pay(st, p, h) {
         const idxs = this.pick(h).map(x => x.i).sort((a, b) => b - a);
+        if (!toDeck) { trashSourceIdxs(st, h, idxs, { own: true, all: true }); return; } // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires when the cost trashes sources
         const ids = [];
         for (const i of idxs) ids.push(...h.sources.splice(i, 1)); // (only face-up sources are picked, which sit above the face-down block: s5fd is unchanged)
-        (toDeck ? st.players[p].deck : st.players[p].trash).push(...ids);
+        st.players[p].deck.push(...ids);
         recomputeStackGrants(h);
         if (toDeck && ids.length) emitGameEvent(st, 'b4SourceToDeckBottom', { owner: p, stack: h, cause: 'effect', ids }); // batch4: BT11-065 "이 디지몬의 진화원에서 「벰몬」이 덱 아래로 되돌아갔을 때"
       },
@@ -4688,7 +4723,7 @@ function surviveCost(text) {
   if ((m = text.match(/^자신의\s*테이머\s*아래의\s*뒷면\s*카드를\s*아래에서부터\s*(\d+)\s*장\s*파기하(?:는)?$/))) {
     const n = Number(m[1]);
     const tam = (st, p) => st.players[p].battle.find(s => card(s.cardId).category === 'tamer' && s.sources.length >= n);
-    return { can: (st, p) => !!tam(st, p), pay: (st, p) => { const t = tam(st, p); st.players[p].trash.push(...t.sources.splice(0, n)); } };
+    return { can: (st, p) => !!tam(st, p), pay: (st, p) => { const t = tam(st, p); trashSourceIdxs(st, t, Array.from({ length: n }, (_, i) => i), { own: true }); } }; // bugsheet 2026-10: shared trasher -> 'sourcesTrashed'
   }
   return null;
 }
@@ -6615,6 +6650,7 @@ export function s7TrashFaceUpSecurity(state, p, id) {
   pl.trash.push(id);
   secFaceUpTake(pl, id);
   log(state, `${p} 시큐리티의 ${card(id).nameKo} 파기`);
+  emitGameEvent(state, 'securityDiscard', { owner: p, stack: null, cause: 'effect', cardId: id }); // bugsheet 2026-10: a security card trashed as a cost/replacement is a security discard by effect
   emitGameEvent(state, 'securityDecrease', { owner: p, stack: null, cause: 'effect' });
   return true;
 }

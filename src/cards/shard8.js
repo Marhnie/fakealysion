@@ -983,7 +983,7 @@ OPS.s8_delaySelf = async (i, ctx, run) => {
   if (!st || catOf(st.cardId) !== 'option' || ctx.state.turnNumber <= st.placedTurn) { log(ctx, '《딜레이》: 이 카드를 지금은 발동할 수 없음'); return; }
   if (!(await confirm(ctx, `《딜레이》 ${C(st.cardId).nameKo}을(를) 파기하고 효과를 발동할까요?`))) return;
   S8(ctx).evt = st.hookEvt;
-  S.discardForDelay(ctx.state, ctx.self, st.uid);
+  if (!S.discardForDelay(ctx.state, ctx.self, st.uid)) return;
   await run.runScript(i.then || [], ctx);
 };
 

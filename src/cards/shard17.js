@@ -141,17 +141,15 @@ H('BT18-061', ['등장 시'], [R({ restTo: 'either', steps: [{ pred: (id) => cat
   const s = [{ op: 'r17_p167' }];
   OPS.r17_p167 = async (instr, ctx) => {
     const { state, self } = ctx;
-    const cands = []; for (const st of stacksOf(state, self)) st.sources.forEach((id, k) => { if (p(id)) cands.push({ st, k, id }); });
+    const cands = []; for (const st of stacksOf(state, self).filter((x) => C(x.cardId).category === 'digimon')) { const fd0 = S.fdCount(st); st.sources.forEach((id, k) => { if (k >= fd0 && p(id)) cands.push({ st, k, id }); }); } // (a face-down source has no card information: 4-7-9)
     if (!cands.length) { S.log(state, `${self} 진화원에 광물형/광석형 카드가 없어 효과를 처리하지 않음`); return; }
     const ids = cands.map((c) => c.id);
     const r = await ctx.choose('pickFromRevealed', { player: self, revealed: ids, eligible: ids.map((id, i) => ({ id, i })), min: 1, max: 1, required: true, prompt: '비용: 자신의 디지몬의 진화원에서 파기할 「광물형」/「광석형」 카드 선택', dest: '파기' });
     const c = cands[(r && r[0]) ?? 0] || cands[0];
     if (!c) return;
-    const fdBefore = S.fdCount(c.st);
-    c.st.sources.splice(c.k, 1); if (c.k < fdBefore) c.st.s5fd = Math.max(0, (c.st.s5fd || 0) - 1);
-    S.recomputeStackGrants(c.st);
-    state.players[self].trash.push(c.id);
-    S.log(state, `${self} ${C(c.st.cardId).nameKo}의 진화원에서 ${C(c.id).nameKo} 파기 (비용)`);
+    // bugsheet 2026-10: the cost goes through the shared source-trasher so 'sourcesTrashed' fires (EX8-005/047/048/051 "…진화원에서 효과로 파기되었을 때", P-169, P-167 itself …)
+    const gone = S.trashSourceIdxs(state, c.st, [c.k]);
+    if (gone.length !== 1) { S.log(state, `${self} 진화원 카드를 파기할 수 없어 효과를 처리하지 않음`); return; }
     await OPS.r17_reveal(R({ restTo: 'either', exclusive: true, steps: [{ pred: p, dest: 'hand', label: '패에 추가' }, { pred: p, dest: 'evoThis', label: '이 디지몬의 진화원 아래에 놓기' }] }), ctx);
   };
   H('P-167', ['자신의 메인 페이즈 개시 시', '진화 시'], s); }

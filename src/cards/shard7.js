@@ -800,7 +800,7 @@ SCRIPTS['BT24-093::서로의 턴'] = [F(async (ctx) => {
   if (!h || state.turnNumber <= h.placedTurn) return;
   const c = digimonsOf(state, self).filter((s) => nameIncl(s.cardId, '아이기오투스몬', '유피테르몬') && s.sources.length);
   if (!c.length || !(await confirm(ctx, '《딜레이》 — 이 카드를 파기하여 디지몬의 겹쳐진 카드를 시큐리티 위에 놓을까요?'))) return;
-  S.discardForDelay(state, self, h.uid);
+  if (!S.discardForDelay(state, self, h.uid)) return;
   const t = await pickStack(ctx, self, c, '겹쳐진 카드를 시큐리티 위에 놓을 디지몬 선택', { mandatory: true });
   if (!t) return;
   const id = t.sources.pop();

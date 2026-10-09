@@ -369,12 +369,13 @@ OPS.s2_costSource = async (instr, ctx, helpers) => {
       if (ai.length >= n) {
         const picked = ai.length > n ? await pickCards(ctx, who, alt.sources, { eligible: ai, min: n, max: n, prompt: `${C(alt.cardId).nameKo}: 대신 파기할 진화원 선택` }) : ai;
         if (picked.length >= n && !(ai.length <= n && instr.optional && !(await confirmCtx(ctx, instr.confirm || '진화원을 지불하고 효과를 발휘할까요?')))) {
-          const ids = picked.slice().sort((a, b) => b - a).flatMap(i => alt.sources.splice(i, 1));
-          state.players[who].trash.push(...ids); S.recomputeStackGrants(alt);
-          S.log(state, `${who} ${C(alt.cardId).nameKo}의 진화원 ${ids.map(id => C(id).nameKo).join(', ')} → 트래시 (${C(st.cardId).nameKo} 대신)`);
-          scratch(ctx).costIds = ids;
-          await helpers.runScript(instr.then || [], ctx);
-          return;
+          const ids = S.trashSourceIdxs(state, alt, picked, { own: true, all: true }); // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires for a cost paid from sources
+          if (ids.length === picked.length) {
+            S.log(state, `${who} ${C(alt.cardId).nameKo}의 진화원 ${ids.map(id => C(id).nameKo).join(', ')} → 트래시 (${C(st.cardId).nameKo} 대신)`);
+            scratch(ctx).costIds = ids;
+            await helpers.runScript(instr.then || [], ctx);
+            return;
+          }
         }
       }
     }
@@ -386,12 +387,18 @@ OPS.s2_costSource = async (instr, ctx, helpers) => {
     if (picked.length < n) return;
     chosen = picked;
   } else if (instr.optional && !(await confirmCtx(ctx, instr.confirm || '진화원을 지불하고 효과를 발휘할까요?'))) return;
-  let ids = chosen.slice().sort((a, b) => b - a).flatMap(i => st.sources.splice(i, 1));
   const dest = instr.dest || 'trash';
-  if (dest === 'deckBottom') ids = await S.orderPlacement(ctx.choose, who, ids, '덱 아래로 되돌릴 진화원의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)');
-  const pl = state.players[who];
-  if (dest === 'deckBottom') pl.deck.push(...ids); else if (dest === 'trash') pl.trash.push(...ids);
-  S.recomputeStackGrants(st);
+  let ids;
+  if (dest === 'trash') { // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires (EX8-005 …) and the face-down block stays in sync
+    ids = S.trashSourceIdxs(state, st, chosen, { own: true, all: true });
+    if (ids.length !== chosen.length) { S.log(state, `${who} 진화원을 파기할 수 없어 효과를 건너뜀`); return; }
+  } else {
+    ids = chosen.slice().sort((a, b) => b - a).flatMap(i => st.sources.splice(i, 1));
+    if (dest === 'deckBottom') ids = await S.orderPlacement(ctx.choose, who, ids, '덱 아래로 되돌릴 진화원의 순서를 정하세요 (위쪽부터, 룰 3-1-3-4)');
+    const pl = state.players[who];
+    if (dest === 'deckBottom') pl.deck.push(...ids);
+    S.recomputeStackGrants(st);
+  }
   S.log(state, `${who} ${C(st.cardId).nameKo}의 진화원 ${ids.map(id => C(id).nameKo).join(', ')} → ${dest === 'deckBottom' ? '덱 아래' : '트래시'}`);
   scratch(ctx).costIds = ids;
   await helpers.runScript(instr.then || [], ctx);
@@ -968,9 +975,8 @@ OPS.s2_pluck = async (instr, ctx) => { // RB1-016 / P-089: trash a chosen card f
     if (!st) break;
     const picked = await pickCards(ctx, ctx.self, st.sources, { min: instr.optional ? 0 : 1, max: 1, prompt: '파기할 진화원(아래의 카드) 선택' });
     if (!picked.length) continue;
-    const [id] = st.sources.splice(picked[0], 1);
-    state.players[ctx.opp].trash.push(id);
-    S.recomputeStackGrants(st);
+    const [id] = S.trashSourceIdxs(state, st, [picked[0]]); // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires (EX8-005 …)
+    if (id == null) continue;
     S.log(state, `${ctx.opp} ${C(st.cardId).nameKo} 아래의 ${C(id).nameKo} 파기`);
   }
 };
@@ -1350,8 +1356,8 @@ hki('ST13-14', '상대의 턴', '라그나로드몬', { effectImmune: (s, hp, h,
 hk('EX3-013', '서로의 턴', '소멸할 때', { preventLeave: (s, hp, h, t, tp, cause, mode) => {
   if (t !== h || lv5Sources(h).length < 2) return false;
   if (!askUser(`${C(h.cardId).nameKo}: 진화원의 Lv.5 카드 2장을 파기하고 ${mode === 'delete' ? '소멸' : '되돌아가'}지 않게 할까요?`)) return false;
-  const ids = lv5Sources(h).slice(-2).sort((a, b) => b - a).flatMap(i => h.sources.splice(i, 1));
-  s.players[tp].trash.push(...ids); S.recomputeStackGrants(h); return true; } });
+  const ids = S.trashSourceIdxs(s, h, lv5Sources(h).slice(-2), { own: true, all: true }); // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' fires
+  return ids.length === 2; } });
 const xGuard = { preventLeave: (s, hp, h, t, tp, cause, mode) => {
   if (t !== h || cause === 'battle' || !(nameHas(C(h.cardId), '그레이몬') || nameHas(C(h.cardId), '오메가몬'))) return false;
   const i = h.sources.map((id, k) => k).filter(k => isX(C(h.sources[k]))).pop();

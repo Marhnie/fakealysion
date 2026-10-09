@@ -121,7 +121,7 @@ SCRIPTS['BT24-093::서로의 턴'] = [fn(async (ctx) => {
   if (!h || state.turnNumber <= h.placedTurn) return;
   const c = stacksOf(state, self).filter(s => isDig(s) && (C(s.cardId).nameKo.includes('아이기오투스몬') || C(s.cardId).nameKo.includes('유피테르몬')) && hasUnder(s));
   if (!c.length || !(await ask(ctx, '《딜레이》 — 이 카드를 파기하여 디지몬의 최상단 카드를 시큐리티 위에 놓을까요?'))) return;
-  S.discardForDelay(state, self, h.uid);
+  if (!S.discardForDelay(state, self, h.uid)) return;
   const t = await pick(ctx, self, c, '최상단 카드를 시큐리티 위에 놓을 디지몬 선택');
   if (t) S.moveTopStackCard(state, self, t, 'secTop', { cause: 'ownEffect', checkBlock: false });
 })];

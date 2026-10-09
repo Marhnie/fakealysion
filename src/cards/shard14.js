@@ -139,7 +139,7 @@ function trashSecAt(ctx, who, i) {
   if (!id) return null;
   pl.trash.push(id);
   log(ctx, `${who} 시큐리티 ${i + 1}번째 카드가 효과로 파기: ${C(id).nameKo}`);
-  S.emitGameEvent(ctx.state, 'securityDiscard', { owner: who, stack: null, cause: 'effect' });
+  S.emitGameEvent(ctx.state, 'securityDiscard', { owner: who, stack: null, cause: 'effect', cardId: id }); // bugsheet 2026-10: cardId lets the card's own "시큐리티에서 효과로 파기되었을 때" watcher fire
   S.emitGameEvent(ctx.state, 'securityDecrease', { owner: who, stack: null, cause: 'effect' });
   return id;
 }

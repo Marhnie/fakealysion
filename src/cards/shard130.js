@@ -194,7 +194,7 @@ sc('EX13-032::진화 시', async (ctx) => {
     const chosen = k == null ? null : opts[k];
     if (chosen && chosen !== '하지 않음') {
       if (chosen.startsWith('시큐리티')) S.trashTopSecurityByEffect(state, ctx.self);
-      else { const t = tam(); const fd = S.fdCount(t); const [id] = t.sources.splice(0, 1); t.s5fd = Math.max(0, fd - 1); PL(ctx, ctx.self).trash.push(id); S.recomputeStackGrants(t); log(ctx, `${ctx.self} 테이머 아래의 뒷면 카드 1장 파기`); }
+      else { const t = tam(); S.trashSourceIdxs(ctx.state, t, [0], { own: true }); log(ctx, `${ctx.self} 테이머 아래의 뒷면 카드 1장 파기`); } // bugsheet 2026-10: shared trasher -> 'sourcesTrashed' (BT26-002/048 …)
       S.unsuspendStack(state, ctx.self, st.uid);
     }
   }
@@ -455,7 +455,7 @@ sc('EX13-071::메인', async (ctx, R) => {
   const kuda = await pickStack(ctx, ctx.self, kudas, '진화시킬 「쿠다몬」 선택', { auto: true });
   const tam = await pickStack(ctx, ctx.self, tamers, '뒷면 카드를 파기할 테이머 선택', { auto: true });
   if (!kuda || !tam) { decline(ctx); return; }
-  { const fd0 = S.fdCount(tam); const gone0 = tam.sources.splice(0, 3); tam.s5fd = Math.max(0, fd0 - 3); pl.trash.push(...gone0); S.recomputeStackGrants(tam); } // 공식 Q&A idx6637: 먼저 테이머 아래의 뒷면 카드 3장을 파기하고, 그 파기한 카드도 「쿠다몬」의 진화원 아래에 놓을 카드로 고를 수 있다
+  S.trashSourceIdxs(state, tam, [0, 1, 2], { own: true }); // 공식 Q&A idx6637: 먼저 테이머 아래의 뒷면 카드 3장을 파기하고, 그 파기한 카드도 「쿠다몬」의 진화원 아래에 놓을 카드로 고를 수 있다
   const i4 = await pickFromList(ctx, pl.trash.slice(), yl(4), '진화원 아래에 놓을 성수형 옐로인 Lv.4 디지몬 카드 선택');
   const i5 = i4 == null ? null : await pickFromList(ctx, pl.trash.slice(), yl(5), '진화원 아래에 놓을 성수형 옐로인 Lv.5 디지몬 카드 선택');
   if (i4 == null || i5 == null) { decline(ctx); return; }

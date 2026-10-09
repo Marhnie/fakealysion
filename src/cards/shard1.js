@@ -1315,10 +1315,7 @@ D('BT3-075', '서로의 턴', '상대의 효과로 소멸하지', { preventLeave
 function paySources(state, hp, holder, n, pred) {
   const idx = holder.sources.map((id, i) => i).filter(i => pred(holder.sources[i])).slice(-n);
   if (idx.length < n) return false;
-  const removed = idx.sort((a, b) => b - a).map(i => holder.sources.splice(i, 1)[0]);
-  state.players[hp].trash.push(...removed);
-  S.recomputeStackGrants(holder);
-  return true;
+  return S.trashSourceIdxs(state, holder, idx, { own: true, all: true }).length === idx.length; // bugsheet 2026-10: via the shared trasher -> 'sourcesTrashed' fires
 }
 const canPaySources = (holder, n, pred) => holder.sources.filter(pred).length >= n;
 // every distinct choice of which n matching sources to trash is its own candidate for the player (S.hookPreventLeave / preventLeaveOptions)
@@ -1334,10 +1331,7 @@ const survive = (causeOk, nameOk, n, pred, comboOk) => (state, hp, holder, targe
   };
   rec(0, []);
   return combos.map(c => ({ apply() {
-    const removed = c.slice().sort((x, y) => y - x).map(i => holder.sources.splice(i, 1)[0]);
-    state.players[hp].trash.push(...removed);
-    S.recomputeStackGrants(holder);
-    return true;
+    return S.trashSourceIdxs(state, holder, c, { own: true, all: true }).length === c.length; // bugsheet 2026-10: via the shared trasher -> 'sourcesTrashed' fires
   } }));
 };
 D('BT5-086', '서로의 턴', '소멸할 때', { preventLeaveOptions: survive(c => c === 'effect', () => true, 1, id => C(id).category === 'digimon' && lvOf(id) === 6) });
